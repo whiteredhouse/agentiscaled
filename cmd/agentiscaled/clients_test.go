@@ -43,13 +43,18 @@ func TestServesNode(t *testing.T) {
 		dir  string
 		want bool
 	}{
-		{mcpEntry{"/opt/homebrew/bin/agentiscaled", []string{"mcp"}}, def, true},
-		{mcpEntry{"/opt/homebrew/bin/agentiscaled", []string{"mcp"}}, other, false},
-		{mcpEntry{"/x/agentiscaled", []string{"mcp", "-data-dir", other}}, other, true},
-		{mcpEntry{"/x/agentiscaled", []string{"mcp", "--data-dir=" + other}}, other, true},
-		{mcpEntry{"/x/agentiscaled", []string{"mcp", "-data-dir", other}}, def, false},
-		{mcpEntry{"/x/agentiscaled", []string{"run"}}, def, false},
-		{mcpEntry{"/x/node", []string{"mcp"}}, def, false},
+		{mcpEntry{Command: "/opt/homebrew/bin/agentiscaled", Args: []string{"mcp"}}, def, true},
+		{mcpEntry{Command: "/opt/homebrew/bin/agentiscaled", Args: []string{"mcp"}}, other, false},
+		{mcpEntry{Command: "/x/agentiscaled", Args: []string{"mcp", "-data-dir", other}}, other, true},
+		{mcpEntry{Command: "/x/agentiscaled", Args: []string{"mcp", "--data-dir=" + other}}, other, true},
+		{mcpEntry{Command: "/x/agentiscaled", Args: []string{"mcp", "-data-dir", other}}, def, false},
+		{mcpEntry{Command: "/x/agentiscaled", Args: []string{"run"}}, def, false},
+		{mcpEntry{Command: "/x/node", Args: []string{"mcp"}}, def, false},
+		// An entry with its own HOME or XDG_CONFIG_HOME has its own default.
+		{mcpEntry{Command: "/x/agentiscaled", Args: []string{"mcp"}, Env: map[string]string{"HOME": "/Users/b"}}, def, false},
+		{mcpEntry{Command: "/x/agentiscaled", Args: []string{"mcp"}, Env: map[string]string{"XDG_CONFIG_HOME": "/b"}}, def, false},
+		{mcpEntry{Command: "/x/agentiscaled", Args: []string{"mcp", "-data-dir", other}, Env: map[string]string{"HOME": "/Users/b"}}, other, true},
+		{mcpEntry{Command: "/x/agentiscaled", Args: []string{"mcp"}, Env: map[string]string{"LOG": "1"}}, def, true},
 	} {
 		if got := servesNode(tc.e, tc.dir); got != tc.want {
 			t.Errorf("servesNode(%v, %q) = %v, want %v", tc.e, tc.dir, got, tc.want)
@@ -174,11 +179,12 @@ func compact(t *testing.T, raw json.RawMessage) string {
 func TestClaudeDesktopNeverReplacesAnEntry(t *testing.T) {
 	def := withDefaultDataDir(t)
 	for name, before := range map[string]string{
-		"name taken by another node": `{"mcpServers":{"agentiscale":{"command":"/x/agentiscaled","args":["mcp","-data-dir","/srv/other"]}}}`,
-		"name taken by another tool": `{"mcpServers":{"agentiscale":{"url":"http://127.0.0.1:8080/mcp"}}}`,
-		"node under another name":    `{"mcpServers":{"mesh":{"command":"/dev/build/agentiscaled","args":["mcp"]}}}`,
-		"not JSON":                   `{"mcpServers": {`,
-		"servers not an object":      `{"mcpServers": []}`,
+		"name taken by another node":             `{"mcpServers":{"agentiscale":{"command":"/x/agentiscaled","args":["mcp","-data-dir","/srv/other"]}}}`,
+		"name taken by a node with its own HOME": `{"mcpServers":{"agentiscale":{"command":"/x/agentiscaled","args":["mcp"],"env":{"HOME":"/Users/b"}}}}`,
+		"name taken by another tool":             `{"mcpServers":{"agentiscale":{"url":"http://127.0.0.1:8080/mcp"}}}`,
+		"node under another name":                `{"mcpServers":{"mesh":{"command":"/dev/build/agentiscaled","args":["mcp"]}}}`,
+		"not JSON":                               `{"mcpServers": {`,
+		"servers not an object":                  `{"mcpServers": []}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := testClaudeDesktop(t)
@@ -266,8 +272,11 @@ func TestCodexAddsOnlyAMissingEntry(t *testing.T) {
 	}
 
 	for list, want := range map[string]string{
-		`[{"name":"agentiscale","transport":{"type":"stdio","command":"/x/agentiscaled","args":["mcp","-data-dir","/srv/b"]}}]`: `has another server named "agentiscale"`,
-		`[{"name":"mesh","transport":{"type":"stdio","command":"/x/agentiscaled","args":["mcp"]}}]`:                             `already connected to this node as "mesh"`,
+		`[{"name":"agentiscale","transport":{"type":"stdio","command":"/x/agentiscaled","args":["mcp","-data-dir","/srv/b"]}}]`:                                                                                      `has another server named "agentiscale"`,
+		`[{"name":"mesh","transport":{"type":"stdio","command":"/x/agentiscaled","args":["mcp"]}}]`:                                                                                                                  `already connected to this node as "mesh"`,
+		`[{"name":"agentiscale","transport":{"type":"stdio","command":"/x/agentiscaled","args":["mcp"],"env":{"HOME":"/Users/b"}}}]`:                                                                                 `has another server named "agentiscale"`,
+		`[{"name":"agentiscale","enabled":false,"transport":{"type":"stdio","command":"/x/agentiscaled","args":["mcp"],"env":null}}]`:                                                                                `has "agentiscale" for this node, but it is turned off`,
+		`[{"name":"a","enabled":false,"transport":{"type":"stdio","command":"/x/agentiscaled","args":["mcp"]}},{"name":"b","enabled":true,"transport":{"type":"stdio","command":"/x/agentiscaled","args":["mcp"]}}]`: `already connected to this node as "b"`,
 		`not json`: "could not read its configuration",
 	} {
 		c, log := fakeCodex(t, list)

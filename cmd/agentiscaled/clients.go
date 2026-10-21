@@ -17,8 +17,11 @@ import (
 
 // mcpEntry is a client's MCP server entry that starts `agentiscaled mcp`.
 type mcpEntry struct {
-	Command string   `json:"command"`
-	Args    []string `json:"args"`
+	Command string            `json:"command"`
+	Args    []string          `json:"args"`
+	Env     map[string]string `json:"env,omitempty"`
+	// Disabled is an entry the client keeps but does not start.
+	Disabled bool `json:"-"`
 }
 
 // agentClient is an agent client whose MCP configuration `up` can add this
@@ -140,7 +143,7 @@ func servesNode(e mcpEntry, dataDir string) bool {
 	if !strings.HasPrefix(filepath.Base(e.Command), "agentiscaled") || len(e.Args) == 0 || e.Args[0] != "mcp" {
 		return false
 	}
-	dir := defaultDataDir()
+	dir := ""
 	for i := 1; i < len(e.Args); i++ {
 		a := strings.TrimPrefix(strings.TrimPrefix(e.Args[i], "-"), "-")
 		if a == "data-dir" && i+1 < len(e.Args) {
@@ -149,6 +152,17 @@ func servesNode(e mcpEntry, dataDir string) bool {
 		} else if v, ok := strings.CutPrefix(a, "data-dir="); ok {
 			dir = v
 		}
+	}
+	if dir == "" {
+		// The default data directory comes from the environment, and an entry
+		// that sets its own may mean another node, so only a default that
+		// this process would see counts.
+		for _, k := range []string{"HOME", "XDG_CONFIG_HOME", "AppData"} {
+			if _, ok := e.Env[k]; ok {
+				return false
+			}
+		}
+		dir = defaultDataDir()
 	}
 	return realAbs(dir) == realAbs(dataDir)
 }
@@ -170,7 +184,10 @@ func connectClients(ctx context.Context, out io.Writer, clients []agentClient, e
 			fmt.Fprintf(out, "  %s: could not read its configuration (%v); left it as it is. Connect it yourself:\n%s", c.name(), err, c.step(name, e))
 			continue
 		}
-		if found := entryForNode(have, dataDir); found != "" {
+		if found := entryForNode(have, dataDir); found != "" && have[found].Disabled {
+			fmt.Fprintf(out, "  %s: has %q for this node, but it is turned off; left it as it is. Turn it on again in its configuration.\n", c.name(), found)
+			continue
+		} else if found != "" {
 			fmt.Fprintf(out, "  %s: already connected to this node as %q.\n", c.name(), found)
 			continue
 		}
@@ -187,11 +204,15 @@ func connectClients(ctx context.Context, out io.Writer, clients []agentClient, e
 	}
 }
 
-// entryForNode is the name of an entry that serves the node, in name order.
+// entryForNode is the name of an entry that serves the node: the first in
+// name order that is turned on, or else the first that is turned off.
 func entryForNode(have map[string]mcpEntry, dataDir string) string {
 	found := ""
 	for n, e := range have {
-		if servesNode(e, dataDir) && (found == "" || n < found) {
+		if !servesNode(e, dataDir) {
+			continue
+		}
+		if f := have[found]; found == "" || (f.Disabled && !e.Disabled) || (f.Disabled == e.Disabled && n < found) {
 			found = n
 		}
 	}
@@ -376,9 +397,11 @@ func (c *codexClient) entries(ctx context.Context) (map[string]mcpEntry, error) 
 	}
 	var list []struct {
 		Name      string `json:"name"`
+		Enabled   *bool  `json:"enabled"`
 		Transport struct {
-			Command string   `json:"command"`
-			Args    []string `json:"args"`
+			Command string            `json:"command"`
+			Args    []string          `json:"args"`
+			Env     map[string]string `json:"env"`
 		} `json:"transport"`
 	}
 	if err := json.Unmarshal(b, &list); err != nil {
@@ -386,7 +409,12 @@ func (c *codexClient) entries(ctx context.Context) (map[string]mcpEntry, error) 
 	}
 	have := map[string]mcpEntry{}
 	for _, s := range list {
-		have[s.Name] = mcpEntry{Command: s.Transport.Command, Args: s.Transport.Args}
+		have[s.Name] = mcpEntry{
+			Command:  s.Transport.Command,
+			Args:     s.Transport.Args,
+			Env:      s.Transport.Env,
+			Disabled: s.Enabled != nil && !*s.Enabled,
+		}
 	}
 	return have, nil
 }
