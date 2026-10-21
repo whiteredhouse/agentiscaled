@@ -1,0 +1,1014 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package agentmesh.v1;
+option go_package = "github.com/google/agentmesh/api";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+
+
+message AuthFrame {
+  bytes biscuit = 1;
+  string target_service = 2; // Optional: specific service requested
+}
+
+message AuthResponse {
+  bool success = 1;
+  string error = 2; // populated only if success is false
+  bytes biscuit = 3; // The server's own Biscuit token (for mutual auth)
+}
+
+// RouterGoAway is what a router sends, on GoAwayProtocolID, to a member it
+// will no longer hold: it is stopping, or it holds more members than it is
+// sized for. The member attaches to another router and does not come back
+// to this one before retry_after has passed. A member that does not speak
+// the protocol sees its connection close instead.
+message RouterGoAway {
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    DRAINING = 1;   // the router is shutting down
+    OVERLOADED = 2; // the router is above its high watermark
+  }
+  Reason reason = 1;
+  google.protobuf.Duration retry_after = 2;
+}
+
+
+
+message MeshEvent {
+  enum Type {
+    BANNED = 0;
+    KEY_ROTATION = 1;
+    POLICY_UPDATE = 2;
+  }
+  Type type = 1;
+  string peer_id = 2;
+  // When the control plane recorded the event. Receivers ignore an event
+  // further than a few minutes from their clock and, for bans, one older
+  // than the last they applied for the peer.
+  google.protobuf.Timestamp event_time = 3;
+  bytes new_public_key = 4;
+  bytes signature = 5;
+}
+
+message EnrollRequest {
+  string jwt = 1;
+  string peer_id = 2;
+  bytes public_key = 3;
+  string requested_role = 4;
+  // Operator-declared labels (e.g. key "region", see api/labels.go).
+  // Validated fail-closed by the control plane and, once attested by the
+  // enrollment flow's gates, minted as signed label() facts in the
+  // biscuit. Empty means no claims.
+  map<string, string> labels = 5;
+  // Proof of possession of public_key's private half: challenge_unix_ms is
+  // the caller's clock in unix milliseconds and challenge_signature signs
+  // the UTF-8 bytes of "mesh:register:<peer_id>:<challenge_unix_ms>". It is
+  // an int64 because it is the number in the signed text, not an instant
+  // for display. Required, and peer_id must be derived from public_key.
+  // The JWT proves who is asking; this proves they hold the key they are
+  // asking to bind, so an identity cannot register (and overwrite) another
+  // node's peer_id.
+  int64 challenge_unix_ms = 6;
+  bytes challenge_signature = 7;
+}
+
+message EnrollResponse {
+  bytes biscuit_token = 1;
+  string error_message = 2;
+  bytes control_plane_public_key = 3;
+  repeated string router_addresses = 4;
+  google.protobuf.Timestamp expire_time = 5;
+}
+
+enum EnrollmentStatus {
+  ENROLLMENT_STATUS_UNSPECIFIED = 0;
+  ENROLLMENT_STATUS_PENDING = 1;
+  ENROLLMENT_STATUS_APPROVED = 2;
+  ENROLLMENT_STATUS_REJECTED = 3;
+}
+
+message BootstrapEnrollRequest {
+  string bootstrap_token = 1;
+  string peer_id = 2;
+  bytes public_key = 3;
+  string requested_role = 4;
+  // Operator-declared labels; the admin approving the enrollment attests
+  // them (see EnrollRequest.labels).
+  map<string, string> labels = 5;
+  // Proof of possession of public_key's private half: challenge_unix_ms is
+  // the caller's clock in unix milliseconds and challenge_signature signs
+  // the UTF-8 bytes of "mesh:enroll:<peer_id>:<challenge_unix_ms>". Required,
+  // and peer_id must be derived from public_key: this is what entitles a
+  // repeated POST /enroll to re-fetch an existing enrollment's biscuit, so
+  // a bootstrap token alone must never satisfy it.
+  int64 challenge_unix_ms = 6;
+  bytes challenge_signature = 7;
+}
+
+// BootstrapEnrollResponse answers POST /enroll and GET /enroll/status.
+// Polling GET /enroll/status requires proof of possession of the key
+// submitted at /enroll: alongside the `peer_id` query parameter, the caller
+// sends the X-Mesh-Challenge-Ts header (unix milliseconds) and the
+// X-Mesh-Challenge-Sig header (unpadded base64url signature over the UTF-8
+// bytes of "mesh:enroll-status:<peer_id>:<ts>").
+message BootstrapEnrollResponse {
+  EnrollmentStatus status = 1;
+  bytes biscuit_token = 2;         // Populated only if APPROVED
+  int32 poll_interval_seconds = 3; // Recommended polling wait time
+  string error_message = 4;
+  bytes control_plane_public_key = 5;   // Populated only if APPROVED
+  repeated string router_addresses = 6; // Populated only if APPROVED
+  google.protobuf.Timestamp expire_time = 7; // Populated only if APPROVED
+}
+
+
+
+enum ServiceType {
+  SERVICE_TYPE_UNSPECIFIED = 0;
+  SERVICE_TYPE_MCP = 1;
+  SERVICE_TYPE_INFERENCE = 2;
+  SERVICE_TYPE_A2A = 3;
+  // A destination outside the mesh, reached through a node that enforces
+  // policy on it. The service name is the destination hostname, so a grant
+  // reads egress://api.github.com and the request fact
+  // service("egress", "api.github.com").
+  SERVICE_TYPE_EGRESS = 4;
+}
+
+message ServiceInfo {
+  ServiceType type = 1;
+  string name = 2;
+  string description = 3;
+}
+
+message CommandBackend {
+  repeated string command = 1;
+  map<string, string> env = 2;
+}
+
+message RegisterServiceRequest {
+  ServiceInfo service = 1;
+  oneof backend {
+    string target_url = 2;
+    CommandBackend command = 3;
+  }
+}
+
+message DiscoveredProvider {
+  string peer_id = 1;
+  string local_proxy_url = 2;
+  string srv_name = 3;
+  string srv_description = 4;
+}
+
+message ControlPlaneInfoResponse {
+  string oidc_issuer = 1;
+  string client_id = 2;
+  string audience = 3;
+  // The addresses of every router with a live lease, one multiaddr per
+  // address, each ending in the router's peer ID. The same routers as
+  // routers, flattened; kept for members that only need something to dial.
+  repeated string router_addresses = 4;
+  // The complete set of currently banned peer IDs. Consumers reconcile their
+  // local blocklist against this list rather than merging into it, so that a
+  // peer the control plane no longer bans is unbanned everywhere without
+  // needing an event of its own. MeshEvent_BANNED stays the fast path for
+  // sub-second eviction; this is how a node that restarted or was offline
+  // when the event was published catches up.
+  repeated string banned_peer_ids = 5;
+  // Every router with a live lease, with what a member needs to choose
+  // among them: its attested labels, to select or prefer routers by
+  // placement, and its load as of its last lease, to prefer the ones with
+  // room.
+  repeated RouterInfo routers = 6;
+  // How the mesh keeps its directory. Members and routers read these here
+  // and nowhere else, so they agree without configuration of their own; a
+  // control plane that leaves it unset leaves them on the defaults the
+  // api package names.
+  DirectoryParameters directory = 7;
+}
+
+// DirectoryParameters are the settings of the DHT the routers serve, set
+// once per mesh on the control plane (agentmesh-control-plane
+// --dht-replication, --dht-reprovide-interval) and published on /info.
+message DirectoryParameters {
+  // How many routers each record a member announces is placed on, the
+  // closest to its key, besides the router that took the announcement.
+  // Routers read it; a member asks the routers it holds.
+  int32 replication = 1;
+  // How often a member re-announces each service it publishes.
+  google.protobuf.Duration reprovide_interval = 2;
+  // How long a router keeps a record after its last announcement: three
+  // reprovide intervals, so a provider that stopped without unpublishing
+  // leaves within it and two missed announcements do not unlist one that
+  // did not.
+  google.protobuf.Duration record_ttl = 3;
+}
+
+// DirectoryRequest is what a member asks a router it is attached to over
+// /mesh/directory/1.0.0: one request per stream, answered with one
+// DirectoryResponse. The member keeps no DHT of its own; the router keeps
+// its records, places them on the routers closest to each key, and answers
+// a lookup from its own records and those routers'. A router sends the
+// same message to another router to place a member's record, or its
+// withdrawal, on it.
+message DirectoryRequest {
+  oneof request {
+    DirectoryProvide provide = 1;
+    DirectoryFindProviders find_providers = 2;
+    DirectoryFindPeer find_peer = 3;
+    DirectoryWithdraw withdraw = 4;
+  }
+}
+
+// DirectoryProvide announces the sender as a provider of key, reached at
+// addrs. A key is a sha256 multihash: of "mesh:service:<type>[:<name>]" for
+// a service, of "mesh:peer:<peer_id>" for the member itself. A record lives
+// for the mesh's record TTL after its last announcement; announcing it
+// again replaces its addresses. service names the service a record is
+// about, "<type>://<name>", and the router refuses a key that is not that
+// service's by name or by type; a record naming no service is the
+// member's own, under its peer key. provider is set only between routers,
+// by the router that holds the member, and refused from anyone else: a
+// member can only announce itself.
+message DirectoryProvide {
+  bytes key = 1;
+  repeated string addrs = 2;
+  string provider = 3;
+  string service = 4;
+}
+
+// DirectoryWithdraw removes the sender's record under key, from the router
+// asked and from the routers closest to the key: what a member sends when
+// it stops a service or leaves the mesh, so that callers do not find it
+// until the record would have expired. provider is as in DirectoryProvide.
+message DirectoryWithdraw {
+  bytes key = 1;
+  string provider = 2;
+}
+
+// DirectoryFindProviders asks for up to limit providers of key.
+message DirectoryFindProviders {
+  bytes key = 1;
+  uint32 limit = 2;
+}
+
+// DirectoryFindPeer asks where peer_id is reached.
+message DirectoryFindPeer {
+  string peer_id = 1;
+}
+
+// DirectoryResponse answers one DirectoryRequest. providers answers
+// find_providers; peer answers find_peer, unset when nobody knows the
+// peer; error is set when the router could not run the request.
+message DirectoryResponse {
+  repeated PeerRecord providers = 1;
+  PeerRecord peer = 2;
+  string error = 3;
+}
+
+// PeerRecord is a peer and the addresses it is reached at, relayed ones
+// included, each ending in its peer ID.
+message PeerRecord {
+  string peer_id = 1;
+  repeated string addrs = 2;
+}
+
+// RouterInfo is one router as the control plane lists it on /info.
+message RouterInfo {
+  string peer_id = 1;
+  // The router's announced addresses, each ending in its peer ID.
+  repeated string addresses = 2;
+  // The router's labels, the same labels as a node's: declared at
+  // enrollment (agentmesh-router --label), signed by the control plane only
+  // if the router's role allows them (PolicyRole.allowed_labels), and
+  // carried as label() facts in the router's credential, where a member
+  // verifies them at the handshake. A member selects routers by them
+  // (--router-selector, every pair must match) or prefers routers by them
+  // (--router-prefer). They place a router; they grant it nothing.
+  map<string, string> labels = 3;
+  // Connections the router held when it last renewed its lease, and the
+  // number it accepts (its high watermark). A member attaches to the
+  // routers with the most room; connection_limit of zero means unknown.
+  int32 connections = 4;
+  int32 connection_limit = 5;
+}
+
+message RouterLeaseRequest {
+  string peer_id = 1;
+  repeated string addresses = 2;
+  bytes biscuit = 3;
+  repeated string connected_peers = 4;
+  int32 dht_size = 5;
+  // Proof of possession of the router's enrolled key: challenge_unix_ms is
+  // the caller's clock in unix milliseconds and challenge_signature signs
+  // the UTF-8 bytes of "mesh:routers-lease:<peer_id>:<challenge_unix_ms>"
+  // with the key the router enrolled with. Required. The biscuit alone is
+  // not proof: routers hand theirs to every peer they authenticate.
+  int64 challenge_unix_ms = 6;
+  bytes challenge_signature = 7;
+  // How long this lease stays valid. Unset means the control plane's lease
+  // duration. A router may shorten its lease, never lengthen it: on its last
+  // renewal before stopping it sets the time it expects to be away, zero to
+  // be withdrawn at once, so a joiner is not handed a router that is gone
+  // and a router back within that time is still listed.
+  google.protobuf.Duration ttl = 8;
+  // The router's load, listed for it on /info (RouterInfo): its open
+  // inbound connections and the number it accepts.
+  int32 connections = 9;
+  int32 connection_limit = 10;
+}
+
+message RouterLeaseResponse {
+  bool success = 1;
+  string error = 2;
+  google.protobuf.Timestamp expire_time = 3;
+}
+
+message PolicyRole {
+  string name = 1;
+  repeated string allowed_targets = 2;
+  repeated string allowed_services = 3;
+  repeated string custom_datalog = 4;
+  // Labels a node with this role may declare at enrollment, as "*", "key=*"
+  // or "key=value". A node declares its own labels, so this is what turns a
+  // declaration into something the control plane is willing to sign.
+  repeated string allowed_labels = 5;
+  // HTTP narrowing of allowed_services entries; see HTTPGrant.
+  repeated HTTPGrant http = 6;
+  // Services a member with this role may serve, in the syntax of
+  // allowed_services ("mcp://calc", "inference://*", "*"). A role serves
+  // nothing it is not granted here: a router keeps a member's record only
+  // for a service its credential grants, and a caller sends a request to
+  // a provider it found by name only when the provider's credential does.
+  // An egress destination needs no entry: served_by grants it to the
+  // nodes it selects.
+  repeated string allowed_publish = 7;
+}
+
+// HTTPGrant narrows one allowed_services entry to HTTP methods and paths.
+// The control plane compiles it into granted_method and granted_path_* facts
+// in the holder's credential and withholds the plain service grant for that
+// entry. The baseline rules derive the service grant only for a request
+// whose method($m) and path($p) facts match, so a request that carries no
+// HTTP method (a tunnel, a non-HTTP stream) does not match a narrowed entry.
+message HTTPGrant {
+  // One of the role's allowed_services entries, written identically.
+  string service = 1;
+  // Methods the holder may use, e.g. "GET", "HEAD". Empty means any method.
+  repeated string methods = 2;
+  // Paths the holder may request, as the backend sees them: "/user" matches
+  // that path only, "/v2/public/*" matches every path under the prefix.
+  // Empty means any path. At least one of methods and paths must be set.
+  repeated string paths = 3;
+}
+
+// EgressDestination is a destination outside the mesh that selected nodes
+// serve as egress://<name>. It is part of the policy document the admin
+// writes; a node receives the destinations that select it at GET /egress
+// and serves them without configuration of its own.
+message EgressDestination {
+  // The destination hostname, lowercase, without a port or a path. It is the
+  // service name in grants (egress://<name>) and the DHT key.
+  string name = 1;
+  // Where the serving node forwards requests. Optional; https://<name> when
+  // empty. Must not carry a credential.
+  string target_url = 2;
+  // Name of the credential the serving node presents upstream, resolved by
+  // the node from its secrets directory. Shorthand for broker.static_secret.
+  // Never a value: secret material does not travel through this API.
+  string credential = 3;
+  // Role names or key=value labels selecting the nodes that serve this
+  // destination. A node matches when any entry names one of its roles or
+  // labels. The control plane also grants the destination to the selected
+  // nodes, so the serving node authorizes local requests with its own
+  // credential; other callers need the grant on their own role.
+  repeated string served_by = 4;
+  // Pluggable credential broker for the destination.
+  CredentialBroker broker = 5;
+  // Content inspection the egress node applies. Destination policy: a TAR
+  // cannot disable it or choose another inspector.
+  Inspection inspection = 6;
+  // HTTP (default): the node terminates TLS, brokers the credential and
+  // inspects. TCP: a named CONNECT tunnel, L4 policy only.
+  EgressMode mode = 7;
+  // TCP mode: destination ports a tunnel may open. Empty denies every tunnel.
+  repeated uint32 ports = 8;
+  // Keep the destination hostname in Host when target_url is an operator
+  // inspection chain that forwards to the real host.
+  bool preserve_host = 9;
+  // Forward X-Mesh-Principal, X-Mesh-Roles and X-Mesh-Task to target_url.
+  // Only for an operator chain; the node strips them for a real destination.
+  bool forward_context = 10;
+}
+
+enum EgressMode {
+  EGRESS_MODE_HTTP = 0;
+  EGRESS_MODE_TCP = 1;
+}
+
+// Inspection lists the inspectors the egress node runs, in order; the first
+// block wins. Inspectors run before the broker injects the destination
+// credential, so a processor never sees it.
+message Inspection {
+  repeated Inspector inspectors = 1;
+}
+
+message Inspector {
+  oneof kind {
+    ModelArmor model_armor = 1;
+    ExtProc ext_proc = 2;
+  }
+}
+
+// ModelArmor calls sanitizeUserPrompt / sanitizeModelResponse directly over
+// HTTPS. Model Armor is reached as an egress destination with an
+// oidc_federation broker, so no credential is stored for it.
+message ModelArmor {
+  // projects/P/locations/L/templates/T. One template per destination; a
+  // destination that needs another template is declared as another
+  // EgressDestination.
+  string template = 1;
+  // BUFFERED: the whole response is inspected before release and may be
+  // rewritten. REQUEST_ONLY: prompts are inspected, responses pass.
+  ResponseInspection response = 2;
+  // Default false: an unreachable Model Armor fails the request.
+  bool fail_open = 3;
+  google.protobuf.Duration timeout = 4;
+}
+
+enum ResponseInspection {
+  RESPONSE_INSPECTION_BUFFERED = 0;
+  RESPONSE_INSPECTION_REQUEST_ONLY = 1;
+}
+
+// ExtProc runs an Envoy external processor (envoy.service.ext_proc.v3
+// ExternalProcessor) over one bidirectional gRPC stream per request. Field
+// names follow Envoy's ext_proc filter configuration so a processor's
+// settings carry over unchanged.
+message ExtProc {
+  // host:port, or unix:/path for a processor on the same host.
+  string target = 1;
+  // Names in the node's secrets directory for mTLS to the processor: the CA
+  // bundle and the client certificate with its key. Never values.
+  string ca = 2;
+  string client_certificate = 3;
+  ExtProcProcessingMode processing_mode = 4;
+  // Let the processor change the mode mid-request (Envoy allow_mode_override).
+  bool allow_mode_override = 5;
+  // Per-message deadline; 200ms when unset, as in Envoy.
+  google.protobuf.Duration message_timeout = 6;
+  // Default false: a processor error fails the request (Envoy failure_mode_allow).
+  bool failure_mode_allow = 7;
+  // Upper bound for BUFFERED and BUFFERED_PARTIAL bodies.
+  uint32 max_buffered_bytes = 8;
+}
+
+message ExtProcProcessingMode {
+  enum HeaderMode {
+    HEADER_MODE_DEFAULT = 0;
+    SEND = 1;
+    SKIP = 2;
+  }
+  enum BodyMode {
+    NONE = 0;
+    STREAMED = 1;
+    BUFFERED = 2;
+    BUFFERED_PARTIAL = 3;
+    FULL_DUPLEX_STREAMED = 4;
+  }
+  HeaderMode request_header_mode = 1;
+  HeaderMode response_header_mode = 2;
+  BodyMode request_body_mode = 3;
+  BodyMode response_body_mode = 4;
+  HeaderMode request_trailer_mode = 5;
+  HeaderMode response_trailer_mode = 6;
+}
+
+message CredentialBroker {
+  oneof kind {
+    // Name of a file in the node's secrets directory ("TOKEN" or "user:pass").
+    string static_secret = 1;
+    OIDCFederation oidc_federation = 2;
+    AWSAssumeRole aws_assume_role = 3;
+    // The node's own platform identity (GKE Workload Identity, instance
+    // metadata). Only for nodes that run inside the provider.
+    PlatformIdentity platform_identity = 4;
+  }
+}
+
+// OIDCFederation exchanges the control plane's JWT at a provider STS.
+message OIDCFederation {
+  // Google: https://sts.googleapis.com/v1/token. Other providers: their RFC 8693 endpoint.
+  string token_endpoint = 1;
+  // The audience the provider expects, e.g. the Google workload or workforce
+  // pool provider resource name. One per destination.
+  string audience = 2;
+  // Optional service account to impersonate when the API does not accept the
+  // federated principal directly (Google iamcredentials.generateAccessToken).
+  string impersonate = 3;
+  // OAuth scopes requested for the destination credential; the TAR may narrow
+  // them further, never widen them.
+  repeated string scopes = 4;
+}
+
+message AWSAssumeRole {
+  string role_arn = 1;
+  // Session policy template; the adapter intersects it with the TAR.
+  string session_policy = 2;
+}
+
+message PlatformIdentity {
+  repeated string scopes = 1;
+}
+
+message PolicyBinding {
+  string role = 1;
+  repeated string members = 2;
+}
+
+// PolicyConfig is the mesh policy as the operator writes it: roles and
+// bindings. It is the body of POST /policies and the answer of
+// GET /admin/policy, both protojson. Only the control plane reads it, to
+// mint tokens and to render PolicyConfigGetResponse.
+message PolicyConfig {
+  repeated PolicyRole roles = 1;
+  repeated PolicyBinding bindings = 2;
+  repeated EgressDestination egress = 3;
+}
+
+message PolicyConfigGetRequest {}
+
+// PolicyConfigGetResponse answers GET /policies for a mesh member holding a
+// biscuit. It carries the policy only as Datalog text: this is the contract
+// every member evaluates, and none derives rules from roles and bindings.
+message PolicyConfigGetResponse {
+  // One rule per entry, rendered by the control plane with api.BuildPolicyRules.
+  repeated string datalog_rules = 1;
+}
+
+message PolicyConfigUpdateResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message EgressAssignmentsRequest {}
+
+// EgressAssignmentsResponse answers GET /egress for a mesh member holding a
+// biscuit: the destinations whose served_by selects that node. It is a
+// separate endpoint from GET /policies so that a node predating it keeps
+// syncing rules unchanged.
+message EgressAssignmentsResponse {
+  repeated EgressDestination egress = 1;
+}
+
+message KeysResponse {
+  repeated bytes public_keys = 1;
+  // When the set was signed; receivers reject responses outside a short
+  // freshness window so a captured set cannot be replayed.
+  google.protobuf.Timestamp sign_time = 2;
+  // One ed25519 signature per entry of public_keys, by that key, over the
+  // deterministic encoding of this message with signatures cleared. A
+  // receiver trusting any key still valid on the control plane can verify
+  // the whole set (see api.VerifyKeysResponse).
+  repeated bytes signatures = 3;
+}
+
+message TokenRefreshRequest {
+  // Signature with the node key over the UTF-8 bytes of
+  // "mesh:refresh:<peer_id>:<challenge_unix_ms>", where peer_id is the one
+  // bound in the presented biscuit. Peer- and endpoint-bound so a captured
+  // signature verifies nowhere else.
+  bytes challenge_signature = 1;
+  // The caller's clock in unix milliseconds, the number in the signed text.
+  // Must be within the control plane's freshness window.
+  int64 challenge_unix_ms = 2;
+  // The caller's peer ID. Optional: the control plane normally reads it
+  // from the verified biscuit. It is consulted only when the biscuit's
+  // signing key has been retired, so the biscuit cannot be verified: the
+  // control plane then looks up the enrolled node record by this ID and,
+  // if the node was opted in to autonomous recovery, accepts the request
+  // when the presented biscuit is byte-identical to the last one it
+  // issued and the challenge verifies against the stored public key.
+  string peer_id = 3;
+  // Optional fresh platform JWT for an OIDC-enrolled node. When set, the
+  // control plane verifies the JWT, confirms that iss|sub matches the
+  // stored enrollment's identity, and renews the stored claims and session
+  // expiry in place before minting the refreshed biscuit.
+  string jwt = 4;
+}
+
+message TokenRefreshResponse {
+  bytes biscuit_token = 1;
+  google.protobuf.Timestamp expire_time = 2;
+  string error_message = 3;
+}
+
+// NodeCatalogReport is the body of POST /nodes/catalog: a node's
+// self-reported list of locally registered services. The reporting peer is
+// taken from the presented biscuit, never from the body, so a node can only
+// ever describe itself. Display-only; carries no authorization weight.
+message NodeCatalogReport {
+  repeated ServiceInfo services = 1;
+}
+
+message TokenRevokeRequest {
+  string peer_id = 1;
+}
+
+message TokenRevokeResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// ============================================================================
+// Operator plane
+// ============================================================================
+//
+// What the console and admin CLIs exchange with the control plane on
+// /admin/* and /user/*: protojson of these messages with proto field names,
+// unknown fields rejected. Credentials and key material never appear here:
+// an enrollment request's public key and minted biscuit, an enrolled node's
+// biscuit and a token's hash stay in the store.
+
+// BootstrapTokenCreateRequest is the body of POST /admin/bootstrap-tokens
+// (admin bearer) and POST /user/bootstrap-tokens (mesh user).
+message BootstrapTokenCreateRequest {
+  // Role the token enrolls into, e.g. "mesh:role:node". Required on the admin
+  // endpoint; the user endpoint defaults it to "mesh:role:node".
+  string role = 1;
+  // User the token is issued on behalf of. Honored by the user endpoint
+  // only, and only for admins; defaults to the caller.
+  string owner_id = 2;
+  // How long the token stays valid; unset or non-positive means 24.
+  int32 ttl_hours = 3;
+  // How many enrollments the token admits; unset or non-positive means 1.
+  int32 max_usages = 4;
+  // Free-form operator note stored with the token.
+  string description = 5;
+  // Copied onto every node the token enrolls: such a node may still refresh
+  // its credential after the control plane's signing key rotated past its
+  // grace period, on proof of possession of its own key alone. Admin-only,
+  // because a node that can always recover holds a credential that never
+  // expires.
+  bool autonomous_recovery = 6;
+  // Copied onto every node the token enrolls: such a node is forgotten
+  // soon after it falls silent (the control plane's
+  // --ephemeral-node-retention, an hour by default) instead of being kept
+  // for --node-retention. For members that come and go: a fleet in a scale
+  // test, a probe, a CI job.
+  bool ephemeral = 7;
+}
+
+// BootstrapTokenCreateResponse is returned (201) when a token is minted.
+// token is the plaintext and is shown exactly once; the control plane keeps
+// only its hash, which is also the id.
+message BootstrapTokenCreateResponse {
+  string id = 1;
+  string token = 2;
+  string role = 3;
+  string owner_id = 4;
+  google.protobuf.Timestamp expire_time = 5;
+}
+
+// BootstrapToken is a minted token as operators list it.
+message BootstrapToken {
+  string id = 1;
+  string role = 2;
+  string owner_id = 3;
+  int32 max_usages = 4;
+  int32 usages_count = 5;
+  string description = 6;
+  google.protobuf.Timestamp create_time = 7;
+  google.protobuf.Timestamp expire_time = 8;
+  // Set when an operator revoked the token, which is distinct from expiry
+  // or exhausted usages. Unset means never revoked.
+  google.protobuf.Timestamp revoke_time = 9;
+  bool autonomous_recovery = 10;
+  bool ephemeral = 11;
+}
+
+message BootstrapTokenListResponse {
+  repeated BootstrapToken tokens = 1;
+}
+
+// EnrollmentRequest is a bootstrap enrollment awaiting or past an operator
+// decision (see BootstrapEnrollRequest).
+message EnrollmentRequest {
+  string id = 1;
+  string peer_id = 2;
+  // The bootstrap token the request was made with.
+  string token_id = 3;
+  EnrollmentStatus status = 4;
+  // Labels the node declared; approval attests them into its biscuit.
+  map<string, string> labels = 5;
+  google.protobuf.Timestamp create_time = 6;
+  // Unset while the request is pending.
+  google.protobuf.Timestamp resolve_time = 7;
+  string resolved_by = 8;
+}
+
+message EnrollmentRequestListResponse {
+  repeated EnrollmentRequest requests = 1;
+}
+
+// User is a human identity known to the mesh.
+message User {
+  // The identity provider's subject.
+  string id = 1;
+  string issuer = 2;
+  string email = 3;
+  // "admin" or "user".
+  string role = 4;
+  google.protobuf.Timestamp create_time = 5;
+}
+
+// EnrolledNode is a member's enrollment record without its credential.
+message EnrolledNode {
+  string peer_id = 1;
+  string role = 2;
+  // How the node enrolled, e.g. "oidc" or "bootstrap".
+  string enrollment_type = 3;
+  // The identity provider's claims as stored at enrollment. Admin-only.
+  string claims_json = 4;
+  string owner_id = 5;
+  map<string, string> labels = 6;
+  google.protobuf.Timestamp enroll_time = 7;
+  // When the enrollment session ends; unset means it does not expire.
+  google.protobuf.Timestamp expire_time = 8;
+  bool banned = 9;
+  bool autonomous_recovery = 10;
+  // The node was enrolled by an ephemeral token and is forgotten soon after
+  // it falls silent.
+  bool ephemeral = 11;
+}
+
+// RouterLease is a router's current registration with the control plane.
+message RouterLease {
+  string peer_id = 1;
+  // Multiaddrs, `/p2p/<peer id>` suffixed.
+  repeated string addresses = 2;
+  google.protobuf.Timestamp last_renewal_time = 3;
+  google.protobuf.Timestamp expire_time = 4;
+  repeated string connected_peers = 5;
+  int32 dht_size = 6;
+}
+
+// NodeServices is the services one node last reported (see
+// NodeCatalogReport).
+message NodeServices {
+  repeated ServiceInfo services = 1;
+  google.protobuf.Timestamp report_time = 2;
+}
+
+// AdminStatusResponse answers GET /admin/status: everything the console
+// shows an administrator, except expired nodes (see GET /user/nodes).
+message AdminStatusResponse {
+  repeated User users = 1;
+  repeated RouterLease active_routers = 2;
+  repeated EnrolledNode enrolled_nodes = 3;
+  repeated EnrollmentRequest enrollment_requests = 4;
+  repeated BootstrapToken bootstrap_tokens = 5;
+  PolicyConfig policy = 6;
+  // Keyed by the reporting node's peer ID; admitted nodes only.
+  map<string, NodeServices> node_catalog = 7;
+}
+
+// UserStatusResponse answers GET /user/status: the caller and what it owns,
+// except expired nodes (see GET /user/nodes). The router fleet and the mesh
+// policy describe the whole mesh and are set for an administrator only.
+message UserStatusResponse {
+  User user = 1;
+  repeated EnrolledNode enrolled_nodes = 2;
+  repeated BootstrapToken bootstrap_tokens = 3;
+  repeated RouterLease active_routers = 4;
+  PolicyConfig policy = 5;
+}
+
+// NodeListResponse answers GET /user/nodes: enrolled nodes, newest enrollment
+// first, page_size (default 50, at most 200) at a time. state (admitted,
+// expired or banned, repeatable) and role narrow the list. An administrator
+// sees every owner's nodes and may pick one with owner_id; a user sees its own.
+message NodeListResponse {
+  repeated EnrolledNode nodes = 1;
+  // Pass as page_token for the next page; empty on the last page.
+  string next_page_token = 2;
+}
+
+// ============================================================================
+// Identity Evidence API
+// ============================================================================
+//
+// Read-only owner/control-plane material served by the node sidecar on
+// GET /mesh/identity and GET /mesh/peer/{peer_id}/evidence. Only reachable
+// over the filesystem-protected Unix socket or verified mTLS. A 200 asserts
+// the node verified the biscuit, its PeerID binding, and revocation state at
+// check_time; independent verifiers recompute from the raw biscuit and keys.
+
+message IdentityEvidenceResponse {
+  string peer_id = 1;
+  bytes biscuit = 2;
+  google.protobuf.Timestamp biscuit_expire_time = 3;
+  string control_plane_url = 4;
+  repeated bytes trusted_control_plane_keys = 5; // Ed25519 SPKI DER
+  google.protobuf.Timestamp check_time = 6;
+}
+
+message PeerEvidenceResponse {
+  string peer_id = 1;
+  bytes biscuit = 2;
+  bytes verifying_key = 3; // Ed25519 SPKI DER, member of the trusted set
+  repeated string roles = 4;
+  map<string, string> labels = 5;
+  google.protobuf.Timestamp expire_time = 6;
+  repeated string revocation_ids = 7; // hex
+  google.protobuf.Timestamp check_time = 8;
+}
+
+// ============================================================================
+// Member state
+// ============================================================================
+//
+// What a member keeps between runs besides its private key, in one message
+// every implementation persists. The private key is the libp2p crypto.proto
+// PrivateKey encoding. The SDKs keep both in a state directory as
+// `identity.key` and `credential.json` (protojson of MemberCredential with
+// proto field names, unknown fields rejected); agentmesh-node keeps both in its
+// database. `agentmesh-node state export` and `agentmesh-node state import` move a
+// member between the two, so an identity enrolled by one implementation
+// runs under another.
+
+message MemberCredential {
+  // Base URL of the control plane that minted the biscuit.
+  string control_plane_url = 1;
+  // The member's biscuit.
+  bytes biscuit = 2;
+  // When the biscuit expires.
+  google.protobuf.Timestamp expire_time = 3;
+  // Control plane signing keys trusted now; a rotation keeps several valid.
+  repeated TrustedSigningKey trusted_keys = 4;
+  // The keys trusted when the biscuit was issued. A key trusted now that is
+  // absent here means a rotation happened since: the biscuit is signed by a
+  // retiring key and must be refreshed before that key leaves its grace
+  // period.
+  repeated bytes issued_under_keys = 5;
+  // Router multiaddrs, `/p2p/<peer id>` suffixed.
+  repeated string router_addresses = 6;
+  // The session that renews an identity enrolled through the mesh's
+  // identity provider. Unset for a member enrolled with a bootstrap token.
+  OIDCSession oidc_session = 7;
+}
+
+message TrustedSigningKey {
+  // Raw ed25519 public key.
+  bytes public_key = 1;
+  // When the member first learned the key. A key rotated out is dropped a
+  // grace period after this; unset means unknown and is read as now.
+  google.protobuf.Timestamp receive_time = 2;
+}
+
+message OIDCSession {
+  string issuer = 1;
+  string client_id = 2;
+  string audience = 3;
+  string refresh_token = 4;
+}
+
+// ============================================================================
+// Task-Scoped Authorization (TAR)
+// ============================================================================
+
+// TaskAuthorizationRule narrows a credential's authority for a specific task or
+// sub-agent hop. Across multiple appended blocks (1..k), semantics are strict
+// set intersection (logical AND): a request is permitted only if it is allowed
+// by the standing mesh policy AND is before every block's expire_time AND
+// matches at least one TaskRule in EVERY appended TaskAuthorizationRule block.
+message TaskAuthorizationRule {
+  string name = 1;
+  string display_name = 2;
+  // Positive allow-list of rules for this hop. Empty rules list denies everything.
+  repeated TaskRule rules = 3;
+  // Optional shorter expiration for this task hop. Effective token expiry is
+  // the minimum across the authority block's expiration() fact and every
+  // appended block's expire_time.
+  google.protobuf.Timestamp expire_time = 4;
+}
+
+message TaskRule {
+  string description = 1;
+
+  // Allowed mesh services (e.g., "mcp://bigquery", "inference://gemini.*",
+  // "egress://bigquery.googleapis.com"). Uses the dot-anchored grammar of
+  // api.ValidateServiceFormat ("*", "<type>://*", "<type>://*.<suffix>",
+  // "<type>://<prefix>.*", "<type>://<exact>"). Required (non-empty).
+  repeated string allowed_services = 2;
+
+  // Optional operation-level allow-list. If set, the request must also match
+  // the specified MCP tools, HTTP methods/paths, or cloud permissions.
+  TaskOperation operation = 3;
+
+  // Optional allowed upstream resource names (e.g. CRM resource prefixes
+  // "//bigquery.googleapis.com/projects/my-proj/datasets/sales_2026").
+  // Opaque to the wire PEP; consumed by CloudTokenExchanger at egress.
+  repeated string allowed_resources = 4;
+}
+
+message TaskOperation {
+  // Allowed MCP tool names (enforced by the PEP on mcp:// tools/call).
+  repeated string allowed_tools = 1;
+  // Allowed HTTP methods (e.g. ["GET", "POST"]), validated with httpMethodSyntax.
+  repeated string allowed_methods = 2;
+  // Allowed HTTP path patterns ("/exact" or "/prefix/*"), validated with
+  // validateHTTPGrantPath.
+  repeated string allowed_paths = 3;
+  // Allowed cloud IAM permissions (e.g. "bigquery.googleapis.com/datasets.get").
+  // Opaque to the wire PEP; consumed by CloudTokenExchanger at egress.
+  repeated string allowed_permissions = 4;
+}
+
+// ============================================================================
+// Stateless Token Exchange & Border STS (Two-Token Model)
+// ============================================================================
+
+// TokenExchangeRequest is the body of POST /token/exchange on the control
+// plane: an enrolled agentmesh-node (authenticated via its own Biscuit in
+// Authorization: Bearer and proof of possession below) exchanges a caller's
+// platform JWT (OIDC ID token, K8s projected SA JWT, or SPIFFE JWT-SVID) into
+// a short-lived Delegated Session Biscuit bound to the calling node's
+// transport channel (client_peer_id + actor_node, without node()).
+message TokenExchangeRequest {
+  // The subject's platform JWT to verify against the control plane's OIDC
+  // providers and allowed audiences.
+  string subject_token = 1;
+  // Optional initial task narrowing to append as block 1 on the minted
+  // Biscuit.
+  TaskAuthorizationRule task_rule = 2;
+  // If true, the minted Biscuit is sealed (b.Seal()) before returning so
+  // downstream holders cannot append further blocks.
+  bool seal = 3;
+  // Proof of possession of the calling node's enrolled key:
+  // challenge_unix_ms is the caller's clock in unix milliseconds and
+  // challenge_signature signs the UTF-8 bytes of
+  // "mesh:token-exchange:<peer_id>:<challenge_unix_ms>".
+  int64 challenge_unix_ms = 4;
+  bytes challenge_signature = 5;
+}
+
+message TokenExchangeResponse {
+  bytes biscuit_token = 1;
+  google.protobuf.Timestamp expire_time = 2;
+  repeated string roles = 3;
+  string subject = 4;
+}
+
+// STSTokenRequest is the body of POST /sts/token on the control plane: an
+// enrolled egress agentmesh-node asks the control plane (acting as OIDC issuer) to
+// verify a caller's Biscuit and TaskAuthorizationRule chain for an egress
+// destination and mint a short-lived ES256 border JWT for cloud STS federation.
+message STSTokenRequest {
+  // The caller's Biscuit token (authority block + any tar_block chain).
+  bytes biscuit = 1;
+  // The egress destination hostname (e.g. "bigquery.googleapis.com").
+  string destination = 2;
+  // Optional explicit audience for the border JWT when not derived from the
+  // destination's broker configuration.
+  string audience = 3;
+  // Proof of possession of the calling egress node's enrolled key:
+  // challenge_unix_ms is the caller's clock in unix milliseconds and
+  // challenge_signature signs the UTF-8 bytes of
+  // "mesh:sts-token:<peer_id>:<challenge_unix_ms>".
+  int64 challenge_unix_ms = 4;
+  bytes challenge_signature = 5;
+}
+
+message STSTokenResponse {
+  string jwt = 1;
+  google.protobuf.Timestamp expire_time = 2;
+  string subject = 3;
+  repeated string roles = 4;
+  string task_name = 5;
+}
+
+// RevocationsResponse answers GET /revocations on the control plane: the set of
+// revoked Biscuit authority revocation IDs (hex-encoded RevocationIds()[0]) and
+// banned peer IDs.
+message RevocationsResponse {
+  repeated string revocation_ids = 1;
+  repeated string banned_peer_ids = 2;
+}
+

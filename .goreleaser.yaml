@@ -1,0 +1,78 @@
+# Release build for agentiscaled: a v* tag builds macOS and Linux
+# binaries, .deb and .rpm packages, checksums, and the Homebrew cask in
+# whiteredhouse/homebrew-tap. See .github/workflows/release.yml.
+version: 2
+project_name: agentiscaled
+
+builds:
+  - id: agentiscaled
+    main: ./cmd/agentiscaled
+    binary: agentiscaled
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .FullCommit }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: agentiscaled
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - NOTICE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+nfpms:
+  - id: packages
+    package_name: agentiscaled
+    file_name_template: "{{ .ConventionalFileName }}"
+    vendor: agentiscale
+    homepage: https://github.com/whiteredhouse/agentiscaled
+    maintainer: agentiscale <noreply@agentiscale.net>
+    description: The agentiscale node. Joins your machine's agents to your private agentiscale network.
+    license: Apache-2.0
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    contents:
+      - src: LICENSE
+        dst: /usr/share/doc/agentiscaled/LICENSE
+      - src: NOTICE
+        dst: /usr/share/doc/agentiscaled/NOTICE
+
+homebrew_casks:
+  - name: agentiscaled
+    repository:
+      owner: whiteredhouse
+      name: homebrew-tap
+      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
+    homepage: https://github.com/whiteredhouse/agentiscaled
+    description: The agentiscale node. Joins your machine's agents to your private agentiscale network.
+    license: Apache-2.0
+    binaries: [agentiscaled]
+    commit_author:
+      name: agentiscale release
+      email: noreply@agentiscale.net
+    # Prereleases, and releases made before the tap token exists, leave the
+    # tap alone.
+    skip_upload: '{{ if envOrDefault "HOMEBREW_TAP_TOKEN" "" }}auto{{ else }}true{{ end }}'
+    hooks:
+      post:
+        # The binary is not notarized yet, so macOS would
+        # refuse to run a quarantined download.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/agentiscaled"]
+          end
+
+release:
+  prerelease: auto
+
+changelog:
+  use: github
