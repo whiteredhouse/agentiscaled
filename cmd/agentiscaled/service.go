@@ -36,8 +36,9 @@ type service interface {
 	stop() error
 	// remove stops the service and uninstalls it.
 	remove() error
-	// state says whether the service is installed and running.
-	state() string
+	// state says whether the service is installed and running, and
+	// running whether its process runs now.
+	state() (desc string, running bool)
 	// hint is advice to print after start, if any.
 	hint() string
 }
@@ -126,20 +127,20 @@ func (s *launchdService) remove() error {
 	return nil
 }
 
-func (s *launchdService) state() string {
+func (s *launchdService) state() (string, bool) {
 	if _, err := os.Stat(s.plistPath()); err != nil {
-		return "not installed"
+		return "not installed", false
 	}
 	out, err := commandRunner("launchctl", "print", s.target())
 	if err != nil {
-		return "installed, not loaded"
+		return "installed, not loaded", false
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "state = "); ok {
-			return "installed, " + v
+			return "installed, " + v, v == "running"
 		}
 	}
-	return "installed"
+	return "installed", false
 }
 
 func (s *launchdService) hint() string { return "" }
@@ -242,12 +243,13 @@ func (s *systemdService) remove() error {
 	return s.systemctl("daemon-reload")
 }
 
-func (s *systemdService) state() string {
+func (s *systemdService) state() (string, bool) {
 	if _, err := os.Stat(s.unitPath()); err != nil {
-		return "not installed"
+		return "not installed", false
 	}
 	out, _ := commandRunner("systemctl", "--user", "is-active", s.unit)
-	return "installed, " + strings.TrimSpace(string(out))
+	v := strings.TrimSpace(string(out))
+	return "installed, " + v, v == "active"
 }
 
 // hint tells the owner of a server how to keep the node running after they

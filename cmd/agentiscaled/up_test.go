@@ -262,8 +262,8 @@ func TestSystemdService(t *testing.T) {
 	if ran[0] != "systemctl --user disable --now "+svc.unit {
 		t.Errorf("remove ran %q", ran)
 	}
-	if svc.state() != "not installed" {
-		t.Errorf("state = %q", svc.state())
+	if state, running := svc.state(); state != "not installed" || running {
+		t.Errorf("state = %q, %v", state, running)
 	}
 }
 
@@ -315,6 +315,42 @@ func TestShellQuote(t *testing.T) {
 	} {
 		if got := shellQuote(in); got != want {
 			t.Errorf("shellQuote(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// status tells a node that is starting from one that is down by whether its
+// service runs, in each service manager's own words.
+func TestServiceStateSaysWhetherItRuns(t *testing.T) {
+	old := commandRunner
+	defer func() { commandRunner = old }()
+	home := t.TempDir()
+	launchd := &launchdService{label: "net.agentiscale.agentiscaled", home: home, uid: 501}
+	systemd := &systemdService{unit: "agentiscaled.service", home: home}
+	t.Setenv("XDG_CONFIG_HOME", "")
+	for _, path := range []string{launchd.plistPath(), systemd.unitPath()} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		svc     service
+		out     string
+		desc    string
+		running bool
+	}{
+		{launchd, "gui/501/net.agentiscale.agentiscaled = {\n\tstate = running\n\tpid = 824\n}", "installed, running", true},
+		{launchd, "gui/501/net.agentiscale.agentiscaled = {\n\tstate = not running\n}", "installed, not running", false},
+		{systemd, "active\n", "installed, active", true},
+		{systemd, "activating\n", "installed, activating", false},
+		{systemd, "failed\n", "installed, failed", false},
+	} {
+		commandRunner = func(string, ...string) ([]byte, error) { return []byte(c.out), nil }
+		if desc, running := c.svc.state(); desc != c.desc || running != c.running {
+			t.Errorf("%s with %q: %q, %v; want %q, %v", c.svc.name(), c.out, desc, running, c.desc, c.running)
 		}
 	}
 }

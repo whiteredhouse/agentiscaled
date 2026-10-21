@@ -407,8 +407,8 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 	}
 	serviceRuns := false
 	if svc := newService(dir); svc != nil {
-		state := svc.state()
-		serviceRuns = strings.HasSuffix(state, "running")
+		var state string
+		state, serviceRuns = svc.state()
 		fmt.Fprintf(out, "Service:  %s, %s\n", svc.name(), state)
 	}
 	switch err := nodeReady(ctx, dir); {
