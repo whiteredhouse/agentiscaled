@@ -405,24 +405,32 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 	if s.Agent != "" {
 		fmt.Fprintf(out, "Agent:    %s in %s\n", s.Agent, s.AgentDir)
 	}
+	serviceRuns := false
 	if svc := newService(dir); svc != nil {
-		fmt.Fprintf(out, "Service:  %s, %s\n", svc.name(), svc.state())
+		var state string
+		state, serviceRuns = svc.state()
+		fmt.Fprintf(out, "Service:  %s, %s\n", svc.name(), state)
 	}
 	switch err := nodeReady(ctx, dir); {
 	case err == nil:
 		fmt.Fprintln(out, "Mesh connection: connected")
+	case serviceRuns && errors.Is(err, errNodeNotRunning):
+		// The node opens its socket once it has reached its network.
+		fmt.Fprintf(out, "Mesh connection: node starting; see %s\n", filepath.Join(dir, logFile))
 	default:
 		fmt.Fprintf(out, "Mesh connection: %v\n", err)
 	}
 	return nil
 }
 
+var errNodeNotRunning = errors.New("node not running")
+
 // nodeReady asks the running node, over its Unix socket, whether it holds an
 // authenticated connection to its network's router.
 func nodeReady(ctx context.Context, dataDir string) error {
 	socket := filepath.Join(dataDir, meshnode.DefaultSocketName)
 	if _, err := os.Stat(socket); err != nil {
-		return errors.New("node not running")
+		return errNodeNotRunning
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -432,7 +440,7 @@ func nodeReady(ctx context.Context, dataDir string) error {
 	}
 	resp, err := socketClient(socket).Do(req)
 	if err != nil {
-		return errors.New("node not running")
+		return errNodeNotRunning
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

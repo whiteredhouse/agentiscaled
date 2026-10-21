@@ -95,8 +95,54 @@ func TestMCPBridgeReachesTheNodeOverItsSocket(t *testing.T) {
 }
 
 func TestMCPNeedsARunningNode(t *testing.T) {
+	defer func(w time.Duration) { nodeStartWait = w }(nodeStartWait)
+	nodeStartWait = 300 * time.Millisecond
 	if err := runMCP(context.Background(), []string{"-data-dir", t.TempDir()}); err == nil {
 		t.Fatal("no socket: want an error")
+	}
+}
+
+// At login the client may start before the node's background service has
+// opened its socket, and a socket file may be left from before a restart:
+// the wait ends only when the node accepts connections.
+func TestMCPWaitsForTheNodeToStart(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ais")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "s.sock")
+	stale, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.(*net.UnixListener).SetUnlinkOnClose(false)
+	stale.Close()
+	if _, err := os.Stat(socket); err != nil {
+		t.Fatalf("stale socket file: %v", err)
+	}
+
+	started := make(chan net.Listener, 1)
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		os.Remove(socket)
+		ln, _ := net.Listen("unix", socket)
+		started <- ln
+	}()
+	t.Cleanup(func() {
+		if ln := <-started; ln != nil {
+			ln.Close()
+		}
+	})
+	start := time.Now()
+	if err := waitForSocket(context.Background(), socket, 5*time.Second); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	if time.Since(start) < 400*time.Millisecond {
+		t.Fatal("a stale socket file counted as a running node")
+	}
+	if err := waitForSocket(context.Background(), filepath.Join(dir, "none.sock"), 300*time.Millisecond); err == nil {
+		t.Fatal("no node: want an error")
 	}
 }
 
