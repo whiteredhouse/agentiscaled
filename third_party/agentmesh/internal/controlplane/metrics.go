@@ -1,0 +1,482 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package controlplane
+
+import (
+	"context"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/storage"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+var (
+	httpRequestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "agentmesh_control_plane_http_requests_total",
+			Help: "Control-plane HTTP requests by registered route and status code",
+		},
+		[]string{"route", "code"},
+	)
+
+	httpRequestDurationSeconds = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "agentmesh_control_plane_http_request_duration_seconds",
+			Help:    "Time a control-plane request occupied its handler",
+			Buckets: []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+		},
+		[]string{"route"},
+	)
+
+	// workloadIssuerReady is 1 when the OpenID discovery document of a
+	// --workload-issuer has been resolved and tokens from it are accepted,
+	// 0 while the control plane is still trying and refuses them.
+	workloadIssuerReady = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "agentmesh_control_plane_workload_issuer_ready",
+			Help: "1 when the workload issuer's OpenID discovery has been resolved and its tokens are accepted, 0 while it is unreachable",
+		},
+		[]string{"issuer"},
+	)
+
+	// operatorSigningKeysGauge counts the signing keys the operator supplied
+	// through --signing-key-path, per algorithm; absent when the control
+	// plane generates and rotates its own.
+	operatorSigningKeysGauge = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "agentmesh_control_plane_operator_signing_keys",
+			Help: "Signing keys supplied by the operator (--signing-key-path) by algorithm; automatic rotation is off while any are present",
+		},
+		[]string{"algorithm"},
+	)
+
+	// operatorSigningKeysReloadErrors counts the times the key file changed
+	// but could not be read, parsed or installed; the keys in use stay.
+	operatorSigningKeysReloadErrors = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "agentmesh_control_plane_operator_signing_keys_reload_errors_total",
+			Help: "Times the operator signing key file could not be reloaded; the keys already in use were kept",
+		},
+	)
+
+	// memberAuthRefusalsTotal counts the member credentials presented on a
+	// mesh endpoint that the control plane did not accept, by reason. A
+	// request with no credential is not counted: on /oauth/token that is
+	// the anonymous flow, and elsewhere the 401 alone says what to send.
+	memberAuthRefusalsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "agentmesh_control_plane_member_auth_refusals_total",
+			Help: "Member credentials presented on mesh endpoints and refused, by reason (malformed, invalid_biscuit, unknown_node, banned, session_expired)",
+		},
+		[]string{"reason"},
+	)
+)
+
+// Member credential refusal reasons. unknown_node is the one an operator
+// acts on: the credential verifies under this control plane's keys, but
+// the store has no enrollment record for the node, so the store was reset
+// or the node was removed.
+const (
+	refusalMalformed      = "malformed"
+	refusalInvalidBiscuit = "invalid_biscuit"
+	refusalUnknownNode    = "unknown_node"
+	refusalBanned         = "banned"
+	refusalSessionExpired = "session_expired"
+)
+
+func init() {
+	for _, reason := range []string{refusalMalformed, refusalInvalidBiscuit, refusalUnknownNode, refusalBanned, refusalSessionExpired} {
+		memberAuthRefusalsTotal.WithLabelValues(reason)
+	}
+}
+
+// observeRoute counts and times requests to one registered mux pattern. The
+// pattern, not the request path, is the label: paths carry peer ids and token
+// ids chosen off-plane, so the raw path can never become a label.
+func observeRoute(pattern string, h http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusWriter{ResponseWriter: w}
+		h(rec, r)
+		httpRequestsTotal.WithLabelValues(pattern, strconv.Itoa(rec.status())).Inc()
+		httpRequestDurationSeconds.WithLabelValues(pattern).Observe(time.Since(start).Seconds())
+	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	code int
+}
+
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+func (s *statusWriter) status() int {
+	if s.code == 0 {
+		return http.StatusOK
+	}
+	return s.code
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	if s.code == 0 {
+		s.code = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+const (
+	// meshStateTTL bounds how often a scrape may hit the store. Router leases
+	// renew on the order of minutes, so anything fresher is noise.
+	meshStateTTL = 30 * time.Second
+	// meshStateTimeout caps one refresh so a slow store cannot hold a scrape
+	// past the scraper's own deadline.
+	meshStateTimeout = 5 * time.Second
+)
+
+// Bootstrap token states as reported by meshStateCollector.
+const (
+	tokenStateActive    = "active"
+	tokenStateRevoked   = "revoked"
+	tokenStateExpired   = "expired"
+	tokenStateExhausted = "exhausted"
+)
+
+// meshSnapshot is what one refresh of the store reduces to. Only counts and
+// per-router figures survive: a node's peer id is never a label.
+type meshSnapshot struct {
+	nodesByRoleState   map[[2]string]int
+	users              int
+	enrollmentRequests map[string]int
+	tokensByState      map[string]int
+	routers            []storage.RouterLease
+	meshConnectedPeers int
+	// signingKeys is how many keys verify a credential today: one, or two
+	// during the grace period after a rotation. retiringKeyExpiry is when
+	// the retiring one stops verifying; zero when there is none.
+	signingKeys       int
+	retiringKeyExpiry time.Time
+	// nextKeyRotation is when the store says the next rotation is due; a
+	// value in the past is a rotation no replica has performed.
+	nextKeyRotation time.Time
+	// storageRows is the row count of every table the control plane keeps
+	// bounded; a table that grows past its retention is a reaper that
+	// stopped working.
+	storageRows map[string]int64
+}
+
+// meshStateCollector exports the control plane's view of the mesh: who is
+// enrolled, which routers hold a lease and what they report attached to them.
+// The store is the source of truth shared by every replica, so each replica
+// exports the same figures and a dashboard may take any one of them.
+type meshStateCollector struct {
+	store   storage.Store
+	ttl     time.Duration
+	timeout time.Duration
+	now     func() time.Time
+
+	mu        sync.Mutex
+	fetchedAt time.Time
+	snapshot  meshSnapshot
+	ok        bool
+
+	nodesDesc        *prometheus.Desc
+	usersDesc        *prometheus.Desc
+	requestsDesc     *prometheus.Desc
+	tokensDesc       *prometheus.Desc
+	routersDesc      *prometheus.Desc
+	routerPeersDesc  *prometheus.Desc
+	routerDHTDesc    *prometheus.Desc
+	routerLeaseDesc  *prometheus.Desc
+	meshPeersDesc    *prometheus.Desc
+	signingKeysDesc  *prometheus.Desc
+	retiringKeyDesc  *prometheus.Desc
+	nextRotationDesc *prometheus.Desc
+	storageRowsDesc  *prometheus.Desc
+	scrapeOKDesc     *prometheus.Desc
+	scrapeSampleDesc *prometheus.Desc
+}
+
+func newMeshStateCollector(store storage.Store) *meshStateCollector {
+	return &meshStateCollector{
+		store:   store,
+		ttl:     meshStateTTL,
+		timeout: meshStateTimeout,
+		now:     time.Now,
+		nodesDesc: prometheus.NewDesc(
+			"agentmesh_control_plane_enrolled_nodes",
+			"Enrolled identities by role and admission state",
+			[]string{"role", "state"}, nil),
+		usersDesc: prometheus.NewDesc(
+			"agentmesh_control_plane_users",
+			"Human identities that have enrolled",
+			nil, nil),
+		requestsDesc: prometheus.NewDesc(
+			"agentmesh_control_plane_enrollment_requests",
+			"Enrollment requests by status",
+			[]string{"status"}, nil),
+		tokensDesc: prometheus.NewDesc(
+			"agentmesh_control_plane_bootstrap_tokens",
+			"Bootstrap tokens by state",
+			[]string{"state"}, nil),
+		routersDesc: prometheus.NewDesc(
+			"agentmesh_control_plane_routers_active",
+			"Routers holding an unexpired lease",
+			nil, nil),
+		routerPeersDesc: prometheus.NewDesc(
+			"agentmesh_control_plane_router_connected_peers",
+			"Peers a router reported connected on its last lease renewal",
+			[]string{"router"}, nil),
+		routerDHTDesc: prometheus.NewDesc(
+			"agentmesh_control_plane_router_dht_size",
+			"DHT routing table size a router reported on its last lease renewal",
+			[]string{"router"}, nil),
+		routerLeaseDesc: prometheus.NewDesc(
+			"agentmesh_control_plane_router_lease_renewed_timestamp_seconds",
+			"Unix time of a router's last lease renewal",
+			[]string{"router"}, nil),
+		meshPeersDesc: prometheus.NewDesc(
+			"agentmesh_control_plane_mesh_connected_peers",
+			"Distinct non-router peers connected to at least one active router",
+			nil, nil),
+		signingKeysDesc: prometheus.NewDesc(
+			"agentmesh_control_plane_signing_keys",
+			"Signing keys a credential verifies against: 1, or 2 during the grace period after a rotation",
+			nil, nil),
+		retiringKeyDesc: prometheus.NewDesc(
+			"agentmesh_control_plane_retiring_key_expiry_timestamp_seconds",
+			"Unix time the retiring signing key stops verifying; absent when no rotation is in its grace period",
+			nil, nil),
+		nextRotationDesc: prometheus.NewDesc(
+			"agentmesh_control_plane_next_key_rotation_timestamp_seconds",
+			"Unix time the next signing key rotation is due; in the past when it is overdue",
+			nil, nil),
+		storageRowsDesc: prometheus.NewDesc(
+			"agentmesh_control_plane_storage_rows",
+			"Rows in a control plane store table",
+			[]string{"table"}, nil),
+		scrapeOKDesc: prometheus.NewDesc(
+			"agentmesh_control_plane_mesh_state_scrape_success",
+			"1 if the mesh state was read from the store, 0 if the last read failed",
+			nil, nil),
+		scrapeSampleDesc: prometheus.NewDesc(
+			"agentmesh_control_plane_mesh_state_timestamp_seconds",
+			"Unix time the exported mesh state was read from the store",
+			nil, nil),
+	}
+}
+
+func (c *meshStateCollector) Describe(ch chan<- *prometheus.Desc) {
+	for _, d := range []*prometheus.Desc{
+		c.nodesDesc, c.usersDesc, c.requestsDesc, c.tokensDesc, c.routersDesc,
+		c.routerPeersDesc, c.routerDHTDesc, c.routerLeaseDesc, c.meshPeersDesc,
+		c.signingKeysDesc, c.retiringKeyDesc, c.nextRotationDesc, c.storageRowsDesc, c.scrapeOKDesc, c.scrapeSampleDesc,
+	} {
+		ch <- d
+	}
+}
+
+func (c *meshStateCollector) Collect(ch chan<- prometheus.Metric) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := c.now()
+	if now.Sub(c.fetchedAt) >= c.ttl {
+		c.refresh(now)
+	}
+
+	ok := 0.0
+	if c.ok {
+		ok = 1
+	}
+	ch <- prometheus.MustNewConstMetric(c.scrapeOKDesc, prometheus.GaugeValue, ok)
+	if c.fetchedAt.IsZero() {
+		return
+	}
+	ch <- prometheus.MustNewConstMetric(c.scrapeSampleDesc, prometheus.GaugeValue, float64(c.fetchedAt.Unix()))
+
+	s := c.snapshot
+	for k, n := range s.nodesByRoleState {
+		ch <- prometheus.MustNewConstMetric(c.nodesDesc, prometheus.GaugeValue, float64(n), k[0], k[1])
+	}
+	ch <- prometheus.MustNewConstMetric(c.usersDesc, prometheus.GaugeValue, float64(s.users))
+	for status, n := range s.enrollmentRequests {
+		ch <- prometheus.MustNewConstMetric(c.requestsDesc, prometheus.GaugeValue, float64(n), status)
+	}
+	for state, n := range s.tokensByState {
+		ch <- prometheus.MustNewConstMetric(c.tokensDesc, prometheus.GaugeValue, float64(n), state)
+	}
+	ch <- prometheus.MustNewConstMetric(c.routersDesc, prometheus.GaugeValue, float64(len(s.routers)))
+	for _, r := range s.routers {
+		ch <- prometheus.MustNewConstMetric(c.routerPeersDesc, prometheus.GaugeValue, float64(len(r.ConnectedPeers)), r.PeerID)
+		ch <- prometheus.MustNewConstMetric(c.routerDHTDesc, prometheus.GaugeValue, float64(r.DHTSize), r.PeerID)
+		ch <- prometheus.MustNewConstMetric(c.routerLeaseDesc, prometheus.GaugeValue, float64(r.LastRenewal.Unix()), r.PeerID)
+	}
+	ch <- prometheus.MustNewConstMetric(c.meshPeersDesc, prometheus.GaugeValue, float64(s.meshConnectedPeers))
+	ch <- prometheus.MustNewConstMetric(c.signingKeysDesc, prometheus.GaugeValue, float64(s.signingKeys))
+	if !s.retiringKeyExpiry.IsZero() {
+		ch <- prometheus.MustNewConstMetric(c.retiringKeyDesc, prometheus.GaugeValue, float64(s.retiringKeyExpiry.Unix()))
+	}
+	if !s.nextKeyRotation.IsZero() {
+		ch <- prometheus.MustNewConstMetric(c.nextRotationDesc, prometheus.GaugeValue, float64(s.nextKeyRotation.Unix()))
+	}
+	for table, n := range s.storageRows {
+		ch <- prometheus.MustNewConstMetric(c.storageRowsDesc, prometheus.GaugeValue, float64(n), table)
+	}
+}
+
+// refresh replaces the snapshot from the store. A failed read keeps the last
+// good snapshot and flips the success gauge, so a store outage is visible
+// without the figures vanishing.
+func (c *meshStateCollector) refresh(now time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
+	defer cancel()
+
+	snap, err := readMeshSnapshot(ctx, c.store, now)
+	if err != nil {
+		logger.Warnf("Mesh state metrics refresh failed: %v", err)
+		c.ok = false
+		return
+	}
+	c.snapshot = snap
+	c.fetchedAt = now
+	c.ok = true
+}
+
+func readMeshSnapshot(ctx context.Context, store storage.Store, now time.Time) (meshSnapshot, error) {
+	snap := meshSnapshot{
+		nodesByRoleState:   map[[2]string]int{},
+		enrollmentRequests: map[string]int{},
+		tokensByState:      map[string]int{},
+	}
+
+	// Liveness is agentmesh_control_plane_mesh_connected_peers, not the
+	// "admitted" state (see storage.NodeState).
+	counts, err := store.CountNodes(ctx, now)
+	if err != nil {
+		return snap, err
+	}
+	for _, c := range counts {
+		snap.nodesByRoleState[[2]string{c.Role, string(c.State)}] = c.Count
+	}
+
+	users, err := store.ListUsers(ctx)
+	if err != nil {
+		return snap, err
+	}
+	snap.users = len(users)
+
+	// A count, not a list: the table holds one row per enrollment within the
+	// retention, tens of thousands on a busy mesh, and this runs every 30s.
+	requests, err := store.CountEnrollmentRequests(ctx)
+	if err != nil {
+		return snap, err
+	}
+	for status, n := range requests {
+		snap.enrollmentRequests[enrollmentStatusLabel(status)] += int(n)
+	}
+
+	tokens, err := store.ListBootstrapTokens(ctx)
+	if err != nil {
+		return snap, err
+	}
+	for i := range tokens {
+		snap.tokensByState[tokenState(&tokens[i], now)]++
+	}
+
+	routers, err := store.GetActiveRouters(ctx)
+	if err != nil {
+		return snap, err
+	}
+	snap.routers = routers
+	snap.meshConnectedPeers = countMeshPeers(routers)
+
+	keys, err := store.GetAllValidKeys(ctx)
+	if err != nil {
+		return snap, err
+	}
+	snap.signingKeys = len(keys)
+	for _, k := range keys {
+		// The current key has no expiration; a retiring one expires at the end of its grace period.
+		if !k.Expiration.IsZero() && (snap.retiringKeyExpiry.IsZero() || k.Expiration.Before(snap.retiringKeyExpiry)) {
+			snap.retiringKeyExpiry = k.Expiration
+		}
+	}
+
+	snap.storageRows, err = store.CountRows(ctx)
+	if err != nil {
+		return snap, err
+	}
+	snap.nextKeyRotation, err = store.NextKeyRotation(ctx)
+	if err != nil {
+		return snap, err
+	}
+
+	return snap, nil
+}
+
+// enrollmentStatusLabel turns ENROLLMENT_STATUS_PENDING into "pending".
+func enrollmentStatusLabel(s api.EnrollmentStatus) string {
+	return strings.ToLower(strings.TrimPrefix(s.String(), "ENROLLMENT_STATUS_"))
+}
+
+func tokenState(t *storage.BootstrapToken, now time.Time) string {
+	switch {
+	case t.IsRevoked():
+		return tokenStateRevoked
+	case !t.ExpiresAt.IsZero() && now.After(t.ExpiresAt):
+		return tokenStateExpired
+	case t.UsagesCount >= t.MaxUsages:
+		return tokenStateExhausted
+	default:
+		return tokenStateActive
+	}
+}
+
+// countMeshPeers is the headline mesh size: every peer some active router has
+// attached, counted once, with the routers themselves left out since they
+// hold connections to each other.
+func countMeshPeers(routers []storage.RouterLease) int {
+	routerIDs := make(map[string]bool, len(routers))
+	for _, r := range routers {
+		routerIDs[r.PeerID] = true
+	}
+	seen := map[string]bool{}
+	for _, r := range routers {
+		for _, p := range r.ConnectedPeers {
+			if !routerIDs[p] {
+				seen[p] = true
+			}
+		}
+	}
+	return len(seen)
+}
+
+// metricsHandler serves the process-wide registry, which carries the request
+// counters above and the Go runtime, alongside this server's own mesh state.
+// The mesh collector is per server rather than global so two servers in one
+// process (tests, agentmesh-one) never fight over a registration.
+func (s *Server) metricsHandler() http.Handler {
+	return promhttp.HandlerFor(
+		prometheus.Gatherers{prometheus.DefaultGatherer, s.metricsRegistry},
+		promhttp.HandlerOpts{},
+	)
+}

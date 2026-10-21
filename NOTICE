@@ -1,0 +1,7 @@
+agentiscaled
+Copyright 2026 The agentiscale Authors
+
+This product includes software from Google Agent Mesh
+(https://github.com/google/agentmesh), Copyright 2026 Google LLC,
+licensed under the Apache License, Version 2.0. A modified copy is in
+third_party/agentmesh; third_party/agentmesh/AGENTISCALE.md lists the changes.
