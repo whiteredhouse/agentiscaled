@@ -45,17 +45,46 @@ func newCodexRuntime(command, dataDir string) (runtime, error) {
 		return nil, fmt.Errorf("%s --version: %w", path, err)
 	}
 	log.Printf("codex runtime uses %s", strings.TrimSpace(string(out)))
-	home, err := filepath.Abs(filepath.Join(dataDir, "codex"))
+	home, err := codexHome(dataDir)
 	if err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Join(home, "home"), 0o700); err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(filepath.Join(home, "auth.json")); err != nil {
+	if !codexSignedIn(dataDir) {
 		return nil, fmt.Errorf("the agent's Codex is not signed in. It signs in apart from your own Codex, so that a remote request cannot reach your Codex skills, plugins or settings: run\n  CODEX_HOME=%s %s login", home, path)
 	}
 	return &codexRuntime{command: path, installDir: codexInstallDir(path), home: home}, nil
+}
+
+// codexHome is the agent's own CODEX_HOME in the node's data directory.
+func codexHome(dataDir string) (string, error) {
+	return filepath.Abs(filepath.Join(dataDir, "codex"))
+}
+
+func codexSignedIn(dataDir string) bool {
+	home, err := codexHome(dataDir)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(home, "auth.json"))
+	return err == nil
+}
+
+// codexLogin is `codex login` for the agent's own CODEX_HOME, which it
+// creates first.
+func codexLogin(ctx context.Context, command, dataDir string) (*exec.Cmd, string) {
+	home, err := codexHome(dataDir)
+	if err == nil {
+		err = os.MkdirAll(home, 0o700)
+	}
+	if err != nil {
+		home = filepath.Join(dataDir, "codex")
+	}
+	cmd := exec.CommandContext(ctx, command, "login")
+	cmd.Env = append(os.Environ(), "CODEX_HOME="+home)
+	return cmd, "CODEX_HOME=" + shellQuote(home) + " " + shellQuote(command) + " login"
 }
 
 // codexInstallDir is the directory that holds the Codex executable at path

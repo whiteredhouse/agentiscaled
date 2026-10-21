@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -72,8 +73,13 @@ var runtimes = map[string]struct {
 	new            func(command, dataDir string) (runtime, error)
 	defaultName    string
 	defaultCommand string
+	// signedIn and login are for a runtime whose agent signs in on its
+	// own: whether it has, and the command that signs it in, with how to
+	// show that command.
+	signedIn func(dataDir string) bool
+	login    func(ctx context.Context, command, dataDir string) (*exec.Cmd, string)
 }{
-	"codex": {newCodexRuntime, "codex-review", "codex"},
+	"codex": {newCodexRuntime, "codex-review", "codex", codexSignedIn, codexLogin},
 }
 
 // agentService is the receiving side of a task: an A2A 1.0 agent that runs

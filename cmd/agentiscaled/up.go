@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -133,12 +134,19 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 	fs.StringVar(&auth.clientID, "auth-client-id", defaultAuth.clientID, "Auth0 application agentiscaled signs in with")
 	fs.StringVar(&auth.audience, "auth-audience", defaultAuth.audience, "Auth0 API the sign-in is for")
 	noService := fs.Bool("foreground", false, "Do not install a background service; join and exit, then run 'agentiscaled run' yourself")
+	assumeYes := fs.Bool("y", false, "Ask nothing; take every default, as when 'up' runs without a terminal")
 	clients := fs.String("clients", clientsAuto, "Agent clients to connect to this node: auto (every installed one, unless the node serves an agent), none, or a list of "+strings.Join(clientNames, ","))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	var ask *wizard
+	if !*assumeYes && interactive() {
+		ask = &wizard{in: bufio.NewReader(os.Stdin), out: out}
 	}
 	dataDir, err := filepath.Abs(c.dataDir)
 	if err != nil {
@@ -149,8 +157,6 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 	// unless told otherwise it listens on free ones and serves its API on its
 	// Unix socket only.
 	if c.dataDir != defaultDataDir() {
-		set := map[string]bool{}
-		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 		if !set["listen"] {
 			c.listen = "/ip4/0.0.0.0/udp/0/quic-v1,/ip4/0.0.0.0/tcp/0"
 		}
@@ -198,6 +204,22 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "This node is %s in network %s.\n", joined.peerID, joined.networkID)
 
+	// The questions come after the sign-in, which may take the owner to the
+	// browser, and before anything is started.
+	var offer *agentOffer
+	if ask != nil {
+		if !set["clients"] {
+			if *clients, err = ask.chooseClients(installedClients(), c.agent != ""); err != nil {
+				return err
+			}
+		}
+		if c.agent == "" && !set["agent"] {
+			if offer, err = ask.offerAgent(); err != nil {
+				return err
+			}
+		}
+	}
+
 	exe, err := stableExecutable()
 	if err != nil {
 		return err
@@ -210,7 +232,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		}
 		fmt.Fprintf(out, "  %s run -data-dir %s\n", shellQuote(exe), shellQuote(c.dataDir))
 		nextSteps(ctx, out, *clients, c, exe)
-		return nil
+		return setUpOffer(ctx, ask, exe, offer)
 	}
 	if err := svc.start(serviceSpec{exe: exe, dataDir: c.dataDir, path: s.Path}); err != nil {
 		return fmt.Errorf("start the background service: %w\nThe node has joined; run it yourself with:\n  %s run -data-dir %s", err, shellQuote(exe), shellQuote(c.dataDir))
@@ -225,7 +247,14 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		fmt.Fprintln(out, "Connected to the mesh.")
 	}
 	nextSteps(ctx, out, *clients, c, exe)
-	return nil
+	return setUpOffer(ctx, ask, exe, offer)
+}
+
+func setUpOffer(ctx context.Context, ask *wizard, exe string, offer *agentOffer) error {
+	if offer == nil {
+		return nil
+	}
+	return ask.setUpAgent(ctx, exe, offer)
 }
 
 // nextSteps connects the chosen agent clients to the node, or prints how to.
