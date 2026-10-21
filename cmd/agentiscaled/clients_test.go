@@ -22,7 +22,7 @@ func withDefaultDataDir(t *testing.T) string {
 func TestClientEntryName(t *testing.T) {
 	def := withDefaultDataDir(t)
 	for dir, want := range map[string]string{
-		def:                                  "agentiscale",
+		def:                                   "agentiscale",
 		"/Users/a/Library/agentiscale-review": "agentiscale-review",
 		"/Users/a/agentiscale-trial":          "agentiscale-trial",
 		"/srv/My Node":                        "agentiscale-my-node",
@@ -267,7 +267,7 @@ func TestCodexAddsOnlyAMissingEntry(t *testing.T) {
 
 	for list, want := range map[string]string{
 		`[{"name":"agentiscale","transport":{"type":"stdio","command":"/x/agentiscaled","args":["mcp","-data-dir","/srv/b"]}}]`: `has another server named "agentiscale"`,
-		`[{"name":"mesh","transport":{"type":"stdio","command":"/x/agentiscaled","args":["mcp"]}}]`:                              `already connected to this node as "mesh"`,
+		`[{"name":"mesh","transport":{"type":"stdio","command":"/x/agentiscaled","args":["mcp"]}}]`:                             `already connected to this node as "mesh"`,
 		`not json`: "could not read its configuration",
 	} {
 		c, log := fakeCodex(t, list)
