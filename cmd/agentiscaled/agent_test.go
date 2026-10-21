@@ -409,7 +409,7 @@ func TestCodexRuntimeIsReadOnlyAndUnconfigured(t *testing.T) {
 		" project_doc_max_bytes=0 ", ` shell_environment_policy.inherit="core" `,
 		" skills.include_instructions=false ", " skills.bundled.enabled=false ", ` skills.config=[{path="` + skill + `", enabled=false}`,
 		` default_permissions="agentiscale-review" `,
-		` permissions.agentiscale-review={extends=":read-only", filesystem={":root"="deny", ":minimal"="read", ":workspace_roots"="read"}} `,
+		` permissions.agentiscale-review={extends=":read-only", filesystem={":root"="deny", ":minimal"="read", ":workspace_roots"="read", "` + filepath.Join(dir, "agent-codex") + `"="deny"}} `,
 		" -C " + dir + " "} {
 		if !strings.Contains(args, want) {
 			t.Errorf("codex arguments %q lack %q", args, want)
@@ -469,5 +469,99 @@ func TestFailureLinesKeepTheError(t *testing.T) {
 	}
 	if got := failureLines("a\nb\nc\nd\n", 3); got != "b | c | d" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// The Codex install a run may read never widens to the home directory or a
+// shared prefix, where remotely prompted commands could read credentials.
+func TestCodexInstallDirStaysNarrow(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	exe := func(parts ...string) string {
+		p := filepath.Join(append([]string{home}, parts...)...)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	real := func(p string) string { r, _ := filepath.EvalSymlinks(p); return r }
+	for _, tc := range []struct{ path, want string }{
+		// A binary in ~/bin: the bin directory, not the home it sits in.
+		{exe("bin", "codex"), filepath.Join(home, "bin")},
+		// A binary directly in the home directory: nothing.
+		{exe("codex"), ""},
+		// A release directory: that release.
+		{exe(".codex", "packages", "standalone", "releases", "1.0", "codex"), filepath.Join(home, ".codex", "packages", "standalone", "releases", "1.0")},
+		// A release with its own bin: the release.
+		{exe("opt", "codex-1.0", "bin", "codex"), filepath.Join(home, "opt", "codex-1.0")},
+		// npm: the node_modules directory with the native package.
+		{exe(".npm-global", "lib", "node_modules", "@openai", "codex", "bin", "codex.js"), filepath.Join(home, ".npm-global", "lib", "node_modules")},
+	} {
+		want := tc.want
+		if want != "" {
+			want = real(want)
+		}
+		if got := codexInstallDir(tc.path); got != want {
+			t.Errorf("codexInstallDir(%s) = %q, want %q", tc.path, got, want)
+		}
+	}
+	for _, dir := range []string{"/", "/usr", "/usr/local", "/opt/homebrew", "/home", home, filepath.Dir(home)} {
+		if !tooBroad(dir) {
+			t.Errorf("tooBroad(%s) = false", dir)
+		}
+	}
+}
+
+// The agent directory and the node's data directory must not overlap: the
+// agent's commands read the agent directory, and the data directory holds the
+// node's key and the agent's sign-in.
+func TestAgentDirKeepsApartFromTheDataDir(t *testing.T) {
+	repo := t.TempDir()
+	other := t.TempDir()
+	link := filepath.Join(other, "repo-link")
+	if err := os.Symlink(repo, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		agentDir, dataDir string
+		ok                bool
+	}{
+		{repo, other, true},
+		{repo, filepath.Join(repo, ".agentiscale"), false},
+		{repo, repo, false},
+		{filepath.Join(other, "data", "src"), filepath.Join(other, "data"), false},
+		{link, filepath.Join(repo, "state"), false},
+		{repo, filepath.Join(other, "repo-sibling"), true},
+	} {
+		if err := agentDirApart(tc.agentDir, tc.dataDir); (err == nil) != tc.ok {
+			t.Errorf("agentDirApart(%s, %s) = %v, want ok %v", tc.agentDir, tc.dataDir, err, tc.ok)
+		}
+	}
+}
+
+// A generated API token is readable by its owner only, even when an empty
+// token file with looser permissions was there before.
+func TestGeneratedAPITokenIsPrivate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api-token")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	token, err := apiTokenFor(config{dataDir: dir})
+	if err != nil || token == "" {
+		t.Fatalf("apiTokenFor: %q, %v", token, err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("api-token mode %v, want 0600", fi.Mode().Perm())
+	}
+	if again, _ := apiTokenFor(config{dataDir: dir}); again != token {
+		t.Errorf("second start: token %q, want %q", again, token)
 	}
 }

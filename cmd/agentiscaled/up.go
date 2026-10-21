@@ -246,6 +246,9 @@ func checkAgent(c *config) error {
 		return fmt.Errorf("-agent-dir %s is not a directory", dir)
 	}
 	c.agentDir = dir
+	if err := agentDirApart(dir, c.dataDir); err != nil {
+		return err
+	}
 	command := c.agentCommand
 	if command == "" {
 		command = spec.defaultCommand

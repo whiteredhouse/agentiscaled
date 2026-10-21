@@ -145,6 +145,42 @@ func defaultMachineName() string {
 	return strings.TrimSuffix(name, ".local")
 }
 
+// agentDirApart refuses an agent directory that contains the node's data
+// directory or lies inside it. The agent's commands may read the whole agent
+// directory, and the data directory holds the node's key, its API token and
+// the agent's own sign-in.
+func agentDirApart(agentDir, dataDir string) error {
+	a, d := realAbs(agentDir), realAbs(dataDir)
+	if within(d, a) || within(a, d) {
+		return fmt.Errorf("-agent-dir %s and -data-dir %s overlap: the agent could read the node's key and the agent's sign-in. Keep the data directory outside the agent directory", agentDir, dataDir)
+	}
+	return nil
+}
+
+// realAbs is path made absolute with symlinks resolved, as far as it exists.
+func realAbs(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	missing := ""
+	for p := abs; ; p = filepath.Dir(p) {
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Join(real, missing)
+		}
+		if filepath.Dir(p) == p {
+			return abs
+		}
+		missing = filepath.Join(filepath.Base(p), missing)
+	}
+}
+
+// within says whether path is dir or inside it.
+func within(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // newAgent checks the agent's configuration before the node starts: a
 // callable service needs a runtime that can run.
 func newAgent(c *config) (*agentService, error) {
@@ -161,6 +197,9 @@ func newAgent(c *config) (*agentService, error) {
 	}
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return nil, fmt.Errorf("-agent-dir %s is not a directory", dir)
+	}
+	if err := agentDirApart(dir, c.dataDir); err != nil {
+		return nil, err
 	}
 	rt, err := spec.new(c.agentCommand, c.dataDir)
 	if err != nil {
@@ -487,7 +526,21 @@ func apiTokenFor(c config) (string, error) {
 		return "", err
 	}
 	token := hex.EncodeToString(b)
-	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+	// A new file replaces whatever is there, so the token never inherits
+	// looser permissions from an existing empty file.
+	tmp, err := os.CreateTemp(c.dataDir, ".api-token-*")
+	if err != nil {
+		return "", fmt.Errorf("write API token: %w", err)
+	}
+	_, err = tmp.WriteString(token + "\n")
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		os.Remove(tmp.Name())
 		return "", fmt.Errorf("write API token: %w", err)
 	}
 	log.Printf("generated the node API token in %s", path)

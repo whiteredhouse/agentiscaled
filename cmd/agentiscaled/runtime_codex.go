@@ -60,16 +60,57 @@ func newCodexRuntime(command, dataDir string) (runtime, error) {
 
 // codexInstallDir is the directory that holds the Codex executable at path
 // and what it needs: the node_modules directory of an npm install, whose
-// wrapper starts a binary from a sibling package, or else the parent of the
-// executable's directory.
+// wrapper starts a binary from a sibling package; for an executable in a
+// bin directory, the install that bin belongs to; or else the executable's
+// own directory. It never names the home directory, an ancestor of it or a
+// shared prefix such as /usr/local, where a remotely prompted command could
+// read far more than Codex: then it names only the executable's directory,
+// or nothing if that is one of them too.
 func codexInstallDir(path string) string {
 	if real, err := filepath.EvalSymlinks(path); err == nil {
 		path = real
 	}
 	if i := strings.LastIndex(path, string(filepath.Separator)+"node_modules"+string(filepath.Separator)); i >= 0 {
-		return path[:i+len("/node_modules")]
+		if dir := path[:i+len("/node_modules")]; !tooBroad(dir) {
+			return dir
+		}
 	}
-	return filepath.Dir(filepath.Dir(path))
+	dir := filepath.Dir(path)
+	if filepath.Base(dir) == "bin" && !tooBroad(filepath.Dir(dir)) {
+		return filepath.Dir(dir)
+	}
+	if tooBroad(dir) {
+		return ""
+	}
+	return dir
+}
+
+// sharedPrefixes hold many packages besides Codex.
+var sharedPrefixes = []string{"/usr", "/usr/local", "/opt", "/opt/homebrew", "/opt/local", "/home/linuxbrew/.linuxbrew", "/snap"}
+
+// tooBroad says whether granting reads on dir would reach beyond a Codex
+// install: the root, the user's home or an ancestor of it, a top-level
+// directory, or a shared prefix.
+func tooBroad(dir string) bool {
+	dir = filepath.Clean(dir)
+	if dir == "/" || filepath.Dir(dir) == "/" {
+		return true
+	}
+	for _, p := range sharedPrefixes {
+		if dir == p {
+			return true
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		home = filepath.Clean(home)
+		if real, err := filepath.EvalSymlinks(home); err == nil {
+			home = real
+		}
+		if dir == home || strings.HasPrefix(home, dir+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *codexRuntime) Describe(card *a2a.AgentCard) {
@@ -258,6 +299,12 @@ func (r *codexRuntime) permissions() string {
 	fs := `":root"="deny", ":minimal"="read", ":workspace_roots"="read"`
 	if r.installDir != "" {
 		fs += ", " + tomlString(r.installDir) + `="read"`
+	}
+	// The agent's sign-in stays out of reach even if a granted directory
+	// contains it; the node also refuses an agent directory that overlaps
+	// its data directory (agentDirApart).
+	if r.home != "" {
+		fs += ", " + tomlString(r.home) + `="deny"`
 	}
 	return `{extends=":read-only", filesystem={` + fs + `}}`
 }
