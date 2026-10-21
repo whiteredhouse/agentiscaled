@@ -51,7 +51,7 @@ homebrew_casks:
     repository:
       owner: whiteredhouse
       name: homebrew-tap
-      token: '{{ index .Env "HOMEBREW_TAP_TOKEN" }}'
+      token: '{{ .Env.HOMEBREW_TAP_TOKEN }}'
     homepage: https://github.com/whiteredhouse/agentiscaled
     description: The agentiscale node. Joins your machine's agents to your private agentiscale network.
     license: Apache-2.0
