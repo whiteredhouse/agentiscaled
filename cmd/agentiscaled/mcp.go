@@ -8,9 +8,9 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	meshnode "github.com/google/agentmesh/export/node"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -29,10 +29,36 @@ func runMCP(ctx context.Context, args []string) error {
 		return err
 	}
 	socket := filepath.Join(*dataDir, meshnode.DefaultSocketName)
-	if _, err := os.Stat(socket); err != nil {
+	if err := waitForSocket(ctx, socket, nodeStartWait); err != nil {
 		return fmt.Errorf("no running agentiscaled at %s: start it first (%w)", socket, err)
 	}
 	return bridgeMCP(ctx, &mcp.StdioTransport{}, socket)
+}
+
+// nodeStartWait is how long `agentiscaled mcp` waits for the node. At login
+// the client and the node's background service start together, and the node
+// opens its socket only once it has reached its network.
+var nodeStartWait = 45 * time.Second
+
+// waitForSocket waits until the node accepts connections on its socket, or
+// the wait is over. A socket file left from before a restart does not count.
+func waitForSocket(ctx context.Context, socket string, wait time.Duration) error {
+	deadline := time.Now().Add(wait)
+	for {
+		var d net.Dialer
+		conn, err := d.DialContext(ctx, "unix", socket)
+		if err == nil {
+			return conn.Close()
+		}
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 }
 
 // nodeA2AGuide starts the paragraph of the node's instructions that sends
