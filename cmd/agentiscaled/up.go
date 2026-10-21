@@ -133,6 +133,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 	fs.StringVar(&auth.clientID, "auth-client-id", defaultAuth.clientID, "Auth0 application agentiscaled signs in with")
 	fs.StringVar(&auth.audience, "auth-audience", defaultAuth.audience, "Auth0 API the sign-in is for")
 	noService := fs.Bool("foreground", false, "Do not install a background service; join and exit, then run 'agentiscaled run' yourself")
+	clients := fs.String("clients", clientsAuto, "Agent clients to connect to this node: auto (every installed one, unless the node serves an agent), none, or a list of "+strings.Join(clientNames, ","))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -158,6 +159,9 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		}
 	}
 	if err := checkAgent(&c); err != nil {
+		return err
+	}
+	if err := checkClients(*clients); err != nil {
 		return err
 	}
 
@@ -205,7 +209,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 			fmt.Fprintln(out, "Run the node with:")
 		}
 		fmt.Fprintf(out, "  %s run -data-dir %s\n", shellQuote(exe), shellQuote(c.dataDir))
-		printNextSteps(out, exe, c.dataDir)
+		nextSteps(ctx, out, *clients, c, exe)
 		return nil
 	}
 	if err := svc.start(serviceSpec{exe: exe, dataDir: c.dataDir, path: s.Path}); err != nil {
@@ -220,8 +224,20 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 	} else {
 		fmt.Fprintln(out, "Connected to the mesh.")
 	}
-	printNextSteps(out, exe, c.dataDir)
+	nextSteps(ctx, out, *clients, c, exe)
 	return nil
+}
+
+// nextSteps connects the chosen agent clients to the node, or prints how to.
+func nextSteps(ctx context.Context, out io.Writer, clients string, c config, exe string) {
+	switch {
+	case clients == "none":
+		printNextSteps(out, exe, c.dataDir)
+	case clients == clientsAuto && c.agent != "":
+		fmt.Fprintf(out, "This node serves the %s agent, so no agent client was connected to it; '-clients %s' connects them too.\n", c.agent, strings.Join(clientNames, ","))
+	default:
+		connectClients(ctx, out, selectClients(clients, c.agent != ""), exe, c.dataDir)
+	}
 }
 
 // checkAgent checks an agent's settings before anything is enrolled or
@@ -467,27 +483,8 @@ func waitReady(ctx context.Context, dataDir string, wait time.Duration) error {
 // printNextSteps tells the owner how to connect their agent clients to this
 // node (docs/connect-agents.md).
 func printNextSteps(out io.Writer, exe, dataDir string) {
-	args := []string{"mcp"}
-	if dataDir != defaultDataDir() {
-		args = append(args, "-data-dir", dataDir)
-	}
-	cfg, _ := json.MarshalIndent(map[string]any{
-		"mcpServers": map[string]any{"agentiscale": map[string]any{"command": exe, "args": args}},
-	}, "", "  ")
-	quoted := make([]string, len(args))
-	for i, a := range args {
-		quoted[i] = shellQuote(a)
-	}
-	fmt.Fprintf(out, `
-Connect your agents to this node:
-
-  Codex CLI:
-    codex mcp add agentiscale -- %s %s
-
-  Claude Desktop: Settings > Developer > Edit Config, add to claude_desktop_config.json,
-  then restart Claude Desktop:
-%s
-`, shellQuote(exe), strings.Join(quoted, " "), indent(string(cfg), "    "))
+	name, e := clientEntryName(dataDir), mcpEntryFor(exe, dataDir)
+	fmt.Fprintf(out, "\nConnect your agents to this node:\n\n  Codex CLI:\n%s\n  Claude Desktop:\n%s", newCodexClient().step(name, e), newClaudeDesktop().step(name, e))
 }
 
 func indent(s, prefix string) string {

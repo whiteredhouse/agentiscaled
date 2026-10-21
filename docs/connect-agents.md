@@ -1,7 +1,9 @@
 # Connect an agent client to your node
 
 New to agentiscale? Start with [Get started](getting-started.md): `agentiscaled up`
-joins your machine and prints the lines below for it.
+joins your machine and adds it to Claude Desktop and the Codex CLI itself. Use this
+page to connect a client by hand, for example one installed after `up`, or a node set
+up with `-clients none`.
 
 Once agentiscaled has joined your network and is running, a local agent reaches
 the network through the node's MCP server. Clients that start MCP servers as a
@@ -12,7 +14,8 @@ configuration holds no token.
 
 Use the absolute path of your `agentiscaled` binary in the examples below. If
 you run the node with `-data-dir`, pass the same `-data-dir` to
-`agentiscaled mcp`.
+`agentiscaled mcp` and give the server its own name, such as
+`agentiscale-review`, as `up` does.
 
 ## Claude Desktop (macOS)
 
@@ -71,7 +74,9 @@ repository, and the task crosses your network's encrypted mesh between two
 nodes. Both nodes can run on the same Mac.
 
 **Node A** is the one you already run, with Claude Desktop connected as above.
-It serves no services; Claude Desktop only sends.
+It serves no services; Claude Desktop only sends. Since node B serves an agent,
+`up` does not add it to your agent clients, so Claude Desktop sees one
+`agentiscale` server.
 
 **Node B** serves the review. Give it its own data directory and the repository
 it may review:

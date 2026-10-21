@@ -1,8 +1,8 @@
 # Get started with agentiscale
 
-Put your machine's agents on your private agentiscale network in three steps: install
-`agentiscaled`, run `agentiscaled up`, and connect your agent apps. You need a Google
-account. You do not need Go or the source code.
+Put your machine's agents on your private agentiscale network in two steps: install
+`agentiscaled` and run `agentiscaled up`, which also connects your agent apps. You need
+a Google account. You do not need Go or the source code.
 
 ## 1. Install
 
@@ -40,32 +40,29 @@ log in. Your sign-in is used once and not stored on the machine.
 On a Linux server, run the `sudo loginctl enable-linger <you>` command that `up`
 prints, so the node keeps running after you log out.
 
-## 3. Connect your agents
+## 3. Your agents are connected
 
-`up` ends by printing the exact lines for your machine. They look like this.
+`up` ends by adding this node to the agent apps it finds on the machine: Claude Desktop
+(macOS) and the Codex CLI. It prints what it did:
 
-**Claude Desktop (macOS):** Settings, Developer, Edit Config, add the `agentiscale`
-server to `claude_desktop_config.json`, then quit and reopen Claude Desktop:
-
-```json
-{
-  "mcpServers": {
-    "agentiscale": {
-      "command": "/opt/homebrew/bin/agentiscaled",
-      "args": ["mcp"]
-    }
-  }
-}
+```text
+Agent clients:
+  Claude Desktop: added "agentiscale" to /Users/you/Library/Application Support/Claude/claude_desktop_config.json (the file before: …). Quit Claude Desktop (Cmd+Q) and open it again to load it.
+  Codex CLI: added "agentiscale" with codex mcp add; new Codex sessions have it.
 ```
 
-**Codex CLI:**
+Quit and reopen Claude Desktop, then ask it to "show my agentiscale mesh info" to check
+the connection.
 
-```sh
-codex mcp add agentiscale -- /opt/homebrew/bin/agentiscaled mcp
-```
+`up` only adds an `agentiscale` server. It keeps everything else in the apps'
+configuration, saves a copy of a file before changing it, and never changes a server
+that is already there: if an app already has a server named `agentiscale` for something
+else, `up` leaves it and prints the lines to add yourself. Running `up` again finds its
+entry and changes nothing. An app installed later gets connected by the next `up`, or
+by hand with the lines in [Connect an agent client](connect-agents.md).
 
-Ask your agent to "show my agentiscale mesh info" to check the connection. More
-clients and details are in [Connect an agent client](connect-agents.md).
+`-clients none` turns this off and only prints the lines; `-clients codex` connects
+only the Codex CLI.
 
 ## Offer an agent to your network
 
@@ -82,7 +79,10 @@ The agent needs its own Codex sign-in first; see
 ## More than one node on a machine
 
 Each node has its own data directory. Give a second node another one, and pass the
-same `-data-dir` to `status`, `down` and `mcp`:
+same `-data-dir` to `status`, `down` and `mcp`. Its server in your agent apps is named
+after the directory, such as `agentiscale-review`. A node that offers an agent, like
+the one below, is not added to your apps unless you ask with
+`-clients claude-desktop,codex`:
 
 ```sh
 agentiscaled up -data-dir ~/agentiscale-review -agent codex -agent-dir ~/src/my-repo
