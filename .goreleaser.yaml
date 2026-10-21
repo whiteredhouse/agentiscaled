@@ -51,7 +51,7 @@ homebrew_casks:
     repository:
       owner: whiteredhouse
       name: homebrew-tap
-      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
+      token: '{{ index .Env "HOMEBREW_TAP_TOKEN" }}'
     homepage: https://github.com/whiteredhouse/agentiscaled
     description: The agentiscale node. Joins your machine's agents to your private agentiscale network.
     license: Apache-2.0
@@ -61,7 +61,7 @@ homebrew_casks:
       email: noreply@agentiscale.net
     # Prereleases, and releases made before the tap token exists, leave the
     # tap alone.
-    skip_upload: '{{ if envOrDefault "HOMEBREW_TAP_TOKEN" "" }}auto{{ else }}true{{ end }}'
+    skip_upload: '{{ if index .Env "HOMEBREW_TAP_TOKEN" }}auto{{ else }}true{{ end }}'
     hooks:
       post:
         # The binary is not notarized yet, so macOS would
