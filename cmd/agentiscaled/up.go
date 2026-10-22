@@ -38,10 +38,13 @@ type settings struct {
 	AgentCommand string `json:"agent_command,omitempty"`
 	AgentName    string `json:"agent_name,omitempty"`
 	// What the agent may not take from AgentDir; it takes all when absent.
-	AgentIgnoreDirInstructions bool   `json:"agent_ignore_dir_instructions,omitempty"`
-	AgentIgnoreDirSkills       bool   `json:"agent_ignore_dir_skills,omitempty"`
-	AgentOwnConfig             bool   `json:"agent_own_config,omitempty"`
-	MachineName                string `json:"machine_name,omitempty"`
+	AgentIgnoreDirInstructions bool `json:"agent_ignore_dir_instructions,omitempty"`
+	AgentIgnoreDirSkills       bool `json:"agent_ignore_dir_skills,omitempty"`
+	AgentOwnConfig             bool `json:"agent_own_config,omitempty"`
+	// AgentEnv locates the owner's configuration of the agent's runtime,
+	// such as CODEX_HOME, as `up` found it (agentOwnerEnv).
+	AgentEnv    []string `json:"agent_env,omitempty"`
+	MachineName string   `json:"machine_name,omitempty"`
 	// PATH for the service, captured at `up`, since launchd and systemd
 	// start services with a minimal one and an agent CLI may need more.
 	Path string `json:"path,omitempty"`
@@ -91,6 +94,7 @@ func (s settings) config(dataDir string) config {
 		agentName:    s.AgentName,
 		agentPolicy:  agentPolicy{DirInstructions: !s.AgentIgnoreDirInstructions, DirSkills: !s.AgentIgnoreDirSkills, OwnerConfig: !s.AgentOwnConfig},
 		machineName:  s.MachineName,
+		agentEnv:     s.AgentEnv,
 	}
 }
 
@@ -203,6 +207,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		AgentIgnoreDirInstructions: !c.agentPolicy.DirInstructions,
 		AgentIgnoreDirSkills:       !c.agentPolicy.DirSkills,
 		AgentOwnConfig:             !c.agentPolicy.OwnerConfig,
+		AgentEnv:                   agentOwnerEnv(c.agent, c.agentPolicy),
 		Path:                       os.Getenv("PATH"),
 		PeerID:                     joined.peerID,
 		NetworkID:                  joined.networkID,

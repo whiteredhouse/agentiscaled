@@ -50,7 +50,10 @@ type config struct {
 	agentCommand       string
 	agentName          string
 	agentPolicy        agentPolicy
-	machineName        string
+	// agentEnv is set in the node's environment before the agent's
+	// runtime starts (agentOwnerEnv).
+	agentEnv    []string
+	machineName string
 
 	// signInToken is the owner's Auth0 access token during `agentiscaled up`.
 	// It lives in memory for enrollment only and is never stored.
@@ -204,6 +207,12 @@ func newAgent(c *config) (*agentService, error) {
 	}
 	if err := agentDirApart(dir, c.dataDir); err != nil {
 		return nil, err
+	}
+	for _, kv := range c.agentEnv {
+		name, value, _ := strings.Cut(kv, "=")
+		if err := os.Setenv(name, value); err != nil {
+			return nil, err
+		}
 	}
 	rt, err := spec.new(c.agentCommand, c.dataDir, c.agentPolicy)
 	if err != nil {

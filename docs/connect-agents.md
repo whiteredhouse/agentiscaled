@@ -104,7 +104,8 @@ codex exec --ephemeral -c approval_policy="never" \
 ```
 
 with the request on standard input, framed as untrusted text. Codex runs as yours
-does, with your `CODEX_HOME`: your sign-in, skills, plugins, settings and MCP
+does, with your `CODEX_HOME` (`~/.codex`, or the `CODEX_HOME` set when you ran `up`,
+which `up` keeps for node B's service): your sign-in, skills, plugins, settings and MCP
 servers, agentiscale included if you connected Codex, so the review can call your
 network's other agents. With `-agent-owner-config=false` it instead runs with its own
 `CODEX_HOME` and `HOME` (`<data-dir>/codex`) and `--ignore-user-config`, and signs in

@@ -466,6 +466,22 @@ func TestCodexRuntimePolicyLoadsTheCheckoutsGuidance(t *testing.T) {
 	}
 }
 
+// `up` keeps CODEX_HOME for the service only when the agent uses the
+// owner's configuration and it is set.
+func TestAgentOwnerEnv(t *testing.T) {
+	t.Setenv("CODEX_HOME", "/Users/owner/codex")
+	if got := agentOwnerEnv("codex", agentPolicy{OwnerConfig: true}); len(got) != 1 || got[0] != "CODEX_HOME=/Users/owner/codex" {
+		t.Errorf("owner config: %q", got)
+	}
+	if got := agentOwnerEnv("codex", agentPolicy{}); got != nil {
+		t.Errorf("own config: %q", got)
+	}
+	t.Setenv("CODEX_HOME", "")
+	if got := agentOwnerEnv("codex", agentPolicy{OwnerConfig: true}); got != nil {
+		t.Errorf("unset: %q", got)
+	}
+}
+
 func get(t *testing.T, url, token string) int {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodGet, url, nil)

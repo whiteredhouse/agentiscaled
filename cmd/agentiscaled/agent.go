@@ -95,8 +95,28 @@ var runtimes = map[string]struct {
 	// show that command.
 	signedIn func(dataDir string, policy agentPolicy) bool
 	login    func(ctx context.Context, command, dataDir string, policy agentPolicy) (*exec.Cmd, string)
+	// ownerEnv names the variables that locate the owner's configuration
+	// of the runtime. `up` keeps their values for the background service,
+	// which starts without the owner's shell, so that with
+	// agentPolicy.OwnerConfig the agent finds the same configuration.
+	ownerEnv []string
 }{
-	"codex": {newCodexRuntime, "codex-review", "codex", codexSignedIn, codexLogin},
+	"codex": {newCodexRuntime, "codex-review", "codex", codexSignedIn, codexLogin, []string{"CODEX_HOME"}},
+}
+
+// agentOwnerEnv is what `up` keeps of the runtime's ownerEnv: each variable
+// set in its environment, as NAME=value.
+func agentOwnerEnv(agent string, policy agentPolicy) []string {
+	if !policy.OwnerConfig {
+		return nil
+	}
+	var env []string
+	for _, name := range runtimes[agent].ownerEnv {
+		if v := os.Getenv(name); v != "" {
+			env = append(env, name+"="+v)
+		}
+	}
+	return env
 }
 
 // agentService is the receiving side of a task: an A2A 1.0 agent that runs
