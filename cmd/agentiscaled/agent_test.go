@@ -408,8 +408,8 @@ func TestCodexRuntimeIsReadOnlyAndUnconfigured(t *testing.T) {
 		// commands, and reads confined to dir.
 		" project_doc_max_bytes=0 ", ` shell_environment_policy.inherit="core" `,
 		" skills.include_instructions=false ", " skills.bundled.enabled=false ", ` skills.config=[{path="` + skill + `", enabled=false}`,
-		` default_permissions="agentiscale-review" `,
-		` permissions.agentiscale-review={extends=":read-only", filesystem={":root"="deny", ":minimal"="read", ":workspace_roots"="read", "` + filepath.Join(dir, "agent-codex") + `"="deny"}} `,
+		` default_permissions="agentiscale-read-only" `,
+		` permissions.agentiscale-read-only={extends=":read-only", filesystem={":root"="deny", ":minimal"="read", ":workspace_roots"="read", "` + filepath.Join(dir, "agent-codex") + `"="deny"}} `,
 		" -C " + dir + " "} {
 		if !strings.Contains(args, want) {
 			t.Errorf("codex arguments %q lack %q", args, want)
@@ -422,7 +422,7 @@ func TestCodexRuntimeIsReadOnlyAndUnconfigured(t *testing.T) {
 	// The request reaches Codex on stdin, framed as untrusted data with its
 	// authenticated sender.
 	p, _ := os.ReadFile(argsFile + ".prompt")
-	for _, want := range []string{"must not modify", "from node " + testSender, "<request>\nReview main.go\n</request>"} {
+	for _, want := range []string{"must not modify", "If the task asks for changes", "from node " + testSender, "<request>\nReview main.go\n</request>"} {
 		if !strings.Contains(string(p), want) {
 			t.Errorf("prompt on stdin %q lacks %q", p, want)
 		}
@@ -453,7 +453,7 @@ func TestCodexRuntimePolicyLoadsTheCheckoutsGuidance(t *testing.T) {
 		}
 		b, _ := os.ReadFile(argsFile)
 		args := " " + strings.ReplaceAll(string(b), "\n", " ")
-		for _, want := range append(tc.want, " --ignore-user-config ", ` shell_environment_policy.inherit="core" `, ` default_permissions="agentiscale-review" `) {
+		for _, want := range append(tc.want, " --ignore-user-config ", ` shell_environment_policy.inherit="core" `, ` default_permissions="agentiscale-read-only" `) {
 			if !strings.Contains(args, want) {
 				t.Errorf("%+v: codex arguments %q lack %q", tc.policy, args, want)
 			}
@@ -666,5 +666,17 @@ func TestCodexAPIKeyWithTheOwnersConfig(t *testing.T) {
 	c.agentName = strings.Repeat("a", 63)
 	if err := checkAgent(&c, true); err != nil {
 		t.Errorf("a 63-character name: %v", err)
+	}
+}
+
+// The owner's description replaces the runtime's on the card.
+func TestCardDescription(t *testing.T) {
+	s := &agentService{rt: &fixture{}}
+	if got := s.card("codex").Description; got != "fixture" {
+		t.Errorf("runtime's description: %q", got)
+	}
+	s.description = "Answers questions about the code"
+	if got := s.card("codex"); got.Description != s.description || got.Name != "codex" {
+		t.Errorf("owner's description: %+v", got)
 	}
 }

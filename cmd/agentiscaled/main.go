@@ -49,6 +49,7 @@ type config struct {
 	agentDir           string
 	agentCommand       string
 	agentName          string
+	agentDescription   string
 	agentPolicy        agentPolicy
 	// agentEnv is set in the node's environment before the agent's
 	// runtime starts (agentOwnerEnv).
@@ -137,6 +138,7 @@ func nodeFlags(fs *flag.FlagSet, c *config) {
 	fs.StringVar(&c.agentDir, "agent-dir", "", "Directory the agent works in")
 	fs.StringVar(&c.agentCommand, "agent-command", "", "Command of the agent CLI (default: the runtime's, e.g. codex)")
 	fs.StringVar(&c.agentName, "agent-name", "", "Service name of the agent in the network (default: the runtime's)")
+	fs.StringVar(&c.agentDescription, "agent-description", "", "What the agent does, as other agents see it on its card (default: the runtime's)")
 	fs.BoolVar(&c.agentPolicy.DirInstructions, "agent-dir-instructions", true, "Let the agent load the instruction files (AGENTS.md) of -agent-dir; =false ignores them")
 	fs.BoolVar(&c.agentPolicy.DirSkills, "agent-dir-skills", true, "Let the agent load the skills of -agent-dir; =false turns them off")
 	fs.BoolVar(&c.agentPolicy.OwnerConfig, "agent-owner-config", true, "Run the agent with your own configuration of its runtime (sign-in, skills, plugins, MCP servers, settings); =false gives it its own in -data-dir")
@@ -227,7 +229,12 @@ func newAgent(c *config) (*agentService, error) {
 		c.agentName = spec.defaultName
 	}
 	c.agentDir = dir
-	return newAgentService(dir, rt, c.dataDir)
+	s, err := newAgentService(dir, rt, c.dataDir)
+	if err != nil {
+		return nil, err
+	}
+	s.description = c.agentDescription
+	return s, nil
 }
 
 func runtimeNames() []string {
