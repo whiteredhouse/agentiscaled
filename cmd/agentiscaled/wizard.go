@@ -217,10 +217,13 @@ func expandHome(path string) string {
 
 // agentDataDir is the data directory of the node that serves an agent,
 // next to the default one and named after the runtime and its directory,
-// such as agentiscale-codex-my-repo. A node already set up there for
-// another directory with the same name, such as /work/a/service and
-// /work/b/service, keeps its directory: the new one gets -2, -3 and so on.
-// The same directory gets its node again.
+// such as agentiscale-codex-my-repo. Only a directory that holds no node
+// yet (nothing, or only the agent's own sign-in from a setup that stopped
+// before `up`), or whose node serves this same agent directory, is taken:
+// any other,
+// such as the node of /work/a/service when this is /work/b/service, a node
+// that serves no agent, or one whose settings cannot be read, keeps its
+// directory, and the new one gets -2, -3 and so on.
 func agentDataDir(rt, agentDir string) string {
 	name := clientEntryName(filepath.Join("/", filepath.Base(agentDir)))
 	base := filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-"+rt+"-"+strings.TrimPrefix(name, "agentiscale-"))
@@ -229,8 +232,11 @@ func agentDataDir(rt, agentDir string) string {
 		if n > 1 {
 			dir = fmt.Sprintf("%s-%d", base, n)
 		}
-		s, err := loadSettings(dir)
-		if err != nil || s.AgentDir == "" || s.AgentDir == agentDir {
+		if entries, err := os.ReadDir(dir); errors.Is(err, os.ErrNotExist) ||
+			err == nil && (len(entries) == 0 || len(entries) == 1 && entries[0].Name() == "codex") {
+			return dir
+		}
+		if s, err := loadSettings(dir); err == nil && s.AgentDir == agentDir {
 			return dir
 		}
 	}

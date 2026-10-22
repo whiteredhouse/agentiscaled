@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,19 +81,19 @@ func TestOfferAgent(t *testing.T) {
 
 func TestSetUpAgentSignsInOnce(t *testing.T) {
 	withDefaultDataDir(t)
+	offer := o(t)
 	var ran [][]string
 	old := runAttached
 	runAttached = func(_ context.Context, cmd *exec.Cmd) error {
 		ran = append(ran, cmd.Args)
 		if cmd.Args[len(cmd.Args)-1] == "login" {
-			if !contains(cmd.Env, "CODEX_HOME="+filepath.Join(o(t).dataDir, "codex")) {
+			if !contains(cmd.Env, "CODEX_HOME="+filepath.Join(offer.dataDir, "codex")) {
 				t.Errorf("login env lacks the agent's CODEX_HOME")
 			}
 		}
 		return nil
 	}
 	t.Cleanup(func() { runAttached = old })
-	offer := o(t)
 	w, out := testWizard("")
 	if err := w.setUpAgent(context.Background(), "/bin/agentiscaled", offer); err != nil {
 		t.Fatal(err)
@@ -173,5 +174,27 @@ func TestAgentDataDirAvoidsCollisions(t *testing.T) {
 	}
 	if got, want := agentDataDir("codex", b), first+"-2"; got != want {
 		t.Errorf("other directory with the same name: %s, want %s", got, want)
+	}
+
+	// A directory that holds a node, but not one for this agent directory,
+	// is skipped: a sender node's, one with unreadable settings, and one with
+	// none. One that holds only an agent's sign-in, left by a setup that
+	// stopped before `up`, is taken.
+	c := filepath.Join(t.TempDir(), "service")
+	if err := os.MkdirAll(first+"-2", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveSettings(first+"-2", settings{Agent: "codex", AgentDir: b}); err != nil {
+		t.Fatal(err)
+	}
+	for n, file := range map[int]string{3: settingsFile, 4: settingsFile, 5: "api-token", 6: filepath.Join("codex", "auth.json")} {
+		content := map[int]string{3: `{"control": "https://c"}`, 4: "{not json", 5: "token", 6: "{}"}[n]
+		write(t, filepath.Join(fmt.Sprintf("%s-%d", first, n), file), content)
+	}
+	if got, want := agentDataDir("codex", c), first+"-6"; got != want {
+		t.Errorf("past a sender node, unreadable settings and no settings: %s, want %s", got, want)
+	}
+	if got, want := agentDataDir("codex", b), first+"-2"; got != want {
+		t.Errorf("b again: %s, want %s", got, want)
 	}
 }
