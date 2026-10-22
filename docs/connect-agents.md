@@ -15,7 +15,7 @@ configuration holds no token.
 Use the absolute path of your `agentiscaled` binary in the examples below. If
 you run the node with `-data-dir`, pass the same `-data-dir` to
 `agentiscaled mcp` and give the server its own name, such as
-`agentiscale-review`, as `up` does.
+`agentiscale-agent`, as `up` does.
 
 ## Claude Desktop (macOS)
 
@@ -67,46 +67,51 @@ client configuration files.
 - The node answers 503 until it is connected to its mesh; check its log for
   "agentiscaled running".
 
-## Send a code review from Claude Desktop to Codex
+## Send a task from Claude Desktop to Codex
 
-Here Claude Desktop asks the Codex CLI for a read-only review of a
-repository, and the task crosses your network's encrypted mesh between two
-nodes. Both nodes can run on the same Mac.
+Here Claude Desktop sends a task to a Codex CLI agent that works read-only in
+one directory, and the task crosses your network's encrypted mesh between two
+nodes. Both nodes can run on the same Mac. The examples use a code review, but
+the task can be anything Codex can do by reading that directory: explain how
+something works, find where something is handled, summarise notes.
 
 **Node A** is the one you already run, with Claude Desktop connected as above.
 It serves no services; Claude Desktop only sends. Since node B serves an agent,
 `up` does not add it to your agent clients, so Claude Desktop sees one
 `agentiscale` server.
 
-**Node B** serves the review. Give it its own data directory and the repository
-it may review:
+**Node B** serves the agent. Give it its own data directory and the directory
+the agent works in:
 
 ```sh
 agentiscaled up \
-  -data-dir ~/Library/Application\ Support/agentiscale-review \
+  -data-dir ~/Library/Application\ Support/agentiscale-codex \
   -agent codex \
-  -agent-dir /absolute/path/to/the/repository
+  -agent-dir /absolute/path/to/the/directory
 ```
 
 `up` signs in once more for node B, joins it to the same network and runs it as
 its own background service. `-agent` picks the runtime that does the work;
 `codex` is the only one today, and others can be added behind the same flags.
 Node B checks that `codex` runs (`-agent-command` takes another path), then
-serves the A2A 1.0 agent `a2a://codex` (`-agent-name` picks another name) to the other nodes of your
-network. Each task runs:
+serves the A2A 1.0 agent `a2a://codex` to the other nodes of your network.
+`-agent-name` picks another name, and `-agent-description` replaces the
+description other agents see on its card. Each task runs:
 
 ```sh
 codex exec --ephemeral -c approval_policy="never" \
   -c shell_environment_policy.inherit="core" \
-  -c default_permissions="agentiscale-review" \
-  -c 'permissions.agentiscale-review={extends=":read-only", filesystem={":root"="deny", ":minimal"="read", ":workspace_roots"="read", "<codex install>"="read"}}' \
+  -c default_permissions="agentiscale-read-only" \
+  -c 'permissions.agentiscale-read-only={extends=":read-only", filesystem={":root"="deny", ":minimal"="read", ":workspace_roots"="read", "<codex install>"="read"}}' \
   -C <agent-dir> --output-last-message <file> -
 ```
 
-with the request on standard input, framed as untrusted text. Codex runs as yours
+with the request on standard input, framed as an untrusted task: the agent
+does it and answers with the result, and describes any change the task asks
+for instead of making it. Codex runs as yours
 does, with your `CODEX_HOME` (`~/.codex`, or the `CODEX_HOME` set when you ran `up`,
 which `up` keeps for node B's service): your sign-in, skills, plugins, settings and MCP
-servers, agentiscale included if you connected Codex, so the review can call your
+servers, agentiscale included if you connected Codex, so the agent can call your
 network's other agents. Node B's background service starts with almost no
 environment, so when it starts it reads your login shell's (`$SHELL -l -i`, as your
 terminal does, for at most 10 seconds) and adds the variables it lacks, such as a
@@ -119,35 +124,34 @@ separately (`CODEX_HOME=<data-dir>/codex codex login`; `up` tells you): none of 
 own Codex skills, plugins, settings or MCP servers exist for it, so it cannot call
 back into the network, and it gets none of the API keys or tokens in node B's
 environment (`CODEX_API_KEY` included), only `PATH`, locale, proxy and CA settings
-(`CODEX_CA_CERTIFICATE`, `SSL_CERT_FILE`). The repository's `AGENTS.md` files and
-skills load as in any Codex run in it. For code that may come from someone you don't
-trust, `-agent-dir-instructions=false` passes `-c project_doc_max_bytes=0` so no
+(`CODEX_CA_CERTIFICATE`, `SSL_CERT_FILE`). The directory's `AGENTS.md` files and
+skills load as in any Codex run in it. For a directory whose content may come from
+someone you don't trust, `-agent-dir-instructions=false` passes `-c project_doc_max_bytes=0` so no
 `AGENTS.md` is loaded, and `-agent-dir-skills=false` turns off every skill in or
-above the repository (`.agents/skills`, `.codex/skills`), the machine's
+above the directory (`.agents/skills`, `.codex/skills`), the machine's
 `/etc/codex/skills` and Codex's bundled skills. Commands Codex
 runs see only basic environment variables (`HOME`, `PATH`, `USER` and the like)
-and can read only the repository, the system files a shell needs and the Codex
+and can read only the agent's directory, the system files a shell needs and the Codex
 install: not your home directory, and not the `CODEX_HOME` with the sign-in.
 They cannot write anything.
 To check this on your machine without signing in:
 `AGENTISCALE_TEST_CODEX=$(command -v codex) go test ./cmd/agentiscaled -run TestCodexAgainstAHostileCheckout -v`.
 
 Each task belongs to the node that sent it: no other node can read its result or
-cancel it. Limits: one review at a time (others are refused, not
-queued), 15 minutes per review, and a request that says it was delegated is
-refused. With your configuration the review can itself send tasks to your other
+cancel it. Limits: one task at a time (others are refused, not
+queued), 15 minutes per task, and a request that says it was delegated is
+refused. With your configuration the agent can itself send tasks to your other
 agents through your agentiscale MCP server; nothing counts those calls as delegation,
 so use `-agent-owner-config=false` where that must not happen. A repeated message ID from the same node is refused instead of run
 again, also after node B restarts (`<data-dir>/tasks-delivered.jsonl`).
 
 **In Claude Desktop**, ask for example "Use agentiscale to ask codex to
-review the last commit" (or "the uncommitted changes", or "the commits on this
-branch against main"). The `agentiscale` server also has `send_task`,
-`get_task` and `cancel_task`: Claude finds the agent with
+review the last commit", or "… to explain how requests are authenticated".
+The `agentiscale` server also has `send_task`, `get_task` and `cancel_task`: Claude finds the agent with
 `discover_remote_services` (type `a2a`), sends the task and follows it to one
 of `completed`, `rejected`, `cancelled`, `timeout` or `failed`. A review of one
-commit takes about a minute. The review is always of node B's `-agent-dir`,
-never of files on the sender's machine; with both nodes on one Mac, that is
+commit takes about a minute. The agent always works in node B's `-agent-dir`,
+never on files on the sender's machine; with both nodes on one Mac, that is
 your checkout as it is on disk. If node B is offline the call fails at once;
 the mesh keeps no mailbox.
 
@@ -158,7 +162,7 @@ new file and move it into place (`go build -o agentiscaled.new ./cmd/agentiscale
 && mv agentiscaled.new agentiscaled`) rather than writing over the binary the
 nodes are running from, which can kill them.
 
-**When a review does not work:**
+**When a task does not work:**
 
 - Claude has no `send_task`: Claude Desktop is still running the old
   connector; restart it as above.
@@ -171,10 +175,10 @@ nodes are running from, which can kill them.
   "You've hit your usage limit …" when the account the agent signed in with is
   out of usage. Wait for the time it names, or sign the agent in with another
   account.
-- The task is `rejected`: its message says why, for example another review is
+- The task is `rejected`: its message says why, for example another task is
   still running or task execution is stopped.
 
 **Stop control:** `agentiscaled tasks stop -data-dir <node B's data dir>`
-cancels the running review within a second, refuses new tasks and withdraws
+cancels the running task within a second, refuses new tasks and withdraws
 the agent from discovery, also across restarts, until `agentiscaled tasks
 resume`. `agentiscaled tasks status` says which.

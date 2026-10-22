@@ -68,7 +68,9 @@ func codexOnHostileCheckout(t *testing.T, command string, policy agentPolicy) {
 	}
 
 	dataDir := codexTempDir(t)
-	if _, err := newCodexRuntime(command, dataDir, policy); err == nil {
+	// With the owner's configuration, CODEX_API_KEY is the owner's sign-in
+	// and the runtime starts on it.
+	if _, err := newCodexRuntime(command, dataDir, policy); err == nil && !policy.OwnerConfig {
 		t.Fatal("the runtime started without the agent's own sign-in")
 	}
 	// The run's sign-in: the agent's own, or with the owner's configuration

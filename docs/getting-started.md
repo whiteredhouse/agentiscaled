@@ -91,6 +91,7 @@ and `~/.local/share/agentiscaled/workspaces/<name>` (`$XDG_DATA_HOME`) on Linux.
 Offer an agent from this machine to your network? [y/N]: y
   Runtime: codex (the only one today)
   Name of the agent in your network [codex]:
+  What it does, as other agents see it (Enter for the runtime's):
   Directory the agent works in [~/Library/Application Support/agentiscaled/workspaces/codex]: ~/work/my-project
   Use your own codex configuration (sign-in, skills, plugins, MCP servers)? [Y/n]:
   Load the directory's instruction files (AGENTS.md)? [Y/n]:
@@ -114,11 +115,12 @@ own configuration, for the agent's `CODEX_HOME`), then sets up that node as
 agentiscaled up -y -data-dir <config dir>/agentiscale-codex-my-project -agent codex -agent-dir ~/work/my-project
 ```
 
-with `-agent-name <name>` added for a name other than the default. That signs in to
+with `-agent-name <name>` added for a name other than the default, and
+`-agent-description "<text>"` for a description of your own. That signs in to
 agentiscale once more for the new node. You can run that line
 yourself instead. What the `codex` runtime does today, with an example from Claude
 Desktop, is in
-[Send a code review from Claude Desktop to Codex](connect-agents.md#send-a-code-review-from-claude-desktop-to-codex).
+[Send a task from Claude Desktop to Codex](connect-agents.md#send-a-task-from-claude-desktop-to-codex).
 
 ## More than one node on a machine
 

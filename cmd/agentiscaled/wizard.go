@@ -161,11 +161,12 @@ func validAgentName(name string) bool {
 
 // agentOffer is an agent the owner chose to offer from this machine.
 type agentOffer struct {
-	runtime  string
-	name     string
-	agentDir string
-	dataDir  string
-	policy   agentPolicy
+	runtime     string
+	name        string
+	description string // empty for the runtime's
+	agentDir    string
+	dataDir     string
+	policy      agentPolicy
 }
 
 // offerAgent asks whether to offer an agent from this machine and, on yes,
@@ -208,6 +209,13 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 		}
 		fmt.Fprintln(w.out, "  Use up to 63 lowercase letters, digits and dashes.")
 	}
+	description, err := w.ask("  What it does, as other agents see it (Enter for the runtime's)", "")
+	if errors.Is(err, io.EOF) {
+		fmt.Fprintln(w.out, "  No description given; no agent offered.")
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
 	var dir string
 	for {
 		answer, err := w.ask("  Directory the agent works in", homeRelative(defaultAgentDir(name)))
@@ -233,7 +241,7 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 		}
 		break
 	}
-	offer := &agentOffer{runtime: rt, name: name, agentDir: dir, dataDir: agentDataDir(rt, dir)}
+	offer := &agentOffer{runtime: rt, name: name, description: description, agentDir: dir, dataDir: agentDataDir(rt, dir)}
 	// The agent runs as the owner's own runtime would, with their
 	// configuration and the directory's own guidance, unless the owner says
 	// no, such as for code from someone else.
@@ -334,6 +342,9 @@ func (w *wizard) setUpAgent(ctx context.Context, exe string, o *agentOffer) erro
 	args := []string{"up", "-y", "-data-dir", o.dataDir, "-agent", o.runtime, "-agent-dir", o.agentDir}
 	if o.name != "" && o.name != spec.defaultName {
 		args = append(args, "-agent-name", o.name)
+	}
+	if o.description != "" {
+		args = append(args, "-agent-description", o.description)
 	}
 	if !o.policy.DirInstructions {
 		args = append(args, "-agent-dir-instructions=false")

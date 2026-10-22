@@ -134,9 +134,12 @@ func agentOwnerEnv(agent string, policy agentPolicy) []string {
 // agentService is the receiving side of a task: an A2A 1.0 agent that runs
 // each task with its runtime in one configured directory.
 type agentService struct {
-	dir      string
-	rt       runtime
-	deadline time.Duration
+	dir string
+	rt  runtime
+	// description, when set, replaces the runtime's on the card
+	// (-agent-description).
+	description string
+	deadline    time.Duration
 	// stopFile exists while the owner has stopped task execution
 	// (`agentiscaled tasks stop`).
 	stopFile string
@@ -413,6 +416,9 @@ func (s *agentService) card(name string) *a2a.AgentCard {
 		DefaultOutputModes:  []string{"text/plain"},
 	}
 	s.rt.Describe(card)
+	if s.description != "" {
+		card.Description = s.description
+	}
 	return card
 }
 

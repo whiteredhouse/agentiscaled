@@ -37,6 +37,8 @@ type settings struct {
 	AgentDir     string `json:"agent_dir,omitempty"`
 	AgentCommand string `json:"agent_command,omitempty"`
 	AgentName    string `json:"agent_name,omitempty"`
+	// AgentDescription replaces the runtime's description on the card.
+	AgentDescription string `json:"agent_description,omitempty"`
 	// What the agent may not take from AgentDir; it takes all when absent.
 	AgentIgnoreDirInstructions bool `json:"agent_ignore_dir_instructions,omitempty"`
 	AgentIgnoreDirSkills       bool `json:"agent_ignore_dir_skills,omitempty"`
@@ -81,20 +83,21 @@ func saveSettings(dataDir string, s settings) error {
 
 func (s settings) config(dataDir string) config {
 	return config{
-		control:      s.Control,
-		dataDir:      dataDir,
-		configFile:   s.ConfigFile,
-		bindAddr:     s.BindAddr,
-		apiTokenPath: s.APITokenPath,
-		listen:       s.Listen,
-		logLevel:     s.LogLevel,
-		agent:        s.Agent,
-		agentDir:     s.AgentDir,
-		agentCommand: s.AgentCommand,
-		agentName:    s.AgentName,
-		agentPolicy:  agentPolicy{DirInstructions: !s.AgentIgnoreDirInstructions, DirSkills: !s.AgentIgnoreDirSkills, OwnerConfig: !s.AgentOwnConfig},
-		machineName:  s.MachineName,
-		agentEnv:     s.AgentEnv,
+		control:          s.Control,
+		dataDir:          dataDir,
+		configFile:       s.ConfigFile,
+		bindAddr:         s.BindAddr,
+		apiTokenPath:     s.APITokenPath,
+		listen:           s.Listen,
+		logLevel:         s.LogLevel,
+		agent:            s.Agent,
+		agentDir:         s.AgentDir,
+		agentCommand:     s.AgentCommand,
+		agentName:        s.AgentName,
+		agentDescription: s.AgentDescription,
+		agentPolicy:      agentPolicy{DirInstructions: !s.AgentIgnoreDirInstructions, DirSkills: !s.AgentIgnoreDirSkills, OwnerConfig: !s.AgentOwnConfig},
+		machineName:      s.MachineName,
+		agentEnv:         s.AgentEnv,
 	}
 }
 
@@ -192,17 +195,18 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	s := settings{
-		Control:      c.control,
-		ConfigFile:   c.configFile,
-		BindAddr:     c.bindAddr,
-		APITokenPath: c.apiTokenPath,
-		Listen:       c.listen,
-		LogLevel:     c.logLevel,
-		Agent:        c.agent,
-		AgentDir:     c.agentDir,
-		AgentCommand: c.agentCommand,
-		AgentName:    c.agentName,
-		MachineName:  c.machineName,
+		Control:          c.control,
+		ConfigFile:       c.configFile,
+		BindAddr:         c.bindAddr,
+		APITokenPath:     c.apiTokenPath,
+		Listen:           c.listen,
+		LogLevel:         c.logLevel,
+		Agent:            c.agent,
+		AgentDir:         c.agentDir,
+		AgentCommand:     c.agentCommand,
+		AgentName:        c.agentName,
+		AgentDescription: c.agentDescription,
+		MachineName:      c.machineName,
 
 		AgentIgnoreDirInstructions: !c.agentPolicy.DirInstructions,
 		AgentIgnoreDirSkills:       !c.agentPolicy.DirSkills,
