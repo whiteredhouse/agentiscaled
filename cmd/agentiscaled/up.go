@@ -297,6 +297,11 @@ func checkAgent(c *config, service bool) error {
 	if c.agentDir == "" {
 		return fmt.Errorf("-agent %s needs -agent-dir", c.agent)
 	}
+	if c.agentName != "" {
+		if err := agentNameError(c.agentName); err != nil {
+			return fmt.Errorf("-agent-name: %w", err)
+		}
+	}
 	dir, err := filepath.Abs(c.agentDir)
 	if err != nil {
 		return err

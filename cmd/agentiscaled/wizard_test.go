@@ -69,13 +69,36 @@ func TestOfferAgent(t *testing.T) {
 	if !strings.Contains(out.String(), "/does/not/exist is not a directory") {
 		t.Errorf("output:\n%s", out)
 	}
-	w, _ = testWizard("y\n" + dir + "\nn\ny\nn\n")
+	w, _ = testWizard("y\n\n" + dir + "\nn\ny\nn\n")
 	if o, err := w.offerAgent(); err != nil || o == nil || o.policy != (agentPolicy{DirInstructions: true}) {
 		t.Errorf("own config and skills turned off: offered %+v, %v", o, err)
 	}
 	w, _ = testWizard("y\n")
 	if o, err := w.offerAgent(); o != nil || err != nil {
 		t.Errorf("no directory: offered %+v, %v", o, err)
+	}
+	home, _ := os.UserHomeDir()
+	for _, c := range []struct{ input, name, dataDir string }{
+		{"y\n\n\n", "codex", "agentiscale-codex"},
+		{"y\nBad Name\nhelper\n\n", "helper", "agentiscale-codex-helper"},
+		{"y\ncodex-helper\n\n", "codex-helper", "agentiscale-codex-helper"},
+		{"y\n" + strings.Repeat("a", 64) + "\n" + strings.Repeat("a", 63) + "\n\n", strings.Repeat("a", 63), "agentiscale-codex-" + strings.Repeat("a", 63)},
+	} {
+		w, out = testWizard(c.input)
+		o, err = w.offerAgent()
+		ownDir := filepath.Join(home, ".agentiscaled", "workspaces", c.name)
+		if err != nil || o == nil || o.name != c.name || o.agentDir != ownDir || o.dataDir != filepath.Join(filepath.Dir(defaultDataDir()), c.dataDir) {
+			t.Fatalf("input %q: offered %+v, %v\n%s", c.input, o, err, out)
+		}
+		if fi, err := os.Stat(ownDir); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+			t.Errorf("the agent's own directory: %v, %v", fi, err)
+		}
+		if !strings.Contains(out.String(), "Directory the agent works in [~/.agentiscaled/workspaces/"+c.name+"]: ") {
+			t.Errorf("output:\n%s", out)
+		}
+	}
+	if !strings.Contains(out.String(), "Name of the agent in your network [codex]: ") {
+		t.Errorf("output:\n%s", out)
 	}
 }
 
@@ -103,8 +126,9 @@ func TestSetUpAgentSignsInOnce(t *testing.T) {
 		t.Errorf("ran %q\n%s", ran, out)
 	}
 
-	// Signed in already: only the node is set up, with the owner's policy.
-	offer.policy = agentPolicy{}
+	// Signed in already: only the node is set up, with the owner's name and
+	// policy.
+	offer.policy, offer.name = agentPolicy{}, "helper"
 	if err := os.WriteFile(filepath.Join(offer.dataDir, "codex", "auth.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +136,7 @@ func TestSetUpAgentSignsInOnce(t *testing.T) {
 	if err := w.setUpAgent(context.Background(), "/bin/agentiscaled", offer); err != nil {
 		t.Fatal(err)
 	}
-	if len(ran) != 1 || ran[0][1] != "up" || !strings.HasSuffix(strings.Join(ran[0], " "), " -agent-dir-instructions=false -agent-dir-skills=false -agent-owner-config=false") {
+	if len(ran) != 1 || ran[0][1] != "up" || !strings.HasSuffix(strings.Join(ran[0], " "), " -agent-dir "+offer.agentDir+" -agent-name helper -agent-dir-instructions=false -agent-dir-skills=false -agent-owner-config=false") {
 		t.Errorf("ran %q", ran)
 	}
 }

@@ -80,6 +80,15 @@ type agentPolicy struct {
 	OwnerConfig bool
 }
 
+// agentNameError tells why a name cannot be an agent's service name in the
+// network, by the rule the node's service registry applies to a2a://<name>.
+func agentNameError(name string) error {
+	if err := api.ValidateServiceFormat(api.ServiceTypeStringA2A + "://" + name); err != nil {
+		return fmt.Errorf("agent name %q: the network takes a DNS name, of labels up to 63 characters", name)
+	}
+	return nil
+}
+
 // runtimes maps each -agent value to how its runtime is made, from
 // -agent-command (empty for the runtime's default command), the node's
 // data directory, where the runtime may keep state, and the agent's policy;
@@ -104,7 +113,7 @@ var runtimes = map[string]struct {
 	// agentPolicy.OwnerConfig the agent finds the same configuration.
 	ownerEnv []string
 }{
-	"codex": {newCodexRuntime, "codex-review", "codex", codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
+	"codex": {newCodexRuntime, "codex", "codex", codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
 }
 
 // agentOwnerEnv is what `up` keeps of the runtime's ownerEnv: each variable

@@ -82,12 +82,15 @@ prints the lines to add yourself, and `-clients codex` connects only the Codex C
 ## Offer an agent to your network
 
 To let your other agents send tasks to an agent on this machine, answer y to "Offer an
-agent from this machine to your network?" and give the directory it works in:
+agent from this machine to your network?" and give its name in your network and the directory it works in. Press Enter at the
+directory for a workspace of its own, `~/.agentiscaled/workspaces/<name>`, which `up`
+creates:
 
 ```text
 Offer an agent from this machine to your network? [y/N]: y
   Runtime: codex (the only one today)
-  Directory the agent works in: ~/work/my-project
+  Name of the agent in your network [codex]:
+  Directory the agent works in [~/.agentiscaled/workspaces/codex]: ~/work/my-project
   Use your own codex configuration (sign-in, skills, plugins, MCP servers)? [Y/n]:
   Load the directory's instruction files (AGENTS.md)? [Y/n]:
   Load the directory's skills? [Y/n]:
@@ -110,7 +113,8 @@ own configuration, for the agent's `CODEX_HOME`), then sets up that node as
 agentiscaled up -y -data-dir <config dir>/agentiscale-codex-my-project -agent codex -agent-dir ~/work/my-project
 ```
 
-which signs in to agentiscale once more for the new node. You can run that line
+with `-agent-name <name>` added for a name other than the default. That signs in to
+agentiscale once more for the new node. You can run that line
 yourself instead. What the `codex` runtime does today, with an example from Claude
 Desktop, is in
 [Send a code review from Claude Desktop to Codex](connect-agents.md#send-a-code-review-from-claude-desktop-to-codex).
