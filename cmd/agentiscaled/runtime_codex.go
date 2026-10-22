@@ -22,17 +22,18 @@ type codexRuntime struct {
 	// installDir holds the Codex executable, which its Linux sandbox runs
 	// again inside the sandbox, so the run must be able to read it.
 	installDir string
-	// home is the run's CODEX_HOME, and home/home its HOME: the agent's own,
-	// in the node's data directory, so that no skill, plugin or setting of
-	// the owner's Codex reaches a remote request. It holds the agent's own
-	// Codex sign-in.
-	home string
+	// home is the run's CODEX_HOME, which holds its Codex sign-in: the
+	// owner's own with policy.OwnerConfig, else the agent's own in the
+	// node's data directory, with home/home as its HOME, so that no skill,
+	// plugin or setting of the owner's Codex reaches a remote request.
+	home   string
+	policy agentPolicy
 	// extra goes before the prompt argument; tests point Codex at a fake
 	// model with it.
 	extra []string
 }
 
-func newCodexRuntime(command, dataDir string) (runtime, error) {
+func newCodexRuntime(command, dataDir string, policy agentPolicy) (runtime, error) {
 	if command == "" {
 		command = "codex"
 	}
@@ -45,17 +46,81 @@ func newCodexRuntime(command, dataDir string) (runtime, error) {
 		return nil, fmt.Errorf("%s --version: %w", path, err)
 	}
 	log.Printf("codex runtime uses %s", strings.TrimSpace(string(out)))
-	home, err := filepath.Abs(filepath.Join(dataDir, "codex"))
+	home, err := codexHome(dataDir, policy)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(home, "home"), 0o700); err != nil {
-		return nil, err
+	if policy.OwnerConfig {
+		if !codexSignedIn(dataDir, policy) && !codexEnvSignedIn(policy) {
+			return nil, fmt.Errorf("your Codex is not signed in (CODEX_HOME %s): run\n  %s login", home, path)
+		}
+	} else {
+		if err := os.MkdirAll(filepath.Join(home, "home"), 0o700); err != nil {
+			return nil, err
+		}
+		if !codexSignedIn(dataDir, policy) {
+			return nil, fmt.Errorf("the agent's Codex is not signed in. With -agent-owner-config=false it signs in apart from your own Codex, so that a remote request cannot reach your Codex skills, plugins or settings: run\n  CODEX_HOME=%s %s login", home, path)
+		}
 	}
-	if _, err := os.Stat(filepath.Join(home, "auth.json")); err != nil {
-		return nil, fmt.Errorf("the agent's Codex is not signed in. It signs in apart from your own Codex, so that a remote request cannot reach your Codex skills, plugins or settings: run\n  CODEX_HOME=%s %s login", home, path)
+	return &codexRuntime{command: path, installDir: codexInstallDir(path), home: home, policy: policy}, nil
+}
+
+// codexHome is the run's CODEX_HOME: with policy.OwnerConfig the owner's,
+// as Codex finds it ($CODEX_HOME, else ~/.codex), else the agent's own in
+// the node's data directory.
+func codexHome(dataDir string, policy agentPolicy) (string, error) {
+	if !policy.OwnerConfig {
+		return filepath.Abs(filepath.Join(dataDir, "codex"))
 	}
-	return &codexRuntime{command: path, installDir: codexInstallDir(path), home: home}, nil
+	if home := os.Getenv("CODEX_HOME"); home != "" {
+		return filepath.Abs(home)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".codex"), nil
+}
+
+func codexSignedIn(dataDir string, policy agentPolicy) bool {
+	home, err := codexHome(dataDir, policy)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(home, "auth.json"))
+	return err == nil
+}
+
+// codexEnvSignedIn says whether the owner's Codex has an API key in the
+// environment, which Codex uses before its sign-in. It counts only with the
+// owner's configuration: the agent's own never gets the node's credentials.
+func codexEnvSignedIn(policy agentPolicy) bool {
+	return policy.OwnerConfig && os.Getenv("CODEX_API_KEY") != ""
+}
+
+// codexLogin is `codex login`: the owner's own with policy.OwnerConfig, which
+// stores their CODEX_API_KEY when they have one, so that the background
+// service, which does not get it from their shell, signs in with it too;
+// else for the agent's own CODEX_HOME, which it creates first.
+func codexLogin(ctx context.Context, command, dataDir string, policy agentPolicy) (*exec.Cmd, string) {
+	if policy.OwnerConfig {
+		if key := os.Getenv("CODEX_API_KEY"); key != "" {
+			cmd := exec.CommandContext(ctx, command, "login", "--with-api-key")
+			cmd.Stdin = strings.NewReader(key + "\n")
+			return cmd, "printenv CODEX_API_KEY | " + shellQuote(command) + " login --with-api-key"
+		}
+		return exec.CommandContext(ctx, command, "login"), shellQuote(command) + " login"
+	}
+	home, err := codexHome(dataDir, policy)
+	if err == nil {
+		err = os.MkdirAll(home, 0o700)
+	}
+	if err != nil {
+		home = filepath.Join(dataDir, "codex")
+	}
+	cmd := exec.CommandContext(ctx, command, "login")
+	cmd.Env = append(os.Environ(), "CODEX_HOME="+home)
+	return cmd, "CODEX_HOME=" + shellQuote(home) + " " + shellQuote(command) + " login"
 }
 
 // codexInstallDir is the directory that holds the Codex executable at path
@@ -124,16 +189,21 @@ func (r *codexRuntime) Describe(card *a2a.AgentCard) {
 	}}
 }
 
-// Run runs `codex exec` in dir with nothing from the node's owner:
-//   - CODEX_HOME and HOME are the agent's own, so none of the owner's
+// Run runs `codex exec` in dir:
+//   - With the owner's configuration (agentPolicy.OwnerConfig, the
+//     default), Codex runs as the owner's own would: their CODEX_HOME,
+//     sign-in, skills, plugins, settings and MCP servers, agentiscale
+//     included, so the run can call the network's other agents. Otherwise
+//     CODEX_HOME and HOME are the agent's own, so none of the owner's
 //     skills (~/.agents/skills, ~/.codex/skills), plugins or settings
 //     exist for the run, and it uses the agent's own sign-in: no API key or
-//     token in the node's environment reaches it (codexEnv). Its configuration is ignored too, so the run has
-//     no MCP servers, agentiscale included, and cannot delegate.
-//   - AGENTS.md and other project instruction files are not loaded, and
-//     every skill in or above the checkout, and Codex's bundled ones, are
-//     disabled: the checkout under review is not trusted to instruct the
-//     reviewer.
+//     token in the node's environment reaches it (codexEnv). Its
+//     configuration is ignored too, so the run has no MCP servers and
+//     cannot delegate.
+//   - The checkout's AGENTS.md files and skills load as in any Codex run
+//     in it, unless the owner's policy turns them off (agentPolicy): then
+//     no project instruction file is loaded, and every skill in or above the
+//     checkout, and Codex's bundled ones, are disabled.
 //   - Commands Codex runs get only the core environment variables (HOME,
 //     PATH, USER and the like), not the owner's tokens and keys.
 //   - The permission profile lets those commands read only the directory,
@@ -147,29 +217,44 @@ func (r *codexRuntime) Run(ctx context.Context, dir string, req taskRequest) (st
 	}
 	out.Close()
 	defer os.Remove(out.Name())
-	skills, err := checkoutSkills(dir)
-	if err != nil {
-		return "", fmt.Errorf("look for skills in %s: %w", dir, err)
+	args := []string{"exec"}
+	if !r.policy.OwnerConfig {
+		args = append(args, "--ignore-user-config")
 	}
-	args := []string{"exec",
-		"--ignore-user-config",
+	args = append(args,
 		"--ephemeral",
 		"--color", "never",
-		"-c", `approval_policy="never"`,
-		"-c", "project_doc_max_bytes=0",
+		"-c", `approval_policy="never"`)
+	if !r.policy.DirInstructions {
+		args = append(args, "-c", "project_doc_max_bytes=0")
+	}
+	if !r.policy.DirSkills {
+		skills, err := checkoutSkills(dir)
+		if err != nil {
+			return "", fmt.Errorf("look for skills in %s: %w", dir, err)
+		}
 		// No skill list in the instructions, and the checkout's own skills
 		// cannot be loaded, even when the request names one.
-		"-c", "skills.include_instructions=false",
-		"-c", "skills.bundled.enabled=false",
-		"-c", "skills.config=" + disabledSkills(skills),
+		args = append(args,
+			"-c", "skills.include_instructions=false",
+			"-c", "skills.bundled.enabled=false",
+			"-c", "skills.config="+disabledSkills(skills))
+	}
+	args = append(args,
 		"-c", `shell_environment_policy.inherit="core"`,
 		"-c", `default_permissions="agentiscale-review"`,
-		"-c", "permissions.agentiscale-review=" + r.permissions(),
+		"-c", "permissions.agentiscale-review="+r.permissions(),
 		"-C", dir,
-		"--output-last-message", out.Name()}
+		"--output-last-message", out.Name())
 	args = append(append(args, r.extra...), "-")
 	cmd := exec.CommandContext(ctx, r.command, args...)
-	cmd.Env = codexEnv(os.Environ(), r.home)
+	if r.policy.OwnerConfig {
+		// The owner's Codex as they run it, whose MCP servers may need
+		// variables of theirs.
+		cmd.Env = os.Environ()
+	} else {
+		cmd.Env = codexEnv(os.Environ(), r.home)
+	}
 	cmd.Stdin = strings.NewReader(reviewPrompt(req))
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

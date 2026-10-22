@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,7 +37,14 @@ type settings struct {
 	AgentDir     string `json:"agent_dir,omitempty"`
 	AgentCommand string `json:"agent_command,omitempty"`
 	AgentName    string `json:"agent_name,omitempty"`
-	MachineName  string `json:"machine_name,omitempty"`
+	// What the agent may not take from AgentDir; it takes all when absent.
+	AgentIgnoreDirInstructions bool `json:"agent_ignore_dir_instructions,omitempty"`
+	AgentIgnoreDirSkills       bool `json:"agent_ignore_dir_skills,omitempty"`
+	AgentOwnConfig             bool `json:"agent_own_config,omitempty"`
+	// AgentEnv locates the owner's configuration of the agent's runtime,
+	// such as CODEX_HOME, as `up` found it (agentOwnerEnv).
+	AgentEnv    []string `json:"agent_env,omitempty"`
+	MachineName string   `json:"machine_name,omitempty"`
 	// PATH for the service, captured at `up`, since launchd and systemd
 	// start services with a minimal one and an agent CLI may need more.
 	Path string `json:"path,omitempty"`
@@ -84,7 +92,9 @@ func (s settings) config(dataDir string) config {
 		agentDir:     s.AgentDir,
 		agentCommand: s.AgentCommand,
 		agentName:    s.AgentName,
+		agentPolicy:  agentPolicy{DirInstructions: !s.AgentIgnoreDirInstructions, DirSkills: !s.AgentIgnoreDirSkills, OwnerConfig: !s.AgentOwnConfig},
 		machineName:  s.MachineName,
+		agentEnv:     s.AgentEnv,
 	}
 }
 
@@ -133,12 +143,19 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 	fs.StringVar(&auth.clientID, "auth-client-id", defaultAuth.clientID, "Auth0 application agentiscaled signs in with")
 	fs.StringVar(&auth.audience, "auth-audience", defaultAuth.audience, "Auth0 API the sign-in is for")
 	noService := fs.Bool("foreground", false, "Do not install a background service; join and exit, then run 'agentiscaled run' yourself")
+	assumeYes := fs.Bool("y", false, "Ask nothing; take every default, as when 'up' runs without a terminal")
 	clients := fs.String("clients", clientsAuto, "Agent clients to connect to this node: auto (every installed one, unless the node serves an agent), none, or a list of "+strings.Join(clientNames, ","))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	var ask *wizard
+	if !*assumeYes && interactive() {
+		ask = &wizard{in: bufio.NewReader(os.Stdin), out: out}
 	}
 	dataDir, err := filepath.Abs(c.dataDir)
 	if err != nil {
@@ -149,8 +166,6 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 	// unless told otherwise it listens on free ones and serves its API on its
 	// Unix socket only.
 	if c.dataDir != defaultDataDir() {
-		set := map[string]bool{}
-		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 		if !set["listen"] {
 			c.listen = "/ip4/0.0.0.0/udp/0/quic-v1,/ip4/0.0.0.0/tcp/0"
 		}
@@ -158,7 +173,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 			c.bindAddr = ""
 		}
 	}
-	if err := checkAgent(&c); err != nil {
+	if err := checkAgent(&c, !*noService); err != nil {
 		return err
 	}
 	if err := checkClients(*clients); err != nil {
@@ -188,15 +203,36 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		AgentCommand: c.agentCommand,
 		AgentName:    c.agentName,
 		MachineName:  c.machineName,
-		Path:         os.Getenv("PATH"),
-		PeerID:       joined.peerID,
-		NetworkID:    joined.networkID,
-		MeshURL:      joined.meshURL,
+
+		AgentIgnoreDirInstructions: !c.agentPolicy.DirInstructions,
+		AgentIgnoreDirSkills:       !c.agentPolicy.DirSkills,
+		AgentOwnConfig:             !c.agentPolicy.OwnerConfig,
+		AgentEnv:                   agentOwnerEnv(c.agent, c.agentPolicy),
+		Path:                       os.Getenv("PATH"),
+		PeerID:                     joined.peerID,
+		NetworkID:                  joined.networkID,
+		MeshURL:                    joined.meshURL,
 	}
 	if err := saveSettings(c.dataDir, s); err != nil {
 		return fmt.Errorf("save settings: %w", err)
 	}
 	fmt.Fprintf(out, "This node is %s in network %s.\n", joined.peerID, joined.networkID)
+
+	// The questions come after the sign-in, which may take the owner to the
+	// browser, and before anything is started.
+	var offer *agentOffer
+	if ask != nil {
+		if !set["clients"] {
+			if *clients, err = ask.chooseClients(installedClients(), c.agent != ""); err != nil {
+				return err
+			}
+		}
+		if c.agent == "" && !set["agent"] {
+			if offer, err = ask.offerAgent(); err != nil {
+				return err
+			}
+		}
+	}
 
 	exe, err := stableExecutable()
 	if err != nil {
@@ -210,7 +246,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		}
 		fmt.Fprintf(out, "  %s run -data-dir %s\n", shellQuote(exe), shellQuote(c.dataDir))
 		nextSteps(ctx, out, *clients, c, exe)
-		return nil
+		return setUpOffer(ctx, ask, exe, offer)
 	}
 	if err := svc.start(serviceSpec{exe: exe, dataDir: c.dataDir, path: s.Path}); err != nil {
 		return fmt.Errorf("start the background service: %w\nThe node has joined; run it yourself with:\n  %s run -data-dir %s", err, shellQuote(exe), shellQuote(c.dataDir))
@@ -225,7 +261,14 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		fmt.Fprintln(out, "Connected to the mesh.")
 	}
 	nextSteps(ctx, out, *clients, c, exe)
-	return nil
+	return setUpOffer(ctx, ask, exe, offer)
+}
+
+func setUpOffer(ctx context.Context, ask *wizard, exe string, offer *agentOffer) error {
+	if offer == nil {
+		return nil
+	}
+	return ask.setUpAgent(ctx, exe, offer)
 }
 
 // nextSteps connects the chosen agent clients to the node, or prints how to.
@@ -243,7 +286,7 @@ func nextSteps(ctx context.Context, out io.Writer, clients string, c config, exe
 // checkAgent checks an agent's settings before anything is enrolled or
 // started, so a background service does not restart forever on a bad flag,
 // and fixes the agent command to an absolute path that the service finds.
-func checkAgent(c *config) error {
+func checkAgent(c *config, service bool) error {
 	if c.agent == "" {
 		return nil
 	}
@@ -277,8 +320,16 @@ func checkAgent(c *config) error {
 		return fmt.Errorf("agent command %q not found: %w", command, err)
 	}
 	// The runtime checks the rest, such as the agent's own sign-in.
-	_, err = spec.new(c.agentCommand, c.dataDir)
-	return err
+	if _, err = spec.new(c.agentCommand, c.dataDir, c.agentPolicy); err != nil {
+		return err
+	}
+	// A credential in this shell's environment does not reach the
+	// background service.
+	if service && spec.signedIn != nil && !spec.signedIn(c.dataDir, c.agentPolicy) {
+		_, shown := spec.login(context.Background(), c.agentCommand, c.dataDir, c.agentPolicy)
+		return fmt.Errorf("%s is signed in only through this shell's environment, which the background service does not get: run\n  %s\nor use -foreground and start 'agentiscaled run' from this shell", c.agent, shown)
+	}
+	return nil
 }
 
 type joinedNode struct {

@@ -40,6 +40,21 @@ log in. Your sign-in is used once and not stored on the machine.
 On a Linux server, run the `sudo loginctl enable-linger <you>` command that `up`
 prints, so the node keeps running after you log out.
 
+In a terminal, `up` then asks two questions. Pressing Enter at each takes its default,
+which is what `up` does without asking:
+
+```text
+Agent clients on this machine can use this node.
+  Connect Claude Desktop? [Y/n]:
+  Connect Codex CLI? [Y/n]:
+
+Offer an agent from this machine to your network? [y/N]:
+```
+
+`up -y` asks nothing, and neither does `up` in a script, a service or an SSH session
+without a terminal. Flags answer the questions too: `-clients` the first,
+`-agent` and `-agent-dir` the second.
+
 ## 3. Your agents are connected
 
 `up` ends by adding this node to the agent apps it finds on the machine: Claude Desktop
@@ -61,19 +76,43 @@ else, `up` leaves it and prints the lines to add yourself. Running `up` again fi
 entry and changes nothing. An app installed later gets connected by the next `up`, or
 by hand with the lines in [Connect an agent client](connect-agents.md).
 
-`-clients none` turns this off and only prints the lines; `-clients codex` connects
-only the Codex CLI.
+Answering n for an app, or `-clients none`, leaves it as it is; `-clients none` also
+prints the lines to add yourself, and `-clients codex` connects only the Codex CLI.
 
 ## Offer an agent to your network
 
 To let your other agents ask this machine's Codex for a read-only code review of one
-repository, run `up` with the agent's settings:
+repository, answer y to "Offer an agent from this machine to your network?" and give
+the repository:
 
-```sh
-agentiscaled up -agent codex -agent-dir ~/src/my-repo
+```text
+Offer an agent from this machine to your network? [y/N]: y
+  Runtime: codex (the only one today)
+  Directory the agent works in (for codex, the repository it reviews read-only): ~/src/my-repo
+  Use your own codex configuration (sign-in, skills, plugins, MCP servers)? [Y/n]:
+  Load the directory's instruction files (AGENTS.md)? [Y/n]:
+  Load the directory's skills? [Y/n]:
 ```
 
-The agent needs its own Codex sign-in first; see
+By default the agent runs as your own Codex does: with your sign-in, skills, plugins,
+settings and MCP servers (your `CODEX_HOME`), and with the directory's own instruction
+files (`AGENTS.md`) and skills. Your MCP servers include agentiscale itself if you
+connected Codex, so the agent can ask your network's other agents for help. Answer n
+to give the agent its own configuration and sign-in in its node's data directory, with
+no MCP servers (`-agent-owner-config=false`), or to leave out the directory's
+instruction files or skills when it may hold content from someone you don't trust
+(`-agent-dir-instructions=false`, `-agent-dir-skills=false`).
+
+The agent gets a node of its own, so your agent apps stay on the first one, which only
+sends. If the agent's Codex is not signed in, `up` runs `codex login` first (with its
+own configuration, for the agent's `CODEX_HOME`), then sets up that node as
+
+```sh
+agentiscaled up -y -data-dir <config dir>/agentiscale-codex-my-repo -agent codex -agent-dir ~/src/my-repo
+```
+
+which signs in to agentiscale once more for the new node. You can run that line
+yourself instead; see
 [Send a code review from Claude Desktop to Codex](connect-agents.md#send-a-code-review-from-claude-desktop-to-codex).
 
 ## More than one node on a machine

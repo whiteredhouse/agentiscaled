@@ -82,8 +82,6 @@ It serves no services; Claude Desktop only sends. Since node B serves an agent,
 it may review:
 
 ```sh
-# once: the review agent's own Codex sign-in, kept in node B's data directory
-CODEX_HOME=~/Library/Application\ Support/agentiscale-review/codex codex login
 agentiscaled up \
   -data-dir ~/Library/Application\ Support/agentiscale-review \
   -agent codex \
@@ -98,36 +96,48 @@ serves the A2A 1.0 agent `a2a://codex-review` to the other nodes of your
 network. Each task runs:
 
 ```sh
-codex exec --ignore-user-config --ephemeral -c approval_policy="never" \
-  -c project_doc_max_bytes=0 -c shell_environment_policy.inherit="core" \
-  -c skills.include_instructions=false \
-  -c 'skills.config=[{path="<each SKILL.md in or above agent-dir>", enabled=false}, ...]' \
+codex exec --ephemeral -c approval_policy="never" \
+  -c shell_environment_policy.inherit="core" \
   -c default_permissions="agentiscale-review" \
   -c 'permissions.agentiscale-review={extends=":read-only", filesystem={":root"="deny", ":minimal"="read", ":workspace_roots"="read", "<codex install>"="read"}}' \
   -C <agent-dir> --output-last-message <file> -
 ```
 
-with the request on standard input, framed as untrusted text. Codex runs with
-its own `CODEX_HOME` and `HOME` (`<data-dir>/codex`), which is why it signs in
-separately: none of your own Codex skills, plugins or settings exist for it.
-It gets none of the API keys or tokens in node B's environment (`CODEX_API_KEY`
-included), only `PATH`, locale, proxy and CA settings (`CODEX_CA_CERTIFICATE`,
-`SSL_CERT_FILE`). Its configuration, and so its MCP servers, are not loaded, so
-the review cannot call back into the network. Since the code under review may
-come from someone else, `AGENTS.md` files in the repository are not loaded, and
-every skill in or above it (`.agents/skills`, `.codex/skills`), the machine's
-`/etc/codex/skills` and Codex's bundled skills are turned off. Commands Codex
+with the request on standard input, framed as untrusted text. Codex runs as yours
+does, with your `CODEX_HOME` (`~/.codex`, or the `CODEX_HOME` set when you ran `up`,
+which `up` keeps for node B's service): your sign-in, skills, plugins, settings and MCP
+servers, agentiscale included if you connected Codex, so the review can call your
+network's other agents. Node B's background service starts with almost no
+environment, so when it starts it reads your login shell's (`$SHELL -l -i`, as your
+terminal does, for at most 10 seconds) and adds the variables it lacks, such as a
+`GITHUB_TOKEN` that an MCP server's `env_vars` passes on. Variables your shell does not
+set go in `<data-dir>/agent.env`, one `NAME=value` per line, readable only by you
+(`chmod 600`); they win over both. agentiscaled never writes either. The node's log
+says how many variables came from each. With `-agent-owner-config=false` it instead runs with its own
+`CODEX_HOME` and `HOME` (`<data-dir>/codex`) and `--ignore-user-config`, and signs in
+separately (`CODEX_HOME=<data-dir>/codex codex login`; `up` tells you): none of your
+own Codex skills, plugins, settings or MCP servers exist for it, so it cannot call
+back into the network, and it gets none of the API keys or tokens in node B's
+environment (`CODEX_API_KEY` included), only `PATH`, locale, proxy and CA settings
+(`CODEX_CA_CERTIFICATE`, `SSL_CERT_FILE`). The repository's `AGENTS.md` files and
+skills load as in any Codex run in it. For code that may come from someone you don't
+trust, `-agent-dir-instructions=false` passes `-c project_doc_max_bytes=0` so no
+`AGENTS.md` is loaded, and `-agent-dir-skills=false` turns off every skill in or
+above the repository (`.agents/skills`, `.codex/skills`), the machine's
+`/etc/codex/skills` and Codex's bundled skills. Commands Codex
 runs see only basic environment variables (`HOME`, `PATH`, `USER` and the like)
 and can read only the repository, the system files a shell needs and the Codex
-install: not your home directory, and not the agent's `CODEX_HOME` with its
-sign-in. They cannot write anything.
+install: not your home directory, and not the `CODEX_HOME` with the sign-in.
+They cannot write anything.
 To check this on your machine without signing in:
 `AGENTISCALE_TEST_CODEX=$(command -v codex) go test ./cmd/agentiscaled -run TestCodexAgainstAHostileCheckout -v`.
 
 Each task belongs to the node that sent it: no other node can read its result or
 cancel it. Limits: one review at a time (others are refused, not
 queued), 15 minutes per review, and a request that says it was delegated is
-refused. A repeated message ID from the same node is refused instead of run
+refused. With your configuration the review can itself send tasks to your other
+agents through your agentiscale MCP server; nothing counts those calls as delegation,
+so use `-agent-owner-config=false` where that must not happen. A repeated message ID from the same node is refused instead of run
 again, also after node B restarts (`<data-dir>/tasks-delivered.jsonl`).
 
 **In Claude Desktop**, ask for example "Use agentiscale to ask codex-review to
@@ -152,8 +162,11 @@ nodes are running from, which can kill them.
 
 - Claude has no `send_task`: Claude Desktop is still running the old
   connector; restart it as above.
-- Node B will not start and says the agent's Codex is not signed in: run the
-  `CODEX_HOME=… codex login` line above.
+- Node B will not start and says Codex is not signed in: run the `codex login`
+  line it prints (yours, or with `-agent-owner-config=false` the agent's own).
+  With your configuration a `CODEX_API_KEY` in your shell counts as signed in, but
+  the background service does not get it: `up` asks you to store it first with
+  `printenv CODEX_API_KEY | codex login --with-api-key` (the wizard does that for you).
 - The task ends `failed`: its message carries Codex's error, for example
   "You've hit your usage limit …" when the account the agent signed in with is
   out of usage. Wait for the time it names, or sign the agent in with another

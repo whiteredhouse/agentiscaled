@@ -429,6 +429,59 @@ func TestCodexRuntimeIsReadOnlyAndUnconfigured(t *testing.T) {
 	}
 }
 
+// With the owner's policy on, the checkout's instruction files and skills
+// load as in any Codex run in it; the rest of the isolation stays.
+func TestCodexRuntimePolicyLoadsTheCheckoutsGuidance(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	codex := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argsFile + "\nwhile [ $# -gt 0 ]; do [ \"$1\" = --output-last-message ] && out=$2; shift; done\necho 'No findings' > \"$out\"\n"
+	if err := os.WriteFile(codex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		policy      agentPolicy
+		want, avoid []string
+	}{
+		{agentPolicy{DirInstructions: true}, []string{" skills.include_instructions=false "}, []string{" project_doc_max_bytes=0 "}},
+		{agentPolicy{DirSkills: true}, []string{" project_doc_max_bytes=0 "}, []string{" skills."}},
+		{agentPolicy{DirInstructions: true, DirSkills: true}, nil, []string{" project_doc_max_bytes=0 ", " skills."}},
+	} {
+		rt := &codexRuntime{command: codex, home: filepath.Join(dir, "agent-codex"), policy: tc.policy}
+		if _, err := rt.Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "Review"}); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(argsFile)
+		args := " " + strings.ReplaceAll(string(b), "\n", " ")
+		for _, want := range append(tc.want, " --ignore-user-config ", ` shell_environment_policy.inherit="core" `, ` default_permissions="agentiscale-review" `) {
+			if !strings.Contains(args, want) {
+				t.Errorf("%+v: codex arguments %q lack %q", tc.policy, args, want)
+			}
+		}
+		for _, avoid := range tc.avoid {
+			if strings.Contains(args, avoid) {
+				t.Errorf("%+v: codex arguments %q have %q", tc.policy, args, avoid)
+			}
+		}
+	}
+}
+
+// `up` keeps CODEX_HOME for the service only when the agent uses the
+// owner's configuration and it is set.
+func TestAgentOwnerEnv(t *testing.T) {
+	t.Setenv("CODEX_HOME", "/Users/owner/codex")
+	if got := agentOwnerEnv("codex", agentPolicy{OwnerConfig: true}); len(got) != 1 || got[0] != "CODEX_HOME=/Users/owner/codex" {
+		t.Errorf("owner config: %q", got)
+	}
+	if got := agentOwnerEnv("codex", agentPolicy{}); got != nil {
+		t.Errorf("own config: %q", got)
+	}
+	t.Setenv("CODEX_HOME", "")
+	if got := agentOwnerEnv("codex", agentPolicy{OwnerConfig: true}); got != nil {
+		t.Errorf("unset: %q", got)
+	}
+}
+
 func get(t *testing.T, url, token string) int {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
@@ -563,5 +616,46 @@ func TestGeneratedAPITokenIsPrivate(t *testing.T) {
 	}
 	if again, _ := apiTokenFor(config{dataDir: dir}); again != token {
 		t.Errorf("second start: token %q, want %q", again, token)
+	}
+}
+
+// With the owner's configuration, CODEX_API_KEY signs Codex in for a node
+// run from the owner's shell; `up` stores it for the background service,
+// which does not get it, and refuses to install a service that would lack it.
+func TestCodexAPIKeyWithTheOwnersConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("CODEX_API_KEY", "owner-key")
+	codex := filepath.Join(home, "codex")
+	if err := os.WriteFile(codex, []byte("#!/bin/sh\necho codex-cli 0.0.0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner := agentPolicy{OwnerConfig: true}
+	if !codexEnvSignedIn(owner) || codexEnvSignedIn(agentPolicy{}) {
+		t.Error("CODEX_API_KEY must count with the owner's configuration only")
+	}
+	if _, err := newCodexRuntime(codex, t.TempDir(), owner); err != nil {
+		t.Errorf("owner's config with CODEX_API_KEY: %v", err)
+	}
+	if _, err := newCodexRuntime(codex, t.TempDir(), agentPolicy{}); err == nil {
+		t.Error("the agent's own config took the node's CODEX_API_KEY as its sign-in")
+	}
+	cmd, shown := codexLogin(context.Background(), codex, t.TempDir(), owner)
+	if strings.Join(cmd.Args[1:], " ") != "login --with-api-key" || cmd.Stdin == nil || !strings.HasPrefix(shown, "printenv CODEX_API_KEY | ") {
+		t.Errorf("login %q, shown %q", cmd.Args, shown)
+	}
+
+	repo := t.TempDir()
+	c := config{dataDir: t.TempDir(), agent: "codex", agentDir: repo, agentCommand: codex, agentPolicy: owner}
+	if err := checkAgent(&c, false); err != nil {
+		t.Errorf("foreground: %v", err)
+	}
+	if err := checkAgent(&c, true); err == nil || !strings.Contains(err.Error(), "login --with-api-key") {
+		t.Errorf("service without a stored sign-in: %v", err)
+	}
+	write(t, filepath.Join(home, ".codex", "auth.json"), "{}")
+	if err := checkAgent(&c, true); err != nil {
+		t.Errorf("service with a stored sign-in: %v", err)
 	}
 }

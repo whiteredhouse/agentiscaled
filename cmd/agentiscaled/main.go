@@ -49,7 +49,11 @@ type config struct {
 	agentDir           string
 	agentCommand       string
 	agentName          string
-	machineName        string
+	agentPolicy        agentPolicy
+	// agentEnv is set in the node's environment before the agent's
+	// runtime starts (agentOwnerEnv).
+	agentEnv    []string
+	machineName string
 
 	// signInToken is the owner's Auth0 access token during `agentiscaled up`.
 	// It lives in memory for enrollment only and is never stored.
@@ -133,6 +137,9 @@ func nodeFlags(fs *flag.FlagSet, c *config) {
 	fs.StringVar(&c.agentDir, "agent-dir", "", "Directory the agent works in, for -agent codex the repository it reviews read-only")
 	fs.StringVar(&c.agentCommand, "agent-command", "", "Command of the agent CLI (default: the runtime's, e.g. codex)")
 	fs.StringVar(&c.agentName, "agent-name", "", "Service name of the agent in the network (default: the runtime's, e.g. codex-review)")
+	fs.BoolVar(&c.agentPolicy.DirInstructions, "agent-dir-instructions", true, "Let the agent load the instruction files (AGENTS.md) of -agent-dir; =false ignores them")
+	fs.BoolVar(&c.agentPolicy.DirSkills, "agent-dir-skills", true, "Let the agent load the skills of -agent-dir; =false turns them off")
+	fs.BoolVar(&c.agentPolicy.OwnerConfig, "agent-owner-config", true, "Run the agent with your own configuration of its runtime (sign-in, skills, plugins, MCP servers, settings); =false gives it its own in -data-dir")
 	fs.StringVar(&c.machineName, "hostname", defaultMachineName(), "Name of this machine in your network's member list")
 }
 
@@ -201,7 +208,18 @@ func newAgent(c *config) (*agentService, error) {
 	if err := agentDirApart(dir, c.dataDir); err != nil {
 		return nil, err
 	}
-	rt, err := spec.new(c.agentCommand, c.dataDir)
+	for _, kv := range c.agentEnv {
+		name, value, _ := strings.Cut(kv, "=")
+		if err := os.Setenv(name, value); err != nil {
+			return nil, err
+		}
+	}
+	if c.agentPolicy.OwnerConfig {
+		if err := ownerEnv(context.Background(), c.dataDir); err != nil {
+			return nil, err
+		}
+	}
+	rt, err := spec.new(c.agentCommand, c.dataDir, c.agentPolicy)
 	if err != nil {
 		return nil, err
 	}

@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -63,17 +64,62 @@ type taskRequest struct {
 	Text   string
 }
 
+// agentPolicy is what the agent may take from the directory it works in,
+// beyond its files. Each is on, as in any run of the agent there, unless the
+// owner turns it off, such as for code from someone else.
+type agentPolicy struct {
+	// DirInstructions loads the directory's instruction files, such as
+	// AGENTS.md (-agent-dir-instructions).
+	DirInstructions bool
+	// DirSkills loads the directory's skills (-agent-dir-skills).
+	DirSkills bool
+	// OwnerConfig runs the agent with the owner's own configuration of its
+	// runtime: their sign-in, skills, plugins, MCP servers and settings
+	// (-agent-owner-config). Without it the agent has its own, in the node's
+	// data directory, and signs in on its own.
+	OwnerConfig bool
+}
+
 // runtimes maps each -agent value to how its runtime is made, from
-// -agent-command (empty for the runtime's default command) and the node's
-// data directory, where the runtime may keep state, and the service name it
+// -agent-command (empty for the runtime's default command), the node's
+// data directory, where the runtime may keep state, and the agent's policy;
+// and the service name it
 // is served under unless -agent-name says otherwise, and the command it runs
 // unless -agent-command does.
 var runtimes = map[string]struct {
-	new            func(command, dataDir string) (runtime, error)
+	new            func(command, dataDir string, policy agentPolicy) (runtime, error)
 	defaultName    string
 	defaultCommand string
+	// signedIn and login are for a runtime whose agent signs in: whether
+	// it has, in a way the background service also sees, and the command
+	// that signs it in, with how to show that command. A runtime may also
+	// accept a credential in the environment (envSignedIn), which only a
+	// node run from the owner's shell gets.
+	signedIn    func(dataDir string, policy agentPolicy) bool
+	envSignedIn func(policy agentPolicy) bool
+	login       func(ctx context.Context, command, dataDir string, policy agentPolicy) (*exec.Cmd, string)
+	// ownerEnv names the variables that locate the owner's configuration
+	// of the runtime. `up` keeps their values for the background service,
+	// which starts without the owner's shell, so that with
+	// agentPolicy.OwnerConfig the agent finds the same configuration.
+	ownerEnv []string
 }{
-	"codex": {newCodexRuntime, "codex-review", "codex"},
+	"codex": {newCodexRuntime, "codex-review", "codex", codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
+}
+
+// agentOwnerEnv is what `up` keeps of the runtime's ownerEnv: each variable
+// set in its environment, as NAME=value.
+func agentOwnerEnv(agent string, policy agentPolicy) []string {
+	if !policy.OwnerConfig {
+		return nil
+	}
+	var env []string
+	for _, name := range runtimes[agent].ownerEnv {
+		if v := os.Getenv(name); v != "" {
+			env = append(env, name+"="+v)
+		}
+	}
+	return env
 }
 
 // agentService is the receiving side of a task: an A2A 1.0 agent that runs
