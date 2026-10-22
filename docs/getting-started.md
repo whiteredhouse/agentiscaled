@@ -87,7 +87,7 @@ agent from this machine to your network?" and give the directory it works in:
 ```text
 Offer an agent from this machine to your network? [y/N]: y
   Runtime: codex (the only one today)
-  Directory the agent works in: ~/src/my-repo
+  Directory the agent works in: ~/work/my-project
   Use your own codex configuration (sign-in, skills, plugins, MCP servers)? [Y/n]:
   Load the directory's instruction files (AGENTS.md)? [Y/n]:
   Load the directory's skills? [Y/n]:
@@ -107,7 +107,7 @@ sends. If the agent's Codex is not signed in, `up` runs `codex login` first (wit
 own configuration, for the agent's `CODEX_HOME`), then sets up that node as
 
 ```sh
-agentiscaled up -y -data-dir <config dir>/agentiscale-codex-my-repo -agent codex -agent-dir ~/src/my-repo
+agentiscaled up -y -data-dir <config dir>/agentiscale-codex-my-project -agent codex -agent-dir ~/work/my-project
 ```
 
 which signs in to agentiscale once more for the new node. You can run that line
@@ -124,7 +124,7 @@ the one below, is not added to your apps unless you ask with
 `-clients claude-desktop,codex`:
 
 ```sh
-agentiscaled up -data-dir ~/agentiscale-agent -agent codex -agent-dir ~/src/my-repo
+agentiscaled up -data-dir ~/agentiscale-agent -agent codex -agent-dir ~/work/my-project
 ```
 
 ## Machines that cannot sign in

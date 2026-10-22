@@ -217,7 +217,7 @@ func expandHome(path string) string {
 
 // agentDataDir is the data directory of the node that serves an agent,
 // next to the default one and named after the runtime and its directory,
-// such as agentiscale-codex-my-repo. Only a directory that holds no node
+// such as agentiscale-codex-my-project. Only a directory that holds no node
 // yet (nothing, or only the agent's own sign-in from a setup that stopped
 // before `up`), or whose node serves this same agent directory, is taken:
 // any other,
