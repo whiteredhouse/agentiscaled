@@ -217,11 +217,23 @@ func expandHome(path string) string {
 
 // agentDataDir is the data directory of the node that serves an agent,
 // next to the default one and named after the runtime and its directory,
-// such as agentiscale-codex-my-repo.
+// such as agentiscale-codex-my-repo. A node already set up there for
+// another directory with the same name, such as /work/a/service and
+// /work/b/service, keeps its directory: the new one gets -2, -3 and so on.
+// The same directory gets its node again.
 func agentDataDir(rt, agentDir string) string {
 	name := clientEntryName(filepath.Join("/", filepath.Base(agentDir)))
-	name = "agentiscale-" + rt + "-" + strings.TrimPrefix(name, "agentiscale-")
-	return filepath.Join(filepath.Dir(defaultDataDir()), name)
+	base := filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-"+rt+"-"+strings.TrimPrefix(name, "agentiscale-"))
+	for n := 1; ; n++ {
+		dir := base
+		if n > 1 {
+			dir = fmt.Sprintf("%s-%d", base, n)
+		}
+		s, err := loadSettings(dir)
+		if err != nil || s.AgentDir == "" || s.AgentDir == agentDir {
+			return dir
+		}
+	}
 }
 
 // setUpAgent signs the agent in, if its runtime needs it and it has not,

@@ -155,3 +155,23 @@ func TestSetUpAgentWithTheOwnersConfig(t *testing.T) {
 		t.Errorf("signed in already: ran %v, %v", ran, err)
 	}
 }
+
+// Two directories with the same name get nodes of their own; the same
+// directory gets its node again.
+func TestAgentDataDirAvoidsCollisions(t *testing.T) {
+	withDefaultDataDir(t)
+	a, b := filepath.Join(t.TempDir(), "service"), filepath.Join(t.TempDir(), "service")
+	first := agentDataDir("codex", a)
+	if err := os.MkdirAll(first, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveSettings(first, settings{Agent: "codex", AgentDir: a}); err != nil {
+		t.Fatal(err)
+	}
+	if got := agentDataDir("codex", a); got != first {
+		t.Errorf("same directory: %s, want %s", got, first)
+	}
+	if got, want := agentDataDir("codex", b), first+"-2"; got != want {
+		t.Errorf("other directory with the same name: %s, want %s", got, want)
+	}
+}
