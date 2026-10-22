@@ -57,7 +57,7 @@ func TestOfferAgent(t *testing.T) {
 			t.Errorf("input %q: offered %+v, %v", input, o, err)
 		}
 	}
-	w, out := testWizard("y\n\n/does/not/exist\n" + dir + "\n")
+	w, out := testWizard("y\n/does/not/exist\n" + dir + "\n")
 	o, err := w.offerAgent()
 	if err != nil || o == nil {
 		t.Fatalf("%+v, %v\n%s", o, err, out)
@@ -76,6 +76,19 @@ func TestOfferAgent(t *testing.T) {
 	w, _ = testWizard("y\n")
 	if o, err := w.offerAgent(); o != nil || err != nil {
 		t.Errorf("no directory: offered %+v, %v", o, err)
+	}
+	w, out = testWizard("y\n\n")
+	o, err = w.offerAgent()
+	home, _ := os.UserHomeDir()
+	ownDir := filepath.Join(home, "agentiscale-agent")
+	if err != nil || o == nil || o.agentDir != ownDir || o.dataDir != filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-codex-agent") {
+		t.Fatalf("Enter: offered %+v, %v\n%s", o, err, out)
+	}
+	if fi, err := os.Stat(ownDir); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+		t.Errorf("the agent's own directory: %v, %v", fi, err)
+	}
+	if !strings.Contains(out.String(), "Directory the agent works in [~/agentiscale-agent]: ") {
+		t.Errorf("output:\n%s", out)
 	}
 }
 

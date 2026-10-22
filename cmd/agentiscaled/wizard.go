@@ -123,6 +123,11 @@ func (w *wizard) chooseClients(installed []string, servesAgent bool) (string, er
 	return strings.Join(chosen, ","), nil
 }
 
+// defaultAgentDir is the directory an offered agent works in when the owner
+// names none: one that agentiscaled makes for it, apart from the owner's own
+// files.
+const defaultAgentDir = "~/agentiscale-agent"
+
 // agentOffer is an agent the owner chose to offer from this machine.
 type agentOffer struct {
 	runtime  string
@@ -158,17 +163,20 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 	}
 	var dir string
 	for {
-		answer, err := w.ask("  Directory the agent works in", "")
+		answer, err := w.ask("  Directory the agent works in", defaultAgentDir)
 		if errors.Is(err, io.EOF) {
 			fmt.Fprintln(w.out, "  No directory given; no agent offered.")
 			return nil, nil
 		} else if err != nil {
 			return nil, err
 		}
-		if answer == "" {
-			continue
-		}
 		dir = expandHome(answer)
+		// The default is a directory of the agent's own, made on first use.
+		if answer == defaultAgentDir {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				return nil, err
+			}
+		}
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 			fmt.Fprintf(w.out, "  %s is not a directory.\n", dir)
 			continue

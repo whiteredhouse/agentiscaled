@@ -82,12 +82,13 @@ prints the lines to add yourself, and `-clients codex` connects only the Codex C
 ## Offer an agent to your network
 
 To let your other agents send tasks to an agent on this machine, answer y to "Offer an
-agent from this machine to your network?" and give the directory it works in:
+agent from this machine to your network?" and give the directory it works in, or press
+Enter for a directory of its own, `~/agentiscale-agent`, which `up` creates:
 
 ```text
 Offer an agent from this machine to your network? [y/N]: y
   Runtime: codex (the only one today)
-  Directory the agent works in: ~/work/my-project
+  Directory the agent works in [~/agentiscale-agent]: ~/work/my-project
   Use your own codex configuration (sign-in, skills, plugins, MCP servers)? [Y/n]:
   Load the directory's instruction files (AGENTS.md)? [Y/n]:
   Load the directory's skills? [Y/n]:
