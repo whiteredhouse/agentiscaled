@@ -158,6 +158,9 @@ nodes are running from, which can kill them.
   connector; restart it as above.
 - Node B will not start and says Codex is not signed in: run the `codex login`
   line it prints (yours, or with `-agent-owner-config=false` the agent's own).
+  With your configuration a `CODEX_API_KEY` in your shell counts as signed in, but
+  the background service does not get it: `up` asks you to store it first with
+  `printenv CODEX_API_KEY | codex login --with-api-key` (the wizard does that for you).
 - The task ends `failed`: its message carries Codex's error, for example
   "You've hit your usage limit …" when the account the agent signed in with is
   out of usage. Wait for the time it names, or sign the agent in with another

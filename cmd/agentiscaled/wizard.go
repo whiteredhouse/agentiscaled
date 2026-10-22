@@ -230,7 +230,9 @@ func (w *wizard) setUpAgent(ctx context.Context, exe string, o *agentOffer) erro
 	spec := runtimes[o.runtime]
 	if spec.login != nil && !spec.signedIn(o.dataDir, o.policy) {
 		cmd, shown := spec.login(ctx, spec.defaultCommand, o.dataDir, o.policy)
-		if o.policy.OwnerConfig {
+		if spec.envSignedIn != nil && spec.envSignedIn(o.policy) {
+			fmt.Fprintf(w.out, "\nYour %s credential is only in this shell, which the agent's background service does not get; storing it:\n  %s\n", o.runtime, shown)
+		} else if o.policy.OwnerConfig {
 			fmt.Fprintf(w.out, "\nYou are not signed in to %s yet:\n  %s\n", o.runtime, shown)
 		} else {
 			fmt.Fprintf(w.out, "\nThe agent signs in to %s on its own, apart from your own sign-in:\n  %s\n", o.runtime, shown)
@@ -256,6 +258,9 @@ func (w *wizard) setUpAgent(ctx context.Context, exe string, o *agentOffer) erro
 // runAttached runs a command on this terminal, for steps that talk to the
 // owner themselves, such as a sign-in.
 var runAttached = func(ctx context.Context, cmd *exec.Cmd) error {
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if cmd.Stdin == nil {
+		cmd.Stdin = os.Stdin
+	}
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return cmd.Run()
 }

@@ -618,3 +618,44 @@ func TestGeneratedAPITokenIsPrivate(t *testing.T) {
 		t.Errorf("second start: token %q, want %q", again, token)
 	}
 }
+
+// With the owner's configuration, CODEX_API_KEY signs Codex in for a node
+// run from the owner's shell; `up` stores it for the background service,
+// which does not get it, and refuses to install a service that would lack it.
+func TestCodexAPIKeyWithTheOwnersConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("CODEX_API_KEY", "owner-key")
+	codex := filepath.Join(home, "codex")
+	if err := os.WriteFile(codex, []byte("#!/bin/sh\necho codex-cli 0.0.0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner := agentPolicy{OwnerConfig: true}
+	if !codexEnvSignedIn(owner) || codexEnvSignedIn(agentPolicy{}) {
+		t.Error("CODEX_API_KEY must count with the owner's configuration only")
+	}
+	if _, err := newCodexRuntime(codex, t.TempDir(), owner); err != nil {
+		t.Errorf("owner's config with CODEX_API_KEY: %v", err)
+	}
+	if _, err := newCodexRuntime(codex, t.TempDir(), agentPolicy{}); err == nil {
+		t.Error("the agent's own config took the node's CODEX_API_KEY as its sign-in")
+	}
+	cmd, shown := codexLogin(context.Background(), codex, t.TempDir(), owner)
+	if strings.Join(cmd.Args[1:], " ") != "login --with-api-key" || cmd.Stdin == nil || !strings.HasPrefix(shown, "printenv CODEX_API_KEY | ") {
+		t.Errorf("login %q, shown %q", cmd.Args, shown)
+	}
+
+	repo := t.TempDir()
+	c := config{dataDir: t.TempDir(), agent: "codex", agentDir: repo, agentCommand: codex, agentPolicy: owner}
+	if err := checkAgent(&c, false); err != nil {
+		t.Errorf("foreground: %v", err)
+	}
+	if err := checkAgent(&c, true); err == nil || !strings.Contains(err.Error(), "login --with-api-key") {
+		t.Errorf("service without a stored sign-in: %v", err)
+	}
+	write(t, filepath.Join(home, ".codex", "auth.json"), "{}")
+	if err := checkAgent(&c, true); err != nil {
+		t.Errorf("service with a stored sign-in: %v", err)
+	}
+}

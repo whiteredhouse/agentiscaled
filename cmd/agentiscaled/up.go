@@ -173,7 +173,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 			c.bindAddr = ""
 		}
 	}
-	if err := checkAgent(&c); err != nil {
+	if err := checkAgent(&c, !*noService); err != nil {
 		return err
 	}
 	if err := checkClients(*clients); err != nil {
@@ -286,7 +286,7 @@ func nextSteps(ctx context.Context, out io.Writer, clients string, c config, exe
 // checkAgent checks an agent's settings before anything is enrolled or
 // started, so a background service does not restart forever on a bad flag,
 // and fixes the agent command to an absolute path that the service finds.
-func checkAgent(c *config) error {
+func checkAgent(c *config, service bool) error {
 	if c.agent == "" {
 		return nil
 	}
@@ -320,8 +320,16 @@ func checkAgent(c *config) error {
 		return fmt.Errorf("agent command %q not found: %w", command, err)
 	}
 	// The runtime checks the rest, such as the agent's own sign-in.
-	_, err = spec.new(c.agentCommand, c.dataDir, c.agentPolicy)
-	return err
+	if _, err = spec.new(c.agentCommand, c.dataDir, c.agentPolicy); err != nil {
+		return err
+	}
+	// A credential in this shell's environment does not reach the
+	// background service.
+	if service && spec.signedIn != nil && !spec.signedIn(c.dataDir, c.agentPolicy) {
+		_, shown := spec.login(context.Background(), c.agentCommand, c.dataDir, c.agentPolicy)
+		return fmt.Errorf("%s is signed in only through this shell's environment, which the background service does not get: run\n  %s\nor use -foreground and start 'agentiscaled run' from this shell", c.agent, shown)
+	}
+	return nil
 }
 
 type joinedNode struct {

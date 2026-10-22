@@ -90,18 +90,21 @@ var runtimes = map[string]struct {
 	new            func(command, dataDir string, policy agentPolicy) (runtime, error)
 	defaultName    string
 	defaultCommand string
-	// signedIn and login are for a runtime whose agent signs in on its
-	// own: whether it has, and the command that signs it in, with how to
-	// show that command.
-	signedIn func(dataDir string, policy agentPolicy) bool
-	login    func(ctx context.Context, command, dataDir string, policy agentPolicy) (*exec.Cmd, string)
+	// signedIn and login are for a runtime whose agent signs in: whether
+	// it has, in a way the background service also sees, and the command
+	// that signs it in, with how to show that command. A runtime may also
+	// accept a credential in the environment (envSignedIn), which only a
+	// node run from the owner's shell gets.
+	signedIn    func(dataDir string, policy agentPolicy) bool
+	envSignedIn func(policy agentPolicy) bool
+	login       func(ctx context.Context, command, dataDir string, policy agentPolicy) (*exec.Cmd, string)
 	// ownerEnv names the variables that locate the owner's configuration
 	// of the runtime. `up` keeps their values for the background service,
 	// which starts without the owner's shell, so that with
 	// agentPolicy.OwnerConfig the agent finds the same configuration.
 	ownerEnv []string
 }{
-	"codex": {newCodexRuntime, "codex-review", "codex", codexSignedIn, codexLogin, []string{"CODEX_HOME"}},
+	"codex": {newCodexRuntime, "codex-review", "codex", codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
 }
 
 // agentOwnerEnv is what `up` keeps of the runtime's ownerEnv: each variable

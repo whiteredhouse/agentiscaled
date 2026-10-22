@@ -126,6 +126,7 @@ func o(t *testing.T) *agentOffer {
 func TestSetUpAgentWithTheOwnersConfig(t *testing.T) {
 	withDefaultDataDir(t)
 	t.Setenv("CODEX_HOME", filepath.Join(os.Getenv("HOME"), "owner-codex"))
+	t.Setenv("CODEX_API_KEY", "")
 	var ran []*exec.Cmd
 	old := runAttached
 	runAttached = func(_ context.Context, cmd *exec.Cmd) error {

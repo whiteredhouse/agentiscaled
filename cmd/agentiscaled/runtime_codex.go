@@ -51,7 +51,7 @@ func newCodexRuntime(command, dataDir string, policy agentPolicy) (runtime, erro
 		return nil, err
 	}
 	if policy.OwnerConfig {
-		if !codexSignedIn(dataDir, policy) {
+		if !codexSignedIn(dataDir, policy) && !codexEnvSignedIn(policy) {
 			return nil, fmt.Errorf("your Codex is not signed in (CODEX_HOME %s): run\n  %s login", home, path)
 		}
 	} else {
@@ -91,10 +91,24 @@ func codexSignedIn(dataDir string, policy agentPolicy) bool {
 	return err == nil
 }
 
-// codexLogin is `codex login`: the owner's own with policy.OwnerConfig,
+// codexEnvSignedIn says whether the owner's Codex has an API key in the
+// environment, which Codex uses before its sign-in. It counts only with the
+// owner's configuration: the agent's own never gets the node's credentials.
+func codexEnvSignedIn(policy agentPolicy) bool {
+	return policy.OwnerConfig && os.Getenv("CODEX_API_KEY") != ""
+}
+
+// codexLogin is `codex login`: the owner's own with policy.OwnerConfig, which
+// stores their CODEX_API_KEY when they have one, so that the background
+// service, which does not get it from their shell, signs in with it too;
 // else for the agent's own CODEX_HOME, which it creates first.
 func codexLogin(ctx context.Context, command, dataDir string, policy agentPolicy) (*exec.Cmd, string) {
 	if policy.OwnerConfig {
+		if key := os.Getenv("CODEX_API_KEY"); key != "" {
+			cmd := exec.CommandContext(ctx, command, "login", "--with-api-key")
+			cmd.Stdin = strings.NewReader(key + "\n")
+			return cmd, "printenv CODEX_API_KEY | " + shellQuote(command) + " login --with-api-key"
+		}
 		return exec.CommandContext(ctx, command, "login"), shellQuote(command) + " login"
 	}
 	home, err := codexHome(dataDir, policy)
