@@ -33,12 +33,12 @@ type a2aTasks struct {
 
 type taskTarget struct {
 	PeerID  string `json:"peer_id" jsonschema:"peer ID of the node that serves the agent, from discover_remote_services"`
-	Service string `json:"service" jsonschema:"the agent's service name (srv_name), for example codex-review"`
+	Service string `json:"service" jsonschema:"the agent's service name (srv_name), as discovery lists it"`
 }
 
 type sendTaskIn struct {
 	taskTarget
-	Text string `json:"text" jsonschema:"the request for the agent, for example what to review"`
+	Text string `json:"text" jsonschema:"the request for the agent: what you want it to do"`
 }
 
 type taskIn struct {

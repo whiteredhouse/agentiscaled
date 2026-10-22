@@ -47,8 +47,8 @@ func TestChooseClients(t *testing.T) {
 
 func TestOfferAgent(t *testing.T) {
 	withDefaultDataDir(t)
-	repo := filepath.Join(t.TempDir(), "My Repo")
-	if err := os.Mkdir(repo, 0o700); err != nil {
+	dir := filepath.Join(t.TempDir(), "My Project")
+	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	for _, input := range []string{"", "\n", "n\n"} {
@@ -57,19 +57,19 @@ func TestOfferAgent(t *testing.T) {
 			t.Errorf("input %q: offered %+v, %v", input, o, err)
 		}
 	}
-	w, out := testWizard("y\n\n/does/not/exist\n" + repo + "\n")
+	w, out := testWizard("y\n\n/does/not/exist\n" + dir + "\n")
 	o, err := w.offerAgent()
 	if err != nil || o == nil {
 		t.Fatalf("%+v, %v\n%s", o, err, out)
 	}
-	wantDir := filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-codex-my-repo")
-	if o.runtime != "codex" || o.agentDir != repo || o.dataDir != wantDir || o.policy != (agentPolicy{DirInstructions: true, DirSkills: true, OwnerConfig: true}) {
+	wantDir := filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-codex-my-project")
+	if o.runtime != "codex" || o.agentDir != dir || o.dataDir != wantDir || o.policy != (agentPolicy{DirInstructions: true, DirSkills: true, OwnerConfig: true}) {
 		t.Errorf("offer %+v, want data dir %s and the policy on", o, wantDir)
 	}
 	if !strings.Contains(out.String(), "/does/not/exist is not a directory") {
 		t.Errorf("output:\n%s", out)
 	}
-	w, _ = testWizard("y\n" + repo + "\nn\ny\nn\n")
+	w, _ = testWizard("y\n" + dir + "\nn\ny\nn\n")
 	if o, err := w.offerAgent(); err != nil || o == nil || o.policy != (agentPolicy{DirInstructions: true}) {
 		t.Errorf("own config and skills turned off: offered %+v, %v", o, err)
 	}
