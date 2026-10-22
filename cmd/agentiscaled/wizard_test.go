@@ -80,14 +80,14 @@ func TestOfferAgent(t *testing.T) {
 	w, out = testWizard("y\n\n")
 	o, err = w.offerAgent()
 	home, _ := os.UserHomeDir()
-	ownDir := filepath.Join(home, "agentiscale-agent")
-	if err != nil || o == nil || o.agentDir != ownDir || o.dataDir != filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-codex-agent") {
+	ownDir := filepath.Join(home, ".agentiscaled", "workspaces", "codex")
+	if err != nil || o == nil || o.agentDir != ownDir || o.dataDir != filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-codex") {
 		t.Fatalf("Enter: offered %+v, %v\n%s", o, err, out)
 	}
 	if fi, err := os.Stat(ownDir); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
 		t.Errorf("the agent's own directory: %v, %v", fi, err)
 	}
-	if !strings.Contains(out.String(), "Directory the agent works in [~/agentiscale-agent]: ") {
+	if !strings.Contains(out.String(), "Directory the agent works in [~/.agentiscaled/workspaces/codex]: ") {
 		t.Errorf("output:\n%s", out)
 	}
 }

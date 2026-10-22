@@ -124,9 +124,11 @@ func (w *wizard) chooseClients(installed []string, servesAgent bool) (string, er
 }
 
 // defaultAgentDir is the directory an offered agent works in when the owner
-// names none: one that agentiscaled makes for it, apart from the owner's own
-// files.
-const defaultAgentDir = "~/agentiscale-agent"
+// names none: a workspace of its own that agentiscaled makes for it, apart
+// from the owner's files and from every node's data directory.
+func defaultAgentDir(rt string) string {
+	return "~/.agentiscaled/workspaces/" + rt
+}
 
 // agentOffer is an agent the owner chose to offer from this machine.
 type agentOffer struct {
@@ -163,7 +165,7 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 	}
 	var dir string
 	for {
-		answer, err := w.ask("  Directory the agent works in", defaultAgentDir)
+		answer, err := w.ask("  Directory the agent works in", defaultAgentDir(rt))
 		if errors.Is(err, io.EOF) {
 			fmt.Fprintln(w.out, "  No directory given; no agent offered.")
 			return nil, nil
@@ -172,7 +174,7 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 		}
 		dir = expandHome(answer)
 		// The default is a directory of the agent's own, made on first use.
-		if answer == defaultAgentDir {
+		if answer == defaultAgentDir(rt) {
 			if err := os.MkdirAll(dir, 0o700); err != nil {
 				return nil, err
 			}
@@ -225,7 +227,8 @@ func expandHome(path string) string {
 
 // agentDataDir is the data directory of the node that serves an agent,
 // next to the default one and named after the runtime and its directory,
-// such as agentiscale-codex-my-project. Only a directory that holds no node
+// such as agentiscale-codex-my-project, or agentiscale-codex for the
+// runtime's own workspace (defaultAgentDir). Only a directory that holds no node
 // yet (nothing, or only the agent's own sign-in from a setup that stopped
 // before `up`), or whose node serves this same agent directory, is taken:
 // any other,
@@ -234,7 +237,10 @@ func expandHome(path string) string {
 // directory, and the new one gets -2, -3 and so on.
 func agentDataDir(rt, agentDir string) string {
 	name := clientEntryName(filepath.Join("/", filepath.Base(agentDir)))
-	base := filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-"+rt+"-"+strings.TrimPrefix(name, "agentiscale-"))
+	base := filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-"+rt)
+	if name = strings.TrimPrefix(name, "agentiscale-"); name != rt {
+		base += "-" + name
+	}
 	for n := 1; ; n++ {
 		dir := base
 		if n > 1 {
