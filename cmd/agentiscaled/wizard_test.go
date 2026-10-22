@@ -62,14 +62,14 @@ func TestOfferAgent(t *testing.T) {
 		t.Fatalf("%+v, %v\n%s", o, err, out)
 	}
 	wantDir := filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-codex-my-repo")
-	if o.runtime != "codex" || o.agentDir != repo || o.dataDir != wantDir || o.policy != (agentPolicy{RepoInstructions: true, RepoSkills: true}) {
+	if o.runtime != "codex" || o.agentDir != repo || o.dataDir != wantDir || o.policy != (agentPolicy{DirInstructions: true, DirSkills: true}) {
 		t.Errorf("offer %+v, want data dir %s and the policy on", o, wantDir)
 	}
 	if !strings.Contains(out.String(), "/does/not/exist is not a directory") {
 		t.Errorf("output:\n%s", out)
 	}
 	w, _ = testWizard("y\n" + repo + "\ny\nn\n")
-	if o, err := w.offerAgent(); err != nil || o == nil || o.policy != (agentPolicy{RepoInstructions: true}) {
+	if o, err := w.offerAgent(); err != nil || o == nil || o.policy != (agentPolicy{DirInstructions: true}) {
 		t.Errorf("skills turned off: offered %+v, %v", o, err)
 	}
 	w, _ = testWizard("y\n")
@@ -111,12 +111,12 @@ func TestSetUpAgentSignsInOnce(t *testing.T) {
 	if err := w.setUpAgent(context.Background(), "/bin/agentiscaled", offer); err != nil {
 		t.Fatal(err)
 	}
-	if len(ran) != 1 || ran[0][1] != "up" || !strings.HasSuffix(strings.Join(ran[0], " "), " -agent-repo-instructions=false -agent-repo-skills=false") {
+	if len(ran) != 1 || ran[0][1] != "up" || !strings.HasSuffix(strings.Join(ran[0], " "), " -agent-dir-instructions=false -agent-dir-skills=false") {
 		t.Errorf("ran %q", ran)
 	}
 }
 
 func o(t *testing.T) *agentOffer {
 	dir := filepath.Join(os.Getenv("HOME"), "repo")
-	return &agentOffer{runtime: "codex", agentDir: dir, dataDir: agentDataDir("codex", dir), policy: agentPolicy{RepoInstructions: true, RepoSkills: true}}
+	return &agentOffer{runtime: "codex", agentDir: dir, dataDir: agentDataDir("codex", dir), policy: agentPolicy{DirInstructions: true, DirSkills: true}}
 }

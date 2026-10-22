@@ -93,9 +93,10 @@ Offer an agent from this machine to your network? [y/N]: y
   Load its skills? [Y/n]:
 ```
 
-By default the agent follows the repository's `AGENTS.md` files and skills, as in any
-Codex run in it. If the code may come from someone you don't trust, answer n; `up`
-then passes `-agent-repo-instructions=false` or `-agent-repo-skills=false`.
+By default the agent follows the directory's own instruction files (`AGENTS.md`) and
+skills, as its runtime does in any run there. If the directory may hold content from
+someone you don't trust, answer n; `up` then passes `-agent-dir-instructions=false` or
+`-agent-dir-skills=false`.
 
 The agent gets a node of its own, so your agent apps stay on the first one, which only
 sends. `up` signs the agent in to Codex on its own, apart from your own Codex (it runs

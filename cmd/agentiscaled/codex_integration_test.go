@@ -38,7 +38,7 @@ func TestCodexAgainstAHostileCheckout(t *testing.T) {
 	}
 	t.Run("policy off", func(t *testing.T) { codexOnHostileCheckout(t, command, agentPolicy{}) })
 	t.Run("policy on", func(t *testing.T) {
-		codexOnHostileCheckout(t, command, agentPolicy{RepoInstructions: true, RepoSkills: true})
+		codexOnHostileCheckout(t, command, agentPolicy{DirInstructions: true, DirSkills: true})
 	})
 }
 
@@ -130,8 +130,8 @@ func codexOnHostileCheckout(t *testing.T, command string, policy agentPolicy) {
 	for marker, allowed := range map[string]bool{
 		"OWNER-SKILL":          false,
 		"HOSTILE-CONFIG":       false,
-		"HOSTILE-INSTRUCTIONS": policy.RepoInstructions,
-		"HOSTILE-SKILL":        policy.RepoSkills,
+		"HOSTILE-INSTRUCTIONS": policy.DirInstructions,
+		"HOSTILE-SKILL":        policy.DirSkills,
 	} {
 		if got := strings.Contains(requests, marker); got != allowed {
 			t.Errorf("%s reached the model: %v, want %v", marker, got, allowed)

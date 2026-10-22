@@ -38,9 +38,9 @@ type settings struct {
 	AgentCommand string `json:"agent_command,omitempty"`
 	AgentName    string `json:"agent_name,omitempty"`
 	// What the agent may not take from AgentDir; it takes all when absent.
-	AgentIgnoreRepoInstructions bool   `json:"agent_ignore_repo_instructions,omitempty"`
-	AgentIgnoreRepoSkills       bool   `json:"agent_ignore_repo_skills,omitempty"`
-	MachineName                 string `json:"machine_name,omitempty"`
+	AgentIgnoreDirInstructions bool   `json:"agent_ignore_dir_instructions,omitempty"`
+	AgentIgnoreDirSkills       bool   `json:"agent_ignore_dir_skills,omitempty"`
+	MachineName                string `json:"machine_name,omitempty"`
 	// PATH for the service, captured at `up`, since launchd and systemd
 	// start services with a minimal one and an agent CLI may need more.
 	Path string `json:"path,omitempty"`
@@ -88,7 +88,7 @@ func (s settings) config(dataDir string) config {
 		agentDir:     s.AgentDir,
 		agentCommand: s.AgentCommand,
 		agentName:    s.AgentName,
-		agentPolicy:  agentPolicy{RepoInstructions: !s.AgentIgnoreRepoInstructions, RepoSkills: !s.AgentIgnoreRepoSkills},
+		agentPolicy:  agentPolicy{DirInstructions: !s.AgentIgnoreDirInstructions, DirSkills: !s.AgentIgnoreDirSkills},
 		machineName:  s.MachineName,
 	}
 }
@@ -199,12 +199,12 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		AgentName:    c.agentName,
 		MachineName:  c.machineName,
 
-		AgentIgnoreRepoInstructions: !c.agentPolicy.RepoInstructions,
-		AgentIgnoreRepoSkills:       !c.agentPolicy.RepoSkills,
-		Path:                        os.Getenv("PATH"),
-		PeerID:                      joined.peerID,
-		NetworkID:                   joined.networkID,
-		MeshURL:                     joined.meshURL,
+		AgentIgnoreDirInstructions: !c.agentPolicy.DirInstructions,
+		AgentIgnoreDirSkills:       !c.agentPolicy.DirSkills,
+		Path:                       os.Getenv("PATH"),
+		PeerID:                     joined.peerID,
+		NetworkID:                  joined.networkID,
+		MeshURL:                    joined.meshURL,
 	}
 	if err := saveSettings(c.dataDir, s); err != nil {
 		return fmt.Errorf("save settings: %w", err)

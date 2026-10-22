@@ -185,8 +185,8 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 		question string
 		allow    *bool
 	}{
-		{"  Load its instruction files (AGENTS.md)?", &offer.policy.RepoInstructions},
-		{"  Load its skills?", &offer.policy.RepoSkills},
+		{"  Load its instruction files (AGENTS.md)?", &offer.policy.DirInstructions},
+		{"  Load its skills?", &offer.policy.DirSkills},
 	} {
 		yes, err := w.yesNo(q.question, true)
 		if err := ignoreEOF(err); err != nil {
@@ -235,11 +235,11 @@ func (w *wizard) setUpAgent(ctx context.Context, exe string, o *agentOffer) erro
 	}
 	fmt.Fprintf(w.out, "\nSetting up the agent's own node in %s:\n", o.dataDir)
 	args := []string{"up", "-y", "-data-dir", o.dataDir, "-agent", o.runtime, "-agent-dir", o.agentDir}
-	if !o.policy.RepoInstructions {
-		args = append(args, "-agent-repo-instructions=false")
+	if !o.policy.DirInstructions {
+		args = append(args, "-agent-dir-instructions=false")
 	}
-	if !o.policy.RepoSkills {
-		args = append(args, "-agent-repo-skills=false")
+	if !o.policy.DirSkills {
+		args = append(args, "-agent-dir-skills=false")
 	}
 	return runAttached(ctx, exec.CommandContext(ctx, exe, args...))
 }

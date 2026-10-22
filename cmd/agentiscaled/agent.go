@@ -68,11 +68,11 @@ type taskRequest struct {
 // beyond its files. Each is on, as in any run of the agent there, unless the
 // owner turns it off, such as for code from someone else.
 type agentPolicy struct {
-	// RepoInstructions loads the directory's instruction files, such as
-	// AGENTS.md (-agent-repo-instructions).
-	RepoInstructions bool
-	// RepoSkills loads the directory's skills (-agent-repo-skills).
-	RepoSkills bool
+	// DirInstructions loads the directory's instruction files, such as
+	// AGENTS.md (-agent-dir-instructions).
+	DirInstructions bool
+	// DirSkills loads the directory's skills (-agent-dir-skills).
+	DirSkills bool
 }
 
 // runtimes maps each -agent value to how its runtime is made, from

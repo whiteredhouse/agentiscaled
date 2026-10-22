@@ -182,10 +182,10 @@ func (r *codexRuntime) Run(ctx context.Context, dir string, req taskRequest) (st
 		"--ephemeral",
 		"--color", "never",
 		"-c", `approval_policy="never"`}
-	if !r.policy.RepoInstructions {
+	if !r.policy.DirInstructions {
 		args = append(args, "-c", "project_doc_max_bytes=0")
 	}
-	if !r.policy.RepoSkills {
+	if !r.policy.DirSkills {
 		skills, err := checkoutSkills(dir)
 		if err != nil {
 			return "", fmt.Errorf("look for skills in %s: %w", dir, err)

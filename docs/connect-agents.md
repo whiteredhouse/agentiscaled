@@ -113,8 +113,8 @@ included), only `PATH`, locale, proxy and CA settings (`CODEX_CA_CERTIFICATE`,
 `SSL_CERT_FILE`). Its configuration, and so its MCP servers, are not loaded, so
 the review cannot call back into the network. The repository's `AGENTS.md` files and
 skills load as in any Codex run in it. For code that may come from someone you don't
-trust, `-agent-repo-instructions=false` passes `-c project_doc_max_bytes=0` so no
-`AGENTS.md` is loaded, and `-agent-repo-skills=false` turns off every skill in or
+trust, `-agent-dir-instructions=false` passes `-c project_doc_max_bytes=0` so no
+`AGENTS.md` is loaded, and `-agent-dir-skills=false` turns off every skill in or
 above the repository (`.agents/skills`, `.codex/skills`), the machine's
 `/etc/codex/skills` and Codex's bundled skills. Commands Codex
 runs see only basic environment variables (`HOME`, `PATH`, `USER` and the like)

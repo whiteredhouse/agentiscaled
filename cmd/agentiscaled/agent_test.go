@@ -443,9 +443,9 @@ func TestCodexRuntimePolicyLoadsTheCheckoutsGuidance(t *testing.T) {
 		policy      agentPolicy
 		want, avoid []string
 	}{
-		{agentPolicy{RepoInstructions: true}, []string{" skills.include_instructions=false "}, []string{" project_doc_max_bytes=0 "}},
-		{agentPolicy{RepoSkills: true}, []string{" project_doc_max_bytes=0 "}, []string{" skills."}},
-		{agentPolicy{RepoInstructions: true, RepoSkills: true}, nil, []string{" project_doc_max_bytes=0 ", " skills."}},
+		{agentPolicy{DirInstructions: true}, []string{" skills.include_instructions=false "}, []string{" project_doc_max_bytes=0 "}},
+		{agentPolicy{DirSkills: true}, []string{" project_doc_max_bytes=0 "}, []string{" skills."}},
+		{agentPolicy{DirInstructions: true, DirSkills: true}, nil, []string{" project_doc_max_bytes=0 ", " skills."}},
 	} {
 		rt := &codexRuntime{command: codex, home: filepath.Join(dir, "agent-codex"), policy: tc.policy}
 		if _, err := rt.Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "Review"}); err != nil {
