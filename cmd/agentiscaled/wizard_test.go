@@ -82,6 +82,7 @@ func TestOfferAgent(t *testing.T) {
 		{"y\n\n\n", "codex", "agentiscale-codex"},
 		{"y\nBad Name\nhelper\n\n", "helper", "agentiscale-codex-helper"},
 		{"y\ncodex-helper\n\n", "codex-helper", "agentiscale-codex-helper"},
+		{"y\n" + strings.Repeat("a", 64) + "\n" + strings.Repeat("a", 63) + "\n\n", strings.Repeat("a", 63), "agentiscale-codex-" + strings.Repeat("a", 63)},
 	} {
 		w, out = testWizard(c.input)
 		o, err = w.offerAgent()

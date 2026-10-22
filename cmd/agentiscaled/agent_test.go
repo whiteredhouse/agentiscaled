@@ -658,4 +658,13 @@ func TestCodexAPIKeyWithTheOwnersConfig(t *testing.T) {
 	if err := checkAgent(&c, true); err != nil {
 		t.Errorf("service with a stored sign-in: %v", err)
 	}
+	// The name is checked before anything is set up, by the registry's rule.
+	c.agentName = strings.Repeat("a", 64)
+	if err := checkAgent(&c, true); err == nil || !strings.Contains(err.Error(), "-agent-name") {
+		t.Errorf("a 64-character name: %v", err)
+	}
+	c.agentName = strings.Repeat("a", 63)
+	if err := checkAgent(&c, true); err != nil {
+		t.Errorf("a 63-character name: %v", err)
+	}
 }

@@ -132,14 +132,14 @@ func defaultAgentDir(name string) string {
 }
 
 // validAgentName tells whether a name can be an agent's name in the network
-// and the name of its workspace directory.
+// (agentNameError) and the name of its workspace directory.
 func validAgentName(name string) bool {
 	for i, r := range name {
 		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' && i > 0) {
 			return false
 		}
 	}
-	return name != ""
+	return name != "" && agentNameError(name) == nil
 }
 
 // agentOffer is an agent the owner chose to offer from this machine.
@@ -189,7 +189,7 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 			name = answer
 			break
 		}
-		fmt.Fprintln(w.out, "  Use lowercase letters, digits and dashes.")
+		fmt.Fprintln(w.out, "  Use up to 63 lowercase letters, digits and dashes.")
 	}
 	var dir string
 	for {
