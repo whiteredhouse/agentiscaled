@@ -125,11 +125,27 @@ func (w *wizard) chooseClients(installed []string, servesAgent bool) (string, er
 
 // defaultAgentDir is the directory an offered agent works in when the owner
 // names none: a workspace of its own, named after the agent, that
-// agentiscaled makes for it next to the nodes' data directories (such as
-// ~/Library/Application Support/agentiscale-workspaces/codex), apart from
+// agentiscaled makes for it in the user's application data (such as
+// ~/Library/Application Support/agentiscaled/workspaces/codex), apart from
 // the owner's files and from every node's data directory.
 func defaultAgentDir(name string) string {
-	return filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-workspaces", name)
+	return filepath.Join(userDataDir(), "agentiscaled", "workspaces", name)
+}
+
+// userDataDir is where applications keep the user's data: Application
+// Support on macOS, $XDG_DATA_HOME (default ~/.local/share) on other Unix
+// systems. Go's os package has no such function.
+func userDataDir() string {
+	if goruntime.GOOS == "darwin" || goruntime.GOOS == "windows" {
+		return filepath.Dir(defaultDataDir())
+	}
+	if dir := os.Getenv("XDG_DATA_HOME"); filepath.IsAbs(dir) {
+		return dir
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".local", "share")
+	}
+	return filepath.Dir(defaultDataDir())
 }
 
 // validAgentName tells whether a name can be an agent's name in the network

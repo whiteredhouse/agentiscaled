@@ -83,16 +83,15 @@ prints the lines to add yourself, and `-clients codex` connects only the Codex C
 
 To let your other agents send tasks to an agent on this machine, answer y to "Offer an
 agent from this machine to your network?" and give its name in your network and the
-directory it works in. Press Enter at the directory for a workspace of its own next to
-the nodes' data directories, which `up` creates:
-`~/Library/Application Support/agentiscale-workspaces/<name>` on macOS and
-`~/.config/agentiscale-workspaces/<name>` on Linux.
+directory it works in. Press Enter at the directory for a workspace of its own, which
+`up` creates: `~/Library/Application Support/agentiscaled/workspaces/<name>` on macOS
+and `~/.local/share/agentiscaled/workspaces/<name>` (`$XDG_DATA_HOME`) on Linux.
 
 ```text
 Offer an agent from this machine to your network? [y/N]: y
   Runtime: codex (the only one today)
   Name of the agent in your network [codex]:
-  Directory the agent works in [~/Library/Application Support/agentiscale-workspaces/codex]: ~/work/my-project
+  Directory the agent works in [~/Library/Application Support/agentiscaled/workspaces/codex]: ~/work/my-project
   Use your own codex configuration (sign-in, skills, plugins, MCP servers)? [Y/n]:
   Load the directory's instruction files (AGENTS.md)? [Y/n]:
   Load the directory's skills? [Y/n]:
