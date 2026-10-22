@@ -124,22 +124,35 @@ func (w *wizard) chooseClients(installed []string, servesAgent bool) (string, er
 }
 
 // defaultAgentDir is the directory an offered agent works in when the owner
-// names none: a workspace of its own that agentiscaled makes for it, apart
-// from the owner's files and from every node's data directory.
-func defaultAgentDir(rt string) string {
-	return "~/.agentiscaled/workspaces/" + rt
+// names none: a workspace of its own, named after the agent, that
+// agentiscaled makes for it apart from the owner's files and from every
+// node's data directory.
+func defaultAgentDir(name string) string {
+	return "~/.agentiscaled/workspaces/" + name
+}
+
+// validAgentName tells whether a name can be an agent's name in the network
+// and the name of its workspace directory.
+func validAgentName(name string) bool {
+	for i, r := range name {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' && i > 0) {
+			return false
+		}
+	}
+	return name != ""
 }
 
 // agentOffer is an agent the owner chose to offer from this machine.
 type agentOffer struct {
 	runtime  string
+	name     string
 	agentDir string
 	dataDir  string
 	policy   agentPolicy
 }
 
 // offerAgent asks whether to offer an agent from this machine and, on yes,
-// which runtime and directory. The agent gets a node of its own, so the node
+// which runtime, name and directory. The agent gets a node of its own, so the node
 // the clients use stays one that only sends.
 func (w *wizard) offerAgent() (*agentOffer, error) {
 	yes, err := w.yesNo("\nOffer an agent from this machine to your network?", false)
@@ -163,9 +176,24 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 	} else {
 		fmt.Fprintf(w.out, "  Runtime: %s (the only one today)\n", rt)
 	}
+	name := runtimes[rt].defaultName
+	for {
+		answer, err := w.ask("  Name of the agent in your network", name)
+		if errors.Is(err, io.EOF) {
+			fmt.Fprintln(w.out, "  No name given; no agent offered.")
+			return nil, nil
+		} else if err != nil {
+			return nil, err
+		}
+		if validAgentName(answer) {
+			name = answer
+			break
+		}
+		fmt.Fprintln(w.out, "  Use lowercase letters, digits and dashes.")
+	}
 	var dir string
 	for {
-		answer, err := w.ask("  Directory the agent works in", defaultAgentDir(rt))
+		answer, err := w.ask("  Directory the agent works in", defaultAgentDir(name))
 		if errors.Is(err, io.EOF) {
 			fmt.Fprintln(w.out, "  No directory given; no agent offered.")
 			return nil, nil
@@ -174,7 +202,7 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 		}
 		dir = expandHome(answer)
 		// The default is a directory of the agent's own, made on first use.
-		if answer == defaultAgentDir(rt) {
+		if answer == defaultAgentDir(name) {
 			if err := os.MkdirAll(dir, 0o700); err != nil {
 				return nil, err
 			}
@@ -188,7 +216,7 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 		}
 		break
 	}
-	offer := &agentOffer{runtime: rt, agentDir: dir, dataDir: agentDataDir(rt, dir)}
+	offer := &agentOffer{runtime: rt, name: name, agentDir: dir, dataDir: agentDataDir(rt, dir)}
 	// The agent runs as the owner's own runtime would, with their
 	// configuration and the directory's own guidance, unless the owner says
 	// no, such as for code from someone else.
@@ -227,8 +255,8 @@ func expandHome(path string) string {
 
 // agentDataDir is the data directory of the node that serves an agent,
 // next to the default one and named after the runtime and its directory,
-// such as agentiscale-codex-my-project, or agentiscale-codex for the
-// runtime's own workspace (defaultAgentDir). Only a directory that holds no node
+// such as agentiscale-codex-my-project, or agentiscale-codex-review for the
+// workspace of the agent codex-review (defaultAgentDir). Only a directory that holds no node
 // yet (nothing, or only the agent's own sign-in from a setup that stopped
 // before `up`), or whose node serves this same agent directory, is taken:
 // any other,
@@ -238,7 +266,8 @@ func expandHome(path string) string {
 func agentDataDir(rt, agentDir string) string {
 	name := clientEntryName(filepath.Join("/", filepath.Base(agentDir)))
 	base := filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-"+rt)
-	if name = strings.TrimPrefix(name, "agentiscale-"); name != rt {
+	name = strings.TrimPrefix(strings.TrimPrefix(name, "agentiscale-"), rt+"-")
+	if name != rt {
 		base += "-" + name
 	}
 	for n := 1; ; n++ {
@@ -275,6 +304,9 @@ func (w *wizard) setUpAgent(ctx context.Context, exe string, o *agentOffer) erro
 	}
 	fmt.Fprintf(w.out, "\nSetting up the agent's own node in %s:\n", o.dataDir)
 	args := []string{"up", "-y", "-data-dir", o.dataDir, "-agent", o.runtime, "-agent-dir", o.agentDir}
+	if o.name != "" && o.name != spec.defaultName {
+		args = append(args, "-agent-name", o.name)
+	}
 	if !o.policy.DirInstructions {
 		args = append(args, "-agent-dir-instructions=false")
 	}
