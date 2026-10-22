@@ -179,14 +179,16 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 		break
 	}
 	offer := &agentOffer{runtime: rt, agentDir: dir, dataDir: agentDataDir(rt, dir)}
-	// Its own guidance loads as in any run there, unless the owner says no,
-	// such as for code from someone else.
+	// The agent runs as the owner's own runtime would, with their
+	// configuration and the directory's own guidance, unless the owner says
+	// no, such as for code from someone else.
 	for _, q := range []struct {
 		question string
 		allow    *bool
 	}{
-		{"  Load its instruction files (AGENTS.md)?", &offer.policy.DirInstructions},
-		{"  Load its skills?", &offer.policy.DirSkills},
+		{"  Use your own " + rt + " configuration (sign-in, skills, plugins, MCP servers)?", &offer.policy.OwnerConfig},
+		{"  Load the directory's instruction files (AGENTS.md)?", &offer.policy.DirInstructions},
+		{"  Load the directory's skills?", &offer.policy.DirSkills},
 	} {
 		yes, err := w.yesNo(q.question, true)
 		if err := ignoreEOF(err); err != nil {
@@ -226,9 +228,13 @@ func agentDataDir(rt, agentDir string) string {
 // and sets up its node with `up` for that data directory.
 func (w *wizard) setUpAgent(ctx context.Context, exe string, o *agentOffer) error {
 	spec := runtimes[o.runtime]
-	if spec.login != nil && !spec.signedIn(o.dataDir) {
-		cmd, shown := spec.login(ctx, spec.defaultCommand, o.dataDir)
-		fmt.Fprintf(w.out, "\nThe agent signs in to %s on its own, apart from your own sign-in:\n  %s\n", o.runtime, shown)
+	if spec.login != nil && !spec.signedIn(o.dataDir, o.policy) {
+		cmd, shown := spec.login(ctx, spec.defaultCommand, o.dataDir, o.policy)
+		if o.policy.OwnerConfig {
+			fmt.Fprintf(w.out, "\nYou are not signed in to %s yet:\n  %s\n", o.runtime, shown)
+		} else {
+			fmt.Fprintf(w.out, "\nThe agent signs in to %s on its own, apart from your own sign-in:\n  %s\n", o.runtime, shown)
+		}
 		if err := runAttached(ctx, cmd); err != nil {
 			return fmt.Errorf("the agent's sign-in: %w", err)
 		}
@@ -240,6 +246,9 @@ func (w *wizard) setUpAgent(ctx context.Context, exe string, o *agentOffer) erro
 	}
 	if !o.policy.DirSkills {
 		args = append(args, "-agent-dir-skills=false")
+	}
+	if !o.policy.OwnerConfig {
+		args = append(args, "-agent-owner-config=false")
 	}
 	return runAttached(ctx, exec.CommandContext(ctx, exe, args...))
 }

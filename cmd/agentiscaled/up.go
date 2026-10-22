@@ -40,6 +40,7 @@ type settings struct {
 	// What the agent may not take from AgentDir; it takes all when absent.
 	AgentIgnoreDirInstructions bool   `json:"agent_ignore_dir_instructions,omitempty"`
 	AgentIgnoreDirSkills       bool   `json:"agent_ignore_dir_skills,omitempty"`
+	AgentOwnConfig             bool   `json:"agent_own_config,omitempty"`
 	MachineName                string `json:"machine_name,omitempty"`
 	// PATH for the service, captured at `up`, since launchd and systemd
 	// start services with a minimal one and an agent CLI may need more.
@@ -88,7 +89,7 @@ func (s settings) config(dataDir string) config {
 		agentDir:     s.AgentDir,
 		agentCommand: s.AgentCommand,
 		agentName:    s.AgentName,
-		agentPolicy:  agentPolicy{DirInstructions: !s.AgentIgnoreDirInstructions, DirSkills: !s.AgentIgnoreDirSkills},
+		agentPolicy:  agentPolicy{DirInstructions: !s.AgentIgnoreDirInstructions, DirSkills: !s.AgentIgnoreDirSkills, OwnerConfig: !s.AgentOwnConfig},
 		machineName:  s.MachineName,
 	}
 }
@@ -201,6 +202,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 
 		AgentIgnoreDirInstructions: !c.agentPolicy.DirInstructions,
 		AgentIgnoreDirSkills:       !c.agentPolicy.DirSkills,
+		AgentOwnConfig:             !c.agentPolicy.OwnerConfig,
 		Path:                       os.Getenv("PATH"),
 		PeerID:                     joined.peerID,
 		NetworkID:                  joined.networkID,

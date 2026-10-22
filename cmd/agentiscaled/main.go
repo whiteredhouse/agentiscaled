@@ -136,6 +136,7 @@ func nodeFlags(fs *flag.FlagSet, c *config) {
 	fs.StringVar(&c.agentName, "agent-name", "", "Service name of the agent in the network (default: the runtime's, e.g. codex-review)")
 	fs.BoolVar(&c.agentPolicy.DirInstructions, "agent-dir-instructions", true, "Let the agent load the instruction files (AGENTS.md) of -agent-dir; =false ignores them")
 	fs.BoolVar(&c.agentPolicy.DirSkills, "agent-dir-skills", true, "Let the agent load the skills of -agent-dir; =false turns them off")
+	fs.BoolVar(&c.agentPolicy.OwnerConfig, "agent-owner-config", true, "Run the agent with your own configuration of its runtime (sign-in, skills, plugins, MCP servers, settings); =false gives it its own in -data-dir")
 	fs.StringVar(&c.machineName, "hostname", defaultMachineName(), "Name of this machine in your network's member list")
 }
 

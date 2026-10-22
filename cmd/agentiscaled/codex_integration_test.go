@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestCodexAgainstAHostileCheckout runs the real Codex CLI, given by
@@ -22,8 +23,10 @@ import (
 // HOME, outside the checkout's directories, and CODEX_HOME have skills of
 // their own; and the request names every skill. The fake model asks Codex to run one command that reads the
 // environment, a file outside the checkout and CODEX_HOME, and writes a file.
-// The test checks what reaches the model with the checkout's instruction
-// files and skills loaded, as by default ("policy on"), and turned off:
+// The test checks what reaches the model with the owner's Codex
+// configuration ("owner config", the default), and with the agent's own,
+// with the checkout's instruction files and skills loaded ("policy on") and
+// turned off:
 //
 //	AGENTISCALE_TEST_CODEX=$(command -v codex) go test ./cmd/agentiscaled -run TestCodexAgainstAHostileCheckout -v
 //
@@ -37,13 +40,16 @@ func TestCodexAgainstAHostileCheckout(t *testing.T) {
 		t.Skip("set AGENTISCALE_TEST_CODEX to a Codex CLI to run")
 	}
 	t.Run("policy off", func(t *testing.T) { codexOnHostileCheckout(t, command, agentPolicy{}) })
+	t.Run("owner config", func(t *testing.T) {
+		codexOnHostileCheckout(t, command, agentPolicy{DirInstructions: true, DirSkills: true, OwnerConfig: true})
+	})
 	t.Run("policy on", func(t *testing.T) {
 		codexOnHostileCheckout(t, command, agentPolicy{DirInstructions: true, DirSkills: true})
 	})
 }
 
 func codexOnHostileCheckout(t *testing.T, command string, policy agentPolicy) {
-	home := t.TempDir()
+	home := codexTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
 	write(t, filepath.Join(home, ".codex", "owner-secret"), "CODEX-HOME-SECRET")
@@ -61,11 +67,20 @@ func codexOnHostileCheckout(t *testing.T, command string, policy agentPolicy) {
 		writeSkill(t, filepath.Join(home, dir), name, "OWNER-SKILL")
 	}
 
-	dataDir := t.TempDir()
+	dataDir := codexTempDir(t)
 	if _, err := newCodexRuntime(command, dataDir, policy); err == nil {
 		t.Fatal("the runtime started without the agent's own sign-in")
 	}
-	write(t, filepath.Join(dataDir, "codex", "auth.json"), `{"OPENAI_API_KEY": "agent-key"}`)
+	// The run's sign-in: the agent's own, or with the owner's configuration
+	// the owner's, which Codex takes from CODEX_API_KEY before auth.json.
+	wantAuth := "Bearer agent-key"
+	if policy.OwnerConfig {
+		write(t, filepath.Join(home, ".codex", "auth.json"), `{"OPENAI_API_KEY": "owner-auth-key"}`)
+		wantAuth = "Bearer owner-codex-key"
+		write(t, filepath.Join(home, ".codex", "config.toml"), "developer_instructions = \"OWNER-CONFIG: follow the owner's settings\"\n")
+	} else {
+		write(t, filepath.Join(dataDir, "codex", "auth.json"), `{"OPENAI_API_KEY": "agent-key"}`)
+	}
 	rt, err := newCodexRuntime(command, dataDir, policy)
 	if err != nil {
 		t.Fatal(err)
@@ -121,14 +136,15 @@ func codexOnHostileCheckout(t *testing.T, command string, policy agentPolicy) {
 		t.Fatal("no request reached the model")
 	}
 	for _, a := range auth {
-		if a != "Bearer agent-key" {
-			t.Errorf("the model was called with %q, not the agent's sign-in", a)
+		if a != wantAuth {
+			t.Errorf("the model was called with %q, not %q", a, wantAuth)
 		}
 	}
 	// The owner's skills and the checkout's config never reach the model;
 	// the checkout's instruction files and skills do only when allowed.
 	for marker, allowed := range map[string]bool{
-		"OWNER-SKILL":          false,
+		"OWNER-SKILL":          policy.OwnerConfig,
+		"OWNER-CONFIG":         policy.OwnerConfig,
 		"HOSTILE-CONFIG":       false,
 		"HOSTILE-INSTRUCTIONS": policy.DirInstructions,
 		"HOSTILE-SKILL":        policy.DirSkills,
@@ -217,6 +233,23 @@ func (m *fakeModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	event("response.output_item.done", map[string]any{"item": item})
 	event("response.completed", map[string]any{"response": map[string]any{"id": "r1",
 		"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}})
+}
+
+// codexTempDir is a temporary directory for a CODEX_HOME. Codex may still be
+// cloning plugins into it after a run ends, which t.TempDir's cleanup fails
+// on; this one retries.
+func codexTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "agentiscale-codex-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for i := 0; i < 50 && os.RemoveAll(dir) != nil; i++ {
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+	return dir
 }
 
 func writeSkill(t *testing.T, dir, name, marker string) {

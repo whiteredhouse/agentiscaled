@@ -62,15 +62,15 @@ func TestOfferAgent(t *testing.T) {
 		t.Fatalf("%+v, %v\n%s", o, err, out)
 	}
 	wantDir := filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-codex-my-repo")
-	if o.runtime != "codex" || o.agentDir != repo || o.dataDir != wantDir || o.policy != (agentPolicy{DirInstructions: true, DirSkills: true}) {
+	if o.runtime != "codex" || o.agentDir != repo || o.dataDir != wantDir || o.policy != (agentPolicy{DirInstructions: true, DirSkills: true, OwnerConfig: true}) {
 		t.Errorf("offer %+v, want data dir %s and the policy on", o, wantDir)
 	}
 	if !strings.Contains(out.String(), "/does/not/exist is not a directory") {
 		t.Errorf("output:\n%s", out)
 	}
-	w, _ = testWizard("y\n" + repo + "\ny\nn\n")
+	w, _ = testWizard("y\n" + repo + "\nn\ny\nn\n")
 	if o, err := w.offerAgent(); err != nil || o == nil || o.policy != (agentPolicy{DirInstructions: true}) {
-		t.Errorf("skills turned off: offered %+v, %v", o, err)
+		t.Errorf("own config and skills turned off: offered %+v, %v", o, err)
 	}
 	w, _ = testWizard("y\n")
 	if o, err := w.offerAgent(); o != nil || err != nil {
@@ -98,7 +98,7 @@ func TestSetUpAgentSignsInOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(ran) != 2 || ran[0][len(ran[0])-1] != "login" ||
-		strings.Join(ran[1], " ") != "/bin/agentiscaled up -y -data-dir "+offer.dataDir+" -agent codex -agent-dir "+offer.agentDir {
+		strings.Join(ran[1], " ") != "/bin/agentiscaled up -y -data-dir "+offer.dataDir+" -agent codex -agent-dir "+offer.agentDir+" -agent-owner-config=false" {
 		t.Errorf("ran %q\n%s", ran, out)
 	}
 
@@ -111,12 +111,46 @@ func TestSetUpAgentSignsInOnce(t *testing.T) {
 	if err := w.setUpAgent(context.Background(), "/bin/agentiscaled", offer); err != nil {
 		t.Fatal(err)
 	}
-	if len(ran) != 1 || ran[0][1] != "up" || !strings.HasSuffix(strings.Join(ran[0], " "), " -agent-dir-instructions=false -agent-dir-skills=false") {
+	if len(ran) != 1 || ran[0][1] != "up" || !strings.HasSuffix(strings.Join(ran[0], " "), " -agent-dir-instructions=false -agent-dir-skills=false -agent-owner-config=false") {
 		t.Errorf("ran %q", ran)
 	}
 }
 
 func o(t *testing.T) *agentOffer {
 	dir := filepath.Join(os.Getenv("HOME"), "repo")
-	return &agentOffer{runtime: "codex", agentDir: dir, dataDir: agentDataDir("codex", dir), policy: agentPolicy{DirInstructions: true, DirSkills: true}}
+	return &agentOffer{runtime: "codex", agentDir: dir, dataDir: agentDataDir("codex", dir), policy: agentPolicy{DirInstructions: true, DirSkills: true}} // the agent's own config
+}
+
+// With the owner's configuration, the owner signs in to their own Codex,
+// if they have not, and the agent's node gets no flag for it.
+func TestSetUpAgentWithTheOwnersConfig(t *testing.T) {
+	withDefaultDataDir(t)
+	t.Setenv("CODEX_HOME", filepath.Join(os.Getenv("HOME"), "owner-codex"))
+	var ran []*exec.Cmd
+	old := runAttached
+	runAttached = func(_ context.Context, cmd *exec.Cmd) error {
+		ran = append(ran, cmd)
+		return nil
+	}
+	t.Cleanup(func() { runAttached = old })
+	offer := o(t)
+	offer.policy.OwnerConfig = true
+	w, out := testWizard("")
+	if err := w.setUpAgent(context.Background(), "/bin/agentiscaled", offer); err != nil {
+		t.Fatal(err)
+	}
+	if len(ran) != 2 || strings.Join(ran[0].Args, " ") != "codex login" || ran[0].Env != nil ||
+		strings.Join(ran[1].Args, " ") != "/bin/agentiscaled up -y -data-dir "+offer.dataDir+" -agent codex -agent-dir "+offer.agentDir {
+		t.Errorf("ran %v\n%s", ran, out)
+	}
+	if err := os.MkdirAll(os.Getenv("CODEX_HOME"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ran = nil
+	if err := w.setUpAgent(context.Background(), "/bin/agentiscaled", offer); err != nil || len(ran) != 1 {
+		t.Errorf("signed in already: ran %v, %v", ran, err)
+	}
 }

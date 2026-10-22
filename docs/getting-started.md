@@ -89,18 +89,23 @@ the repository:
 Offer an agent from this machine to your network? [y/N]: y
   Runtime: codex (the only one today)
   Directory the agent works in (for codex, the repository it reviews read-only): ~/src/my-repo
-  Load its instruction files (AGENTS.md)? [Y/n]:
-  Load its skills? [Y/n]:
+  Use your own codex configuration (sign-in, skills, plugins, MCP servers)? [Y/n]:
+  Load the directory's instruction files (AGENTS.md)? [Y/n]:
+  Load the directory's skills? [Y/n]:
 ```
 
-By default the agent follows the directory's own instruction files (`AGENTS.md`) and
-skills, as its runtime does in any run there. If the directory may hold content from
-someone you don't trust, answer n; `up` then passes `-agent-dir-instructions=false` or
-`-agent-dir-skills=false`.
+By default the agent runs as your own Codex does: with your sign-in, skills, plugins,
+settings and MCP servers (your `CODEX_HOME`), and with the directory's own instruction
+files (`AGENTS.md`) and skills. Your MCP servers include agentiscale itself if you
+connected Codex, so the agent can ask your network's other agents for help. Answer n
+to give the agent its own configuration and sign-in in its node's data directory, with
+no MCP servers (`-agent-owner-config=false`), or to leave out the directory's
+instruction files or skills when it may hold content from someone you don't trust
+(`-agent-dir-instructions=false`, `-agent-dir-skills=false`).
 
 The agent gets a node of its own, so your agent apps stay on the first one, which only
-sends. `up` signs the agent in to Codex on its own, apart from your own Codex (it runs
-`codex login` with the agent's `CODEX_HOME`), then sets up that node as
+sends. If the agent's Codex is not signed in, `up` runs `codex login` first (with its
+own configuration, for the agent's `CODEX_HOME`), then sets up that node as
 
 ```sh
 agentiscaled up -y -data-dir <config dir>/agentiscale-codex-my-repo -agent codex -agent-dir ~/src/my-repo

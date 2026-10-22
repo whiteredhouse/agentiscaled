@@ -73,6 +73,11 @@ type agentPolicy struct {
 	DirInstructions bool
 	// DirSkills loads the directory's skills (-agent-dir-skills).
 	DirSkills bool
+	// OwnerConfig runs the agent with the owner's own configuration of its
+	// runtime: their sign-in, skills, plugins, MCP servers and settings
+	// (-agent-owner-config). Without it the agent has its own, in the node's
+	// data directory, and signs in on its own.
+	OwnerConfig bool
 }
 
 // runtimes maps each -agent value to how its runtime is made, from
@@ -88,8 +93,8 @@ var runtimes = map[string]struct {
 	// signedIn and login are for a runtime whose agent signs in on its
 	// own: whether it has, and the command that signs it in, with how to
 	// show that command.
-	signedIn func(dataDir string) bool
-	login    func(ctx context.Context, command, dataDir string) (*exec.Cmd, string)
+	signedIn func(dataDir string, policy agentPolicy) bool
+	login    func(ctx context.Context, command, dataDir string, policy agentPolicy) (*exec.Cmd, string)
 }{
 	"codex": {newCodexRuntime, "codex-review", "codex", codexSignedIn, codexLogin},
 }
