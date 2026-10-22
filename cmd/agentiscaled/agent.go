@@ -65,8 +65,8 @@ type taskRequest struct {
 }
 
 // agentPolicy is what the agent may take from the directory it works in,
-// beyond its files. Each is off unless the owner turns it on, since the
-// directory may hold code from someone else.
+// beyond its files. Each is on, as in any run of the agent there, unless the
+// owner turns it off, such as for code from someone else.
 type agentPolicy struct {
 	// RepoInstructions loads the directory's instruction files, such as
 	// AGENTS.md (-agent-repo-instructions).

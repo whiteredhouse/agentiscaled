@@ -160,11 +160,10 @@ func (r *codexRuntime) Describe(card *a2a.AgentCard) {
 //     exist for the run, and it uses the agent's own sign-in: no API key or
 //     token in the node's environment reaches it (codexEnv). Its configuration is ignored too, so the run has
 //     no MCP servers, agentiscale included, and cannot delegate.
-//   - AGENTS.md and other project instruction files are not loaded, and
-//     every skill in or above the checkout, and Codex's bundled ones, are
-//     disabled: the checkout under review is not trusted to instruct the
-//     reviewer. The owner can let the checkout's instruction files and
-//     skills load as in any Codex run in it (agentPolicy).
+//   - The checkout's AGENTS.md files and skills load as in any Codex run
+//     in it, unless the owner's policy turns them off (agentPolicy): then
+//     no project instruction file is loaded, and every skill in or above the
+//     checkout, and Codex's bundled ones, are disabled.
 //   - Commands Codex runs get only the core environment variables (HOME,
 //     PATH, USER and the like), not the owner's tokens and keys.
 //   - The permission profile lets those commands read only the directory,

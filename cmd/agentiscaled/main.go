@@ -134,8 +134,8 @@ func nodeFlags(fs *flag.FlagSet, c *config) {
 	fs.StringVar(&c.agentDir, "agent-dir", "", "Directory the agent works in, for -agent codex the repository it reviews read-only")
 	fs.StringVar(&c.agentCommand, "agent-command", "", "Command of the agent CLI (default: the runtime's, e.g. codex)")
 	fs.StringVar(&c.agentName, "agent-name", "", "Service name of the agent in the network (default: the runtime's, e.g. codex-review)")
-	fs.BoolVar(&c.agentPolicy.RepoInstructions, "agent-repo-instructions", false, "Let the agent load the instruction files (AGENTS.md) of -agent-dir")
-	fs.BoolVar(&c.agentPolicy.RepoSkills, "agent-repo-skills", false, "Let the agent load the skills of -agent-dir")
+	fs.BoolVar(&c.agentPolicy.RepoInstructions, "agent-repo-instructions", true, "Let the agent load the instruction files (AGENTS.md) of -agent-dir; =false ignores them")
+	fs.BoolVar(&c.agentPolicy.RepoSkills, "agent-repo-skills", true, "Let the agent load the skills of -agent-dir; =false turns them off")
 	fs.StringVar(&c.machineName, "hostname", defaultMachineName(), "Name of this machine in your network's member list")
 }
 

@@ -179,9 +179,8 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 		break
 	}
 	offer := &agentOffer{runtime: rt, agentDir: dir, dataDir: agentDataDir(rt, dir)}
-	// The directory may hold code from someone else, so its own guidance
-	// loads only on yes.
-	fmt.Fprintln(w.out, "  The agent can follow the directory's own guidance. Allow only for code you trust.")
+	// Its own guidance loads as in any run there, unless the owner says no,
+	// such as for code from someone else.
 	for _, q := range []struct {
 		question string
 		allow    *bool
@@ -189,7 +188,7 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 		{"  Load its instruction files (AGENTS.md)?", &offer.policy.RepoInstructions},
 		{"  Load its skills?", &offer.policy.RepoSkills},
 	} {
-		yes, err := w.yesNo(q.question, false)
+		yes, err := w.yesNo(q.question, true)
 		if err := ignoreEOF(err); err != nil {
 			return nil, err
 		}
@@ -236,11 +235,11 @@ func (w *wizard) setUpAgent(ctx context.Context, exe string, o *agentOffer) erro
 	}
 	fmt.Fprintf(w.out, "\nSetting up the agent's own node in %s:\n", o.dataDir)
 	args := []string{"up", "-y", "-data-dir", o.dataDir, "-agent", o.runtime, "-agent-dir", o.agentDir}
-	if o.policy.RepoInstructions {
-		args = append(args, "-agent-repo-instructions")
+	if !o.policy.RepoInstructions {
+		args = append(args, "-agent-repo-instructions=false")
 	}
-	if o.policy.RepoSkills {
-		args = append(args, "-agent-repo-skills")
+	if !o.policy.RepoSkills {
+		args = append(args, "-agent-repo-skills=false")
 	}
 	return runAttached(ctx, exec.CommandContext(ctx, exe, args...))
 }

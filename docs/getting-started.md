@@ -89,15 +89,13 @@ the repository:
 Offer an agent from this machine to your network? [y/N]: y
   Runtime: codex (the only one today)
   Directory the agent works in (for codex, the repository it reviews read-only): ~/src/my-repo
-  The agent can follow the directory's own guidance. Allow only for code you trust.
-  Load its instruction files (AGENTS.md)? [y/N]:
-  Load its skills? [y/N]:
+  Load its instruction files (AGENTS.md)? [Y/n]:
+  Load its skills? [Y/n]:
 ```
 
-By default the agent ignores the repository's `AGENTS.md` files and skills, since the
-code under review may come from someone else. Answer y to let them load as in any Codex
-run in the repository; `up` passes `-agent-repo-instructions` and `-agent-repo-skills`
-for those answers.
+By default the agent follows the repository's `AGENTS.md` files and skills, as in any
+Codex run in it. If the code may come from someone you don't trust, answer n; `up`
+then passes `-agent-repo-instructions=false` or `-agent-repo-skills=false`.
 
 The agent gets a node of its own, so your agent apps stay on the first one, which only
 sends. `up` signs the agent in to Codex on its own, apart from your own Codex (it runs

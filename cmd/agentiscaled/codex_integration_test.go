@@ -22,8 +22,8 @@ import (
 // HOME, outside the checkout's directories, and CODEX_HOME have skills of
 // their own; and the request names every skill. The fake model asks Codex to run one command that reads the
 // environment, a file outside the checkout and CODEX_HOME, and writes a file.
-// The test checks what reaches the model, with the agent's policy off and,
-// in "policy on", with the checkout's instruction files and skills allowed:
+// The test checks what reaches the model with the checkout's instruction
+// files and skills loaded, as by default ("policy on"), and turned off:
 //
 //	AGENTISCALE_TEST_CODEX=$(command -v codex) go test ./cmd/agentiscaled -run TestCodexAgainstAHostileCheckout -v
 //
