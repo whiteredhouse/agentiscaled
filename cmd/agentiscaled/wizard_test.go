@@ -62,11 +62,15 @@ func TestOfferAgent(t *testing.T) {
 		t.Fatalf("%+v, %v\n%s", o, err, out)
 	}
 	wantDir := filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-codex-my-repo")
-	if o.runtime != "codex" || o.agentDir != repo || o.dataDir != wantDir {
-		t.Errorf("offer %+v, want data dir %s", o, wantDir)
+	if o.runtime != "codex" || o.agentDir != repo || o.dataDir != wantDir || o.policy != (agentPolicy{}) {
+		t.Errorf("offer %+v, want data dir %s and the policy off", o, wantDir)
 	}
 	if !strings.Contains(out.String(), "/does/not/exist is not a directory") {
 		t.Errorf("output:\n%s", out)
+	}
+	w, _ = testWizard("y\n" + repo + "\ny\nn\n")
+	if o, err := w.offerAgent(); err != nil || o == nil || o.policy != (agentPolicy{RepoInstructions: true}) {
+		t.Errorf("instructions allowed: offered %+v, %v", o, err)
 	}
 	w, _ = testWizard("y\n")
 	if o, err := w.offerAgent(); o != nil || err != nil {
@@ -98,7 +102,8 @@ func TestSetUpAgentSignsInOnce(t *testing.T) {
 		t.Errorf("ran %q\n%s", ran, out)
 	}
 
-	// Signed in already: only the node is set up.
+	// Signed in already: only the node is set up, with the owner's policy.
+	offer.policy = agentPolicy{RepoInstructions: true, RepoSkills: true}
 	if err := os.WriteFile(filepath.Join(offer.dataDir, "codex", "auth.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +111,7 @@ func TestSetUpAgentSignsInOnce(t *testing.T) {
 	if err := w.setUpAgent(context.Background(), "/bin/agentiscaled", offer); err != nil {
 		t.Fatal(err)
 	}
-	if len(ran) != 1 || ran[0][1] != "up" {
+	if len(ran) != 1 || ran[0][1] != "up" || !strings.HasSuffix(strings.Join(ran[0], " "), " -agent-repo-instructions -agent-repo-skills") {
 		t.Errorf("ran %q", ran)
 	}
 }

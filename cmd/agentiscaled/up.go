@@ -37,7 +37,10 @@ type settings struct {
 	AgentDir     string `json:"agent_dir,omitempty"`
 	AgentCommand string `json:"agent_command,omitempty"`
 	AgentName    string `json:"agent_name,omitempty"`
-	MachineName  string `json:"machine_name,omitempty"`
+	// What the agent may take from AgentDir; all off when absent.
+	AgentRepoInstructions bool   `json:"agent_repo_instructions,omitempty"`
+	AgentRepoSkills       bool   `json:"agent_repo_skills,omitempty"`
+	MachineName           string `json:"machine_name,omitempty"`
 	// PATH for the service, captured at `up`, since launchd and systemd
 	// start services with a minimal one and an agent CLI may need more.
 	Path string `json:"path,omitempty"`
@@ -85,6 +88,7 @@ func (s settings) config(dataDir string) config {
 		agentDir:     s.AgentDir,
 		agentCommand: s.AgentCommand,
 		agentName:    s.AgentName,
+		agentPolicy:  agentPolicy{RepoInstructions: s.AgentRepoInstructions, RepoSkills: s.AgentRepoSkills},
 		machineName:  s.MachineName,
 	}
 }
@@ -194,10 +198,13 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		AgentCommand: c.agentCommand,
 		AgentName:    c.agentName,
 		MachineName:  c.machineName,
-		Path:         os.Getenv("PATH"),
-		PeerID:       joined.peerID,
-		NetworkID:    joined.networkID,
-		MeshURL:      joined.meshURL,
+
+		AgentRepoInstructions: c.agentPolicy.RepoInstructions,
+		AgentRepoSkills:       c.agentPolicy.RepoSkills,
+		Path:                  os.Getenv("PATH"),
+		PeerID:                joined.peerID,
+		NetworkID:             joined.networkID,
+		MeshURL:               joined.meshURL,
 	}
 	if err := saveSettings(c.dataDir, s); err != nil {
 		return fmt.Errorf("save settings: %w", err)
@@ -306,7 +313,7 @@ func checkAgent(c *config) error {
 		return fmt.Errorf("agent command %q not found: %w", command, err)
 	}
 	// The runtime checks the rest, such as the agent's own sign-in.
-	_, err = spec.new(c.agentCommand, c.dataDir)
+	_, err = spec.new(c.agentCommand, c.dataDir, c.agentPolicy)
 	return err
 }
 

@@ -99,7 +99,9 @@ network. Each task runs:
 
 ```sh
 codex exec --ignore-user-config --ephemeral -c approval_policy="never" \
-  -c shell_environment_policy.inherit="core" \
+  -c project_doc_max_bytes=0 -c shell_environment_policy.inherit="core" \
+  -c skills.include_instructions=false \
+  -c 'skills.config=[{path="<each SKILL.md in or above agent-dir>", enabled=false}, ...]' \
   -c default_permissions="agentiscale-review" \
   -c 'permissions.agentiscale-review={extends=":read-only", filesystem={":root"="deny", ":minimal"="read", ":workspace_roots"="read", "<codex install>"="read"}}' \
   -C <agent-dir> --output-last-message <file> -
@@ -111,9 +113,13 @@ separately: none of your own Codex skills, plugins or settings exist for it.
 It gets none of the API keys or tokens in node B's environment (`CODEX_API_KEY`
 included), only `PATH`, locale, proxy and CA settings (`CODEX_CA_CERTIFICATE`,
 `SSL_CERT_FILE`). Its configuration, and so its MCP servers, are not loaded, so
-the review cannot call back into the network. The repository's `AGENTS.md`
-files and skills (`.agents/skills`) load as in any Codex run in it, so the
-review follows the repository's own guidance. Commands Codex
+the review cannot call back into the network. Since the code under review may
+come from someone else, `AGENTS.md` files in the repository are not loaded, and
+every skill in or above it (`.agents/skills`, `.codex/skills`), the machine's
+`/etc/codex/skills` and Codex's bundled skills are turned off. For a repository you
+trust, `-agent-repo-instructions` loads its `AGENTS.md` files and `-agent-repo-skills`
+its skills (and Codex's bundled ones), as in any Codex run in it; the rest below stays
+the same. Commands Codex
 runs see only basic environment variables (`HOME`, `PATH`, `USER` and the like)
 and can read only the repository, the system files a shell needs and the Codex
 install: not your home directory, and not the agent's `CODEX_HOME` with its

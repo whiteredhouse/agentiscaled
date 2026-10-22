@@ -64,13 +64,25 @@ type taskRequest struct {
 	Text   string
 }
 
+// agentPolicy is what the agent may take from the directory it works in,
+// beyond its files. Each is off unless the owner turns it on, since the
+// directory may hold code from someone else.
+type agentPolicy struct {
+	// RepoInstructions loads the directory's instruction files, such as
+	// AGENTS.md (-agent-repo-instructions).
+	RepoInstructions bool
+	// RepoSkills loads the directory's skills (-agent-repo-skills).
+	RepoSkills bool
+}
+
 // runtimes maps each -agent value to how its runtime is made, from
-// -agent-command (empty for the runtime's default command) and the node's
-// data directory, where the runtime may keep state, and the service name it
+// -agent-command (empty for the runtime's default command), the node's
+// data directory, where the runtime may keep state, and the agent's policy;
+// and the service name it
 // is served under unless -agent-name says otherwise, and the command it runs
 // unless -agent-command does.
 var runtimes = map[string]struct {
-	new            func(command, dataDir string) (runtime, error)
+	new            func(command, dataDir string, policy agentPolicy) (runtime, error)
 	defaultName    string
 	defaultCommand string
 	// signedIn and login are for a runtime whose agent signs in on its

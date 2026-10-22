@@ -390,6 +390,13 @@ func TestCodexRuntimeIsReadOnlyAndUnconfigured(t *testing.T) {
 	if err := os.WriteFile(codex, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	skill := filepath.Join(dir, ".agents", "skills", "x", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skill), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, []byte("---\nname: x\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	out, err := (&codexRuntime{command: codex, home: filepath.Join(dir, "agent-codex")}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "Review main.go"})
 	if err != nil || out != "No findings" {
 		t.Fatalf("run: %q, %v", out, err)
@@ -397,9 +404,10 @@ func TestCodexRuntimeIsReadOnlyAndUnconfigured(t *testing.T) {
 	b, _ := os.ReadFile(argsFile)
 	args := " " + strings.ReplaceAll(string(b), "\n", " ")
 	for _, want := range []string{" exec ", " --ignore-user-config ", ` approval_policy="never" `,
-		// None of the owner's variables in commands, and reads confined to
-		// dir.
-		` shell_environment_policy.inherit="core" `,
+		// No AGENTS.md from the checkout, none of the owner's variables in
+		// commands, and reads confined to dir.
+		" project_doc_max_bytes=0 ", ` shell_environment_policy.inherit="core" `,
+		" skills.include_instructions=false ", " skills.bundled.enabled=false ", ` skills.config=[{path="` + skill + `", enabled=false}`,
 		` default_permissions="agentiscale-review" `,
 		` permissions.agentiscale-review={extends=":read-only", filesystem={":root"="deny", ":minimal"="read", ":workspace_roots"="read", "` + filepath.Join(dir, "agent-codex") + `"="deny"}} `,
 		" -C " + dir + " "} {
@@ -417,6 +425,43 @@ func TestCodexRuntimeIsReadOnlyAndUnconfigured(t *testing.T) {
 	for _, want := range []string{"must not modify", "from node " + testSender, "<request>\nReview main.go\n</request>"} {
 		if !strings.Contains(string(p), want) {
 			t.Errorf("prompt on stdin %q lacks %q", p, want)
+		}
+	}
+}
+
+// With the owner's policy on, the checkout's instruction files and skills
+// load as in any Codex run in it; the rest of the isolation stays.
+func TestCodexRuntimePolicyLoadsTheCheckoutsGuidance(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	codex := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argsFile + "\nwhile [ $# -gt 0 ]; do [ \"$1\" = --output-last-message ] && out=$2; shift; done\necho 'No findings' > \"$out\"\n"
+	if err := os.WriteFile(codex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		policy      agentPolicy
+		want, avoid []string
+	}{
+		{agentPolicy{RepoInstructions: true}, []string{" skills.include_instructions=false "}, []string{" project_doc_max_bytes=0 "}},
+		{agentPolicy{RepoSkills: true}, []string{" project_doc_max_bytes=0 "}, []string{" skills."}},
+		{agentPolicy{RepoInstructions: true, RepoSkills: true}, nil, []string{" project_doc_max_bytes=0 ", " skills."}},
+	} {
+		rt := &codexRuntime{command: codex, home: filepath.Join(dir, "agent-codex"), policy: tc.policy}
+		if _, err := rt.Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "Review"}); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(argsFile)
+		args := " " + strings.ReplaceAll(string(b), "\n", " ")
+		for _, want := range append(tc.want, " --ignore-user-config ", ` shell_environment_policy.inherit="core" `, ` default_permissions="agentiscale-review" `) {
+			if !strings.Contains(args, want) {
+				t.Errorf("%+v: codex arguments %q lack %q", tc.policy, args, want)
+			}
+		}
+		for _, avoid := range tc.avoid {
+			if strings.Contains(args, avoid) {
+				t.Errorf("%+v: codex arguments %q have %q", tc.policy, args, avoid)
+			}
 		}
 	}
 }

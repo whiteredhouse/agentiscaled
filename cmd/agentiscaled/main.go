@@ -49,6 +49,7 @@ type config struct {
 	agentDir           string
 	agentCommand       string
 	agentName          string
+	agentPolicy        agentPolicy
 	machineName        string
 
 	// signInToken is the owner's Auth0 access token during `agentiscaled up`.
@@ -133,6 +134,8 @@ func nodeFlags(fs *flag.FlagSet, c *config) {
 	fs.StringVar(&c.agentDir, "agent-dir", "", "Directory the agent works in, for -agent codex the repository it reviews read-only")
 	fs.StringVar(&c.agentCommand, "agent-command", "", "Command of the agent CLI (default: the runtime's, e.g. codex)")
 	fs.StringVar(&c.agentName, "agent-name", "", "Service name of the agent in the network (default: the runtime's, e.g. codex-review)")
+	fs.BoolVar(&c.agentPolicy.RepoInstructions, "agent-repo-instructions", false, "Let the agent load the instruction files (AGENTS.md) of -agent-dir")
+	fs.BoolVar(&c.agentPolicy.RepoSkills, "agent-repo-skills", false, "Let the agent load the skills of -agent-dir")
 	fs.StringVar(&c.machineName, "hostname", defaultMachineName(), "Name of this machine in your network's member list")
 }
 
@@ -201,7 +204,7 @@ func newAgent(c *config) (*agentService, error) {
 	if err := agentDirApart(dir, c.dataDir); err != nil {
 		return nil, err
 	}
-	rt, err := spec.new(c.agentCommand, c.dataDir)
+	rt, err := spec.new(c.agentCommand, c.dataDir, c.agentPolicy)
 	if err != nil {
 		return nil, err
 	}

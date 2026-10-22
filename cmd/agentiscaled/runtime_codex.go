@@ -26,13 +26,14 @@ type codexRuntime struct {
 	// in the node's data directory, so that no skill, plugin or setting of
 	// the owner's Codex reaches a remote request. It holds the agent's own
 	// Codex sign-in.
-	home string
+	home   string
+	policy agentPolicy
 	// extra goes before the prompt argument; tests point Codex at a fake
 	// model with it.
 	extra []string
 }
 
-func newCodexRuntime(command, dataDir string) (runtime, error) {
+func newCodexRuntime(command, dataDir string, policy agentPolicy) (runtime, error) {
 	if command == "" {
 		command = "codex"
 	}
@@ -55,7 +56,7 @@ func newCodexRuntime(command, dataDir string) (runtime, error) {
 	if !codexSignedIn(dataDir) {
 		return nil, fmt.Errorf("the agent's Codex is not signed in. It signs in apart from your own Codex, so that a remote request cannot reach your Codex skills, plugins or settings: run\n  CODEX_HOME=%s %s login", home, path)
 	}
-	return &codexRuntime{command: path, installDir: codexInstallDir(path), home: home}, nil
+	return &codexRuntime{command: path, installDir: codexInstallDir(path), home: home, policy: policy}, nil
 }
 
 // codexHome is the agent's own CODEX_HOME in the node's data directory.
@@ -159,8 +160,11 @@ func (r *codexRuntime) Describe(card *a2a.AgentCard) {
 //     exist for the run, and it uses the agent's own sign-in: no API key or
 //     token in the node's environment reaches it (codexEnv). Its configuration is ignored too, so the run has
 //     no MCP servers, agentiscale included, and cannot delegate.
-//   - The repository's AGENTS.md files and skills load as in any Codex run
-//     in it, so the review follows the repository's own guidance.
+//   - AGENTS.md and other project instruction files are not loaded, and
+//     every skill in or above the checkout, and Codex's bundled ones, are
+//     disabled: the checkout under review is not trusted to instruct the
+//     reviewer. The owner can let the checkout's instruction files and
+//     skills load as in any Codex run in it (agentPolicy).
 //   - Commands Codex runs get only the core environment variables (HOME,
 //     PATH, USER and the like), not the owner's tokens and keys.
 //   - The permission profile lets those commands read only the directory,
@@ -178,12 +182,28 @@ func (r *codexRuntime) Run(ctx context.Context, dir string, req taskRequest) (st
 		"--ignore-user-config",
 		"--ephemeral",
 		"--color", "never",
-		"-c", `approval_policy="never"`,
+		"-c", `approval_policy="never"`}
+	if !r.policy.RepoInstructions {
+		args = append(args, "-c", "project_doc_max_bytes=0")
+	}
+	if !r.policy.RepoSkills {
+		skills, err := checkoutSkills(dir)
+		if err != nil {
+			return "", fmt.Errorf("look for skills in %s: %w", dir, err)
+		}
+		// No skill list in the instructions, and the checkout's own skills
+		// cannot be loaded, even when the request names one.
+		args = append(args,
+			"-c", "skills.include_instructions=false",
+			"-c", "skills.bundled.enabled=false",
+			"-c", "skills.config="+disabledSkills(skills))
+	}
+	args = append(args,
 		"-c", `shell_environment_policy.inherit="core"`,
 		"-c", `default_permissions="agentiscale-review"`,
-		"-c", "permissions.agentiscale-review=" + r.permissions(),
+		"-c", "permissions.agentiscale-review="+r.permissions(),
 		"-C", dir,
-		"--output-last-message", out.Name()}
+		"--output-last-message", out.Name())
 	args = append(append(args, r.extra...), "-")
 	cmd := exec.CommandContext(ctx, r.command, args...)
 	cmd.Env = codexEnv(os.Environ(), r.home)
@@ -226,6 +246,87 @@ func codexEnv(environ []string, home string) []string {
 		}
 	}
 	return env
+}
+
+// skillRoots are the directories, relative to the working directory and each
+// directory above it, from which Codex 0.144 loads repository skills.
+var skillRoots = []string{filepath.Join(".agents", "skills"), filepath.Join(".codex", "skills")}
+
+const adminSkills = "/etc/codex/skills"
+
+// checkoutSkills finds every SKILL.md that Codex could load from dir: any in
+// the tree under dir, any in a skill root of dir or a directory above it,
+// and the admin skills.
+// Each is listed as found and with symlinks resolved, since either path may be
+// the one Codex records.
+func checkoutSkills(dir string) ([]string, error) {
+	seen := map[string]bool{}
+	var found []string
+	add := func(path string) {
+		paths := []string{path}
+		if real, err := filepath.EvalSymlinks(path); err == nil {
+			paths = append(paths, real)
+		}
+		for _, p := range paths {
+			if !seen[p] {
+				seen[p] = true
+				found = append(found, p)
+			}
+		}
+	}
+	isSkill := func(name string) bool { return strings.EqualFold(name, "SKILL.md") }
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() && isSkill(d.Name()) {
+			add(path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Skill folders can be symlinks, which the walk does not follow.
+	scan := func(root string) {
+		for _, pattern := range []string{"*", filepath.Join("*", "*")} {
+			matches, _ := filepath.Glob(filepath.Join(root, pattern))
+			for _, m := range matches {
+				entries, err := os.ReadDir(m)
+				if err != nil {
+					continue
+				}
+				for _, e := range entries {
+					if isSkill(e.Name()) {
+						add(filepath.Join(m, e.Name()))
+					}
+				}
+			}
+		}
+	}
+	for d := dir; ; d = filepath.Dir(d) {
+		for _, root := range skillRoots {
+			scan(filepath.Join(d, root))
+		}
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
+	// Admin skills, which every Codex on the machine loads.
+	scan(adminSkills)
+	return found, nil
+}
+
+// disabledSkills is the skills.config value that turns off each skill file.
+func disabledSkills(paths []string) string {
+	entries := make([]string, len(paths))
+	for i, p := range paths {
+		entries[i] = "{path=" + tomlString(p) + ", enabled=false}"
+	}
+	return "[" + strings.Join(entries, ", ") + "]"
 }
 
 // permissions is the run's permission profile, a TOML inline table. It
