@@ -214,6 +214,11 @@ func newAgent(c *config) (*agentService, error) {
 			return nil, err
 		}
 	}
+	if c.agentPolicy.OwnerConfig {
+		if err := ownerEnv(context.Background(), c.dataDir); err != nil {
+			return nil, err
+		}
+	}
 	rt, err := spec.new(c.agentCommand, c.dataDir, c.agentPolicy)
 	if err != nil {
 		return nil, err

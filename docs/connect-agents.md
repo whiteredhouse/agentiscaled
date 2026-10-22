@@ -107,7 +107,13 @@ with the request on standard input, framed as untrusted text. Codex runs as your
 does, with your `CODEX_HOME` (`~/.codex`, or the `CODEX_HOME` set when you ran `up`,
 which `up` keeps for node B's service): your sign-in, skills, plugins, settings and MCP
 servers, agentiscale included if you connected Codex, so the review can call your
-network's other agents. With `-agent-owner-config=false` it instead runs with its own
+network's other agents. Node B's background service starts with almost no
+environment, so when it starts it reads your login shell's (`$SHELL -l -i`, as your
+terminal does, for at most 10 seconds) and adds the variables it lacks, such as a
+`GITHUB_TOKEN` that an MCP server's `env_vars` passes on. Variables your shell does not
+set go in `<data-dir>/agent.env`, one `NAME=value` per line, readable only by you
+(`chmod 600`); they win over both. agentiscaled never writes either. The node's log
+says how many variables came from each. With `-agent-owner-config=false` it instead runs with its own
 `CODEX_HOME` and `HOME` (`<data-dir>/codex`) and `--ignore-user-config`, and signs in
 separately (`CODEX_HOME=<data-dir>/codex codex login`; `up` tells you): none of your
 own Codex skills, plugins, settings or MCP servers exist for it, so it cannot call
