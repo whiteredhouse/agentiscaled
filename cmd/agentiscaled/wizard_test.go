@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 )
@@ -47,6 +48,7 @@ func TestChooseClients(t *testing.T) {
 
 func TestOfferAgent(t *testing.T) {
 	withDefaultDataDir(t)
+	t.Setenv("XDG_DATA_HOME", "")
 	dir := filepath.Join(t.TempDir(), "My Project")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -77,7 +79,6 @@ func TestOfferAgent(t *testing.T) {
 	if o, err := w.offerAgent(); o != nil || err != nil {
 		t.Errorf("no directory: offered %+v, %v", o, err)
 	}
-	home, _ := os.UserHomeDir()
 	for _, c := range []struct{ input, name, dataDir string }{
 		{"y\n\n\n", "codex", "agentiscale-codex"},
 		{"y\nBad Name\nhelper\n\n", "helper", "agentiscale-codex-helper"},
@@ -86,16 +87,24 @@ func TestOfferAgent(t *testing.T) {
 	} {
 		w, out = testWizard(c.input)
 		o, err = w.offerAgent()
-		ownDir := filepath.Join(home, ".agentiscaled", "workspaces", c.name)
+		ownDir := filepath.Join(userDataDir(), "agentiscaled", "workspaces", c.name)
 		if err != nil || o == nil || o.name != c.name || o.agentDir != ownDir || o.dataDir != filepath.Join(filepath.Dir(defaultDataDir()), c.dataDir) {
 			t.Fatalf("input %q: offered %+v, %v\n%s", c.input, o, err, out)
+		}
+		for _, dataDir := range []string{defaultDataDir(), o.dataDir} {
+			if err := agentDirApart(ownDir, dataDir); err != nil {
+				t.Errorf("the agent's own directory and a node's: %v", err)
+			}
 		}
 		if fi, err := os.Stat(ownDir); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
 			t.Errorf("the agent's own directory: %v, %v", fi, err)
 		}
-		if !strings.Contains(out.String(), "Directory the agent works in [~/.agentiscaled/workspaces/"+c.name+"]: ") {
+		if !strings.Contains(out.String(), "Directory the agent works in ["+homeRelative(ownDir)+"]: ") {
 			t.Errorf("output:\n%s", out)
 		}
+	}
+	if !strings.HasPrefix(homeRelative(defaultAgentDir("codex")), "~/") || homeRelative("/elsewhere") != "/elsewhere" {
+		t.Errorf("home-relative default %s", homeRelative(defaultAgentDir("codex")))
 	}
 	if !strings.Contains(out.String(), "Name of the agent in your network [codex]: ") {
 		t.Errorf("output:\n%s", out)
@@ -220,5 +229,23 @@ func TestAgentDataDirAvoidsCollisions(t *testing.T) {
 	}
 	if got, want := agentDataDir("codex", b), first+"-2"; got != want {
 		t.Errorf("b again: %s, want %s", got, want)
+	}
+}
+
+func TestUserDataDir(t *testing.T) {
+	if goruntime.GOOS == "darwin" || goruntime.GOOS == "windows" {
+		t.Skip("the configuration directory is the data directory here")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for xdg, want := range map[string]string{
+		"":              filepath.Join(home, ".local", "share"),
+		"relative/data": filepath.Join(home, ".local", "share"),
+		"/srv/data":     "/srv/data",
+	} {
+		t.Setenv("XDG_DATA_HOME", xdg)
+		if got := userDataDir(); got != want {
+			t.Errorf("XDG_DATA_HOME=%q: %s, want %s", xdg, got, want)
+		}
 	}
 }
