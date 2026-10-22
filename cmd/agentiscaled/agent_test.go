@@ -81,7 +81,7 @@ func newAgentHarnessIn(t *testing.T, sender, dir string) *agentHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(svc.handler("codex-review", "secret"))
+	srv := httptest.NewServer(svc.handler("codex", "secret"))
 	t.Cleanup(srv.Close)
 	return &agentHarness{svc: svc, fix: fix, url: srv.URL, dir: dir, client: a2aClient(t, srv.URL, meshHeaders{"secret", sender})}
 }

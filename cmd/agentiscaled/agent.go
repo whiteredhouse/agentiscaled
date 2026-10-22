@@ -104,7 +104,7 @@ var runtimes = map[string]struct {
 	// agentPolicy.OwnerConfig the agent finds the same configuration.
 	ownerEnv []string
 }{
-	"codex": {newCodexRuntime, "codex-review", "codex", codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
+	"codex": {newCodexRuntime, "codex", "codex", codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
 }
 
 // agentOwnerEnv is what `up` keeps of the runtime's ownerEnv: each variable

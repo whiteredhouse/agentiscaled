@@ -255,14 +255,14 @@ func expandHome(path string) string {
 
 // agentDataDir is the data directory of the node that serves an agent,
 // next to the default one and named after the runtime and its directory,
-// such as agentiscale-codex-my-project, or agentiscale-codex-review for the
-// workspace of the agent codex-review (defaultAgentDir). Only a directory that holds no node
-// yet (nothing, or only the agent's own sign-in from a setup that stopped
-// before `up`), or whose node serves this same agent directory, is taken:
-// any other,
-// such as the node of /work/a/service when this is /work/b/service, a node
-// that serves no agent, or one whose settings cannot be read, keeps its
-// directory, and the new one gets -2, -3 and so on.
+// such as agentiscale-codex-my-project, or agentiscale-codex for the
+// workspace of the agent codex (defaultAgentDir). Only a directory that
+// holds no node yet (nothing, or only the agent's own sign-in from a setup
+// that stopped before `up`), or whose node serves this same agent
+// directory, is taken: any other, such as the node of /work/a/service when
+// this is /work/b/service, a node that serves no agent, or one whose
+// settings cannot be read, keeps its directory, and the new one gets -2, -3
+// and so on.
 func agentDataDir(rt, agentDir string) string {
 	name := clientEntryName(filepath.Join("/", filepath.Base(agentDir)))
 	base := filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-"+rt)

@@ -92,7 +92,7 @@ agentiscaled up \
 its own background service. `-agent` picks the runtime that does the work;
 `codex` is the only one today, and others can be added behind the same flags.
 Node B checks that `codex` runs (`-agent-command` takes another path), then
-serves the A2A 1.0 agent `a2a://codex-review` to the other nodes of your
+serves the A2A 1.0 agent `a2a://codex` (`-agent-name` picks another name) to the other nodes of your
 network. Each task runs:
 
 ```sh
@@ -140,7 +140,7 @@ agents through your agentiscale MCP server; nothing counts those calls as delega
 so use `-agent-owner-config=false` where that must not happen. A repeated message ID from the same node is refused instead of run
 again, also after node B restarts (`<data-dir>/tasks-delivered.jsonl`).
 
-**In Claude Desktop**, ask for example "Use agentiscale to ask codex-review to
+**In Claude Desktop**, ask for example "Use agentiscale to ask codex to
 review the last commit" (or "the uncommitted changes", or "the commits on this
 branch against main"). The `agentiscale` server also has `send_task`,
 `get_task` and `cancel_task`: Claude finds the agent with

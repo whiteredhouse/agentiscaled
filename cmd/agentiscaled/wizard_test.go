@@ -79,9 +79,9 @@ func TestOfferAgent(t *testing.T) {
 	}
 	home, _ := os.UserHomeDir()
 	for _, c := range []struct{ input, name, dataDir string }{
-		{"y\n\n\n", "codex-review", "agentiscale-codex-review"},
+		{"y\n\n\n", "codex", "agentiscale-codex"},
 		{"y\nBad Name\nhelper\n\n", "helper", "agentiscale-codex-helper"},
-		{"y\ncodex\n\n", "codex", "agentiscale-codex"},
+		{"y\ncodex-helper\n\n", "codex-helper", "agentiscale-codex-helper"},
 	} {
 		w, out = testWizard(c.input)
 		o, err = w.offerAgent()
@@ -96,7 +96,7 @@ func TestOfferAgent(t *testing.T) {
 			t.Errorf("output:\n%s", out)
 		}
 	}
-	if !strings.Contains(out.String(), "Name of the agent in your network [codex-review]: ") {
+	if !strings.Contains(out.String(), "Name of the agent in your network [codex]: ") {
 		t.Errorf("output:\n%s", out)
 	}
 }

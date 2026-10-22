@@ -89,8 +89,8 @@ creates:
 ```text
 Offer an agent from this machine to your network? [y/N]: y
   Runtime: codex (the only one today)
-  Name of the agent in your network [codex-review]:
-  Directory the agent works in [~/.agentiscaled/workspaces/codex-review]: ~/work/my-project
+  Name of the agent in your network [codex]:
+  Directory the agent works in [~/.agentiscaled/workspaces/codex]: ~/work/my-project
   Use your own codex configuration (sign-in, skills, plugins, MCP servers)? [Y/n]:
   Load the directory's instruction files (AGENTS.md)? [Y/n]:
   Load the directory's skills? [Y/n]:
