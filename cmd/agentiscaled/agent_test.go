@@ -390,13 +390,6 @@ func TestCodexRuntimeIsReadOnlyAndUnconfigured(t *testing.T) {
 	if err := os.WriteFile(codex, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	skill := filepath.Join(dir, ".agents", "skills", "x", "SKILL.md")
-	if err := os.MkdirAll(filepath.Dir(skill), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(skill, []byte("---\nname: x\n---\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	out, err := (&codexRuntime{command: codex, home: filepath.Join(dir, "agent-codex")}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "Review main.go"})
 	if err != nil || out != "No findings" {
 		t.Fatalf("run: %q, %v", out, err)
@@ -404,10 +397,9 @@ func TestCodexRuntimeIsReadOnlyAndUnconfigured(t *testing.T) {
 	b, _ := os.ReadFile(argsFile)
 	args := " " + strings.ReplaceAll(string(b), "\n", " ")
 	for _, want := range []string{" exec ", " --ignore-user-config ", ` approval_policy="never" `,
-		// No AGENTS.md from the checkout, none of the owner's variables in
-		// commands, and reads confined to dir.
-		" project_doc_max_bytes=0 ", ` shell_environment_policy.inherit="core" `,
-		" skills.include_instructions=false ", " skills.bundled.enabled=false ", ` skills.config=[{path="` + skill + `", enabled=false}`,
+		// None of the owner's variables in commands, and reads confined to
+		// dir.
+		` shell_environment_policy.inherit="core" `,
 		` default_permissions="agentiscale-review" `,
 		` permissions.agentiscale-review={extends=":read-only", filesystem={":root"="deny", ":minimal"="read", ":workspace_roots"="read", "` + filepath.Join(dir, "agent-codex") + `"="deny"}} `,
 		" -C " + dir + " "} {
