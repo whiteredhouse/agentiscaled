@@ -158,7 +158,7 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 	}
 	var dir string
 	for {
-		answer, err := w.ask("  Directory the agent works in (for codex, the repository it reviews read-only)", "")
+		answer, err := w.ask("  Directory the agent works in", "")
 		if errors.Is(err, io.EOF) {
 			fmt.Fprintln(w.out, "  No directory given; no agent offered.")
 			return nil, nil

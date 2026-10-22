@@ -81,14 +81,13 @@ prints the lines to add yourself, and `-clients codex` connects only the Codex C
 
 ## Offer an agent to your network
 
-To let your other agents ask this machine's Codex for a read-only code review of one
-repository, answer y to "Offer an agent from this machine to your network?" and give
-the repository:
+To let your other agents send tasks to an agent on this machine, answer y to "Offer an
+agent from this machine to your network?" and give the directory it works in:
 
 ```text
 Offer an agent from this machine to your network? [y/N]: y
   Runtime: codex (the only one today)
-  Directory the agent works in (for codex, the repository it reviews read-only): ~/src/my-repo
+  Directory the agent works in: ~/src/my-repo
   Use your own codex configuration (sign-in, skills, plugins, MCP servers)? [Y/n]:
   Load the directory's instruction files (AGENTS.md)? [Y/n]:
   Load the directory's skills? [Y/n]:
@@ -112,19 +111,20 @@ agentiscaled up -y -data-dir <config dir>/agentiscale-codex-my-repo -agent codex
 ```
 
 which signs in to agentiscale once more for the new node. You can run that line
-yourself instead; see
+yourself instead. What the `codex` runtime does today, with an example from Claude
+Desktop, is in
 [Send a code review from Claude Desktop to Codex](connect-agents.md#send-a-code-review-from-claude-desktop-to-codex).
 
 ## More than one node on a machine
 
 Each node has its own data directory. Give a second node another one, and pass the
 same `-data-dir` to `status`, `down` and `mcp`. Its server in your agent apps is named
-after the directory, such as `agentiscale-review`. A node that offers an agent, like
+after the directory, such as `agentiscale-agent`. A node that offers an agent, like
 the one below, is not added to your apps unless you ask with
 `-clients claude-desktop,codex`:
 
 ```sh
-agentiscaled up -data-dir ~/agentiscale-review -agent codex -agent-dir ~/src/my-repo
+agentiscaled up -data-dir ~/agentiscale-agent -agent codex -agent-dir ~/src/my-repo
 ```
 
 ## Machines that cannot sign in
