@@ -77,7 +77,6 @@ func TestOfferAgent(t *testing.T) {
 	if o, err := w.offerAgent(); o != nil || err != nil {
 		t.Errorf("no directory: offered %+v, %v", o, err)
 	}
-	home, _ := os.UserHomeDir()
 	for _, c := range []struct{ input, name, dataDir string }{
 		{"y\n\n\n", "codex", "agentiscale-codex"},
 		{"y\nBad Name\nhelper\n\n", "helper", "agentiscale-codex-helper"},
@@ -86,16 +85,19 @@ func TestOfferAgent(t *testing.T) {
 	} {
 		w, out = testWizard(c.input)
 		o, err = w.offerAgent()
-		ownDir := filepath.Join(home, ".agentiscaled", "workspaces", c.name)
+		ownDir := filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-workspaces", c.name)
 		if err != nil || o == nil || o.name != c.name || o.agentDir != ownDir || o.dataDir != filepath.Join(filepath.Dir(defaultDataDir()), c.dataDir) {
 			t.Fatalf("input %q: offered %+v, %v\n%s", c.input, o, err, out)
 		}
 		if fi, err := os.Stat(ownDir); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
 			t.Errorf("the agent's own directory: %v, %v", fi, err)
 		}
-		if !strings.Contains(out.String(), "Directory the agent works in [~/.agentiscaled/workspaces/"+c.name+"]: ") {
+		if !strings.Contains(out.String(), "Directory the agent works in ["+homeRelative(ownDir)+"]: ") {
 			t.Errorf("output:\n%s", out)
 		}
+	}
+	if !strings.HasPrefix(homeRelative(defaultAgentDir("codex")), "~/") || homeRelative("/elsewhere") != "/elsewhere" {
+		t.Errorf("home-relative default %s", homeRelative(defaultAgentDir("codex")))
 	}
 	if !strings.Contains(out.String(), "Name of the agent in your network [codex]: ") {
 		t.Errorf("output:\n%s", out)

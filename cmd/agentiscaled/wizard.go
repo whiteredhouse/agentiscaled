@@ -125,10 +125,11 @@ func (w *wizard) chooseClients(installed []string, servesAgent bool) (string, er
 
 // defaultAgentDir is the directory an offered agent works in when the owner
 // names none: a workspace of its own, named after the agent, that
-// agentiscaled makes for it apart from the owner's files and from every
-// node's data directory.
+// agentiscaled makes for it next to the nodes' data directories (such as
+// ~/Library/Application Support/agentiscale-workspaces/codex), apart from
+// the owner's files and from every node's data directory.
 func defaultAgentDir(name string) string {
-	return "~/.agentiscaled/workspaces/" + name
+	return filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-workspaces", name)
 }
 
 // validAgentName tells whether a name can be an agent's name in the network
@@ -193,7 +194,7 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 	}
 	var dir string
 	for {
-		answer, err := w.ask("  Directory the agent works in", defaultAgentDir(name))
+		answer, err := w.ask("  Directory the agent works in", homeRelative(defaultAgentDir(name)))
 		if errors.Is(err, io.EOF) {
 			fmt.Fprintln(w.out, "  No directory given; no agent offered.")
 			return nil, nil
@@ -202,7 +203,7 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 		}
 		dir = expandHome(answer)
 		// The default is a directory of the agent's own, made on first use.
-		if answer == defaultAgentDir(name) {
+		if dir == defaultAgentDir(name) {
 			if err := os.MkdirAll(dir, 0o700); err != nil {
 				return nil, err
 			}
@@ -242,6 +243,17 @@ func ignoreEOF(err error) error {
 		return nil
 	}
 	return err
+}
+
+// homeRelative shows a path in the home directory from ~, as expandHome
+// reads it back.
+func homeRelative(path string) string {
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, path); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+			return filepath.Join("~", rel)
+		}
+	}
+	return path
 }
 
 func expandHome(path string) string {
