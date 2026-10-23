@@ -41,6 +41,8 @@ type (
 	// ControlPlaneStatusError is a control plane answer other than success,
 	// with its status code.
 	ControlPlaneStatusError = cpclient.StatusError
+	// RefreshError carries the status of a refused enrollment refresh.
+	RefreshError = inode.RefreshError
 )
 
 const (

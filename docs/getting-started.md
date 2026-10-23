@@ -46,6 +46,13 @@ to your current network with a new identity. Everything else stays as it was: th
 options `up` saved, the agent the node offers and that agent's own sign-in, and the
 entries in your agent apps, which need no change.
 
+The node tries to refresh an expired credential before treating a mesh refusal as
+final. A temporary refresh failure is not recorded as a permanent halt.
+For a foreground node started directly with flags, stop that process before
+running `reset`, then restart it with its original flags. Reset also works without
+settings saved by `up`; it leaves those foreground options for you to supply again.
+If that node uses a custom control service, pass `reset -control <URL>`.
+
 On a Linux server, run the `sudo loginctl enable-linger <you>` command that `up`
 prints, so the node keeps running after you log out.
 

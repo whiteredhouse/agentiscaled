@@ -122,13 +122,15 @@ func meshAnswerOf(err error) meshAnswer {
 	}
 	msg := err.Error()
 	var status *meshnode.ControlPlaneStatusError
+	var refresh *meshnode.RefreshError
 	var dns *net.DNSError
 	switch {
 	case strings.Contains(msg, "not signed by any trusted control plane key"):
 		return meshKeyUntrusted
 	case strings.Contains(msg, "loaded identity fails role requirement"),
 		errors.Is(err, meshnode.ErrFatalAuth),
-		errors.As(err, &status) && (status.Code == http.StatusUnauthorized || status.Code == http.StatusForbidden):
+		errors.As(err, &status) && (status.Code == http.StatusUnauthorized || status.Code == http.StatusForbidden),
+		errors.As(err, &refresh) && (refresh.StatusCode == http.StatusUnauthorized || refresh.StatusCode == http.StatusForbidden):
 		return meshCredentialRefused
 	case errors.Is(err, meshnode.ErrControlPlaneNotFound),
 		errors.As(err, &dns) && dns.IsNotFound:
@@ -244,6 +246,23 @@ func (d diagnosis) check(ctx context.Context, meshErr error) *nodeHalt {
 type networkProbe interface {
 	IsConnected() bool
 	SyncControlPlane(ctx context.Context) error
+	RefreshEnrollment(ctx context.Context) error
+}
+
+// A sync can refuse an expired credential that /refresh still accepts. Give
+// that recovery a chance before treating the refusal as final. If refresh
+// cannot answer, diagnose that failure alone: the original 401 does not make
+// a timeout or a 5xx into a permanent refusal.
+func syncForDiagnosis(ctx context.Context, node networkProbe) error {
+	err := node.SyncControlPlane(ctx)
+	if meshAnswerOf(err) != meshCredentialRefused {
+		return err
+	}
+	if err := node.RefreshEnrollment(ctx); err != nil {
+		return fmt.Errorf("refresh enrollment after sync refusal: %w", err)
+	}
+	log.Print("refreshed node credential after a sync refusal")
+	return node.SyncControlPlane(ctx)
 }
 
 // How often the watch looks at the node's connection, how long the node may
@@ -281,7 +300,7 @@ func watchNetwork(ctx context.Context, node networkProbe, d diagnosis) <-chan no
 				continue
 			}
 			lastCheck = now
-			err := node.SyncControlPlane(ctx)
+			err := syncForDiagnosis(ctx, node)
 			if ctx.Err() != nil {
 				return
 			}

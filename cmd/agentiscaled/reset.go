@@ -24,6 +24,7 @@ import (
 func runReset(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("reset", flag.ContinueOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node")
+	control := fs.String("control", "", "Control service URL for a foreground node without saved settings (default: the hosted control service)")
 	var auth authConfig
 	fs.StringVar(&auth.issuer, "auth-issuer", defaultAuth.issuer, "Auth0 tenant that signs you in")
 	fs.StringVar(&auth.clientID, "auth-client-id", defaultAuth.clientID, "Auth0 application agentiscaled signs in with")
@@ -39,12 +40,27 @@ func runReset(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	s, err := loadSettings(dir)
+	savedSettings := err == nil
 	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("no node set up in %s: run 'agentiscaled up'", dir)
+		// A node run directly with flags has a store but no saved settings.
+		// Use temporary enrollment options, then let it resume with those
+		// original flags rather than inventing a service configuration.
+		if _, err := os.Stat(filepath.Join(dir, meshnode.StoreFile)); errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("no node set up in %s: run 'agentiscaled up'", dir)
+		} else if err != nil {
+			return err
+		}
+		s = settings{Listen: "/ip4/0.0.0.0/tcp/0", LogLevel: "info", MachineName: defaultMachineName()}
 	} else if err != nil {
 		return err
 	}
 	c := s.config(dir)
+	if *control != "" {
+		if savedSettings {
+			return errors.New("-control is only for a foreground node without saved settings; reset keeps the saved control service URL")
+		}
+		c.control = *control
+	}
 	if c.control == "" {
 		c.control = defaultControl
 	}
@@ -83,8 +99,10 @@ func runReset(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	s.PeerID, s.NetworkID, s.MeshURL = pid.String(), network, meshURL
-	if err := saveSettings(dir, s); err != nil {
-		return fmt.Errorf("save settings: %w", err)
+	if savedSettings {
+		if err := saveSettings(dir, s); err != nil {
+			return fmt.Errorf("save settings: %w", err)
+		}
 	}
 	if err := os.Remove(filepath.Join(dir, haltFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -92,6 +110,10 @@ func runReset(ctx context.Context, args []string, out io.Writer) error {
 	fmt.Fprintf(out, "This node is now %s in network %s; its settings and agent clients are unchanged.\n", s.PeerID, s.NetworkID)
 	if aside != "" {
 		fmt.Fprintf(out, "Its previous identity is in %s.\n", aside)
+	}
+	if !savedSettings {
+		fmt.Fprintf(out, "Restart the foreground node with its original flags and -data-dir %s.\n", shellQuote(dir))
+		return nil
 	}
 
 	exe, err := stableExecutable()

@@ -332,7 +332,7 @@ func run(ctx context.Context, c config) error {
 		meshURL, _ := store.LoadControlPlaneURL()
 		diag.network = networkFromMeshURL(meshURL)
 	}
-	if err := node.SyncControlPlane(ctx); err != nil {
+	if err := syncForDiagnosis(ctx, node); err != nil {
 		log.Printf("control plane sync before start failed, using stored config: %v", err)
 		if meshAnswerOf(err).suspect() {
 			if h := diag.check(ctx, err); h != nil {
