@@ -8,7 +8,7 @@ node. It is licensed under Apache-2.0; see [LICENSE](LICENSE).
 
 | Change | Why |
 |---|---|
-| Added `export/node/` | Upstream keeps the node in `internal/node`, which Go forbids other modules to import. `export/node` is inside this module, so it may import it, and re-exports the names agentiscaled uses as type and function aliases. It adds no behaviour. |
+| Added `export/node/` | Upstream keeps the node in `internal/node`, which Go forbids other modules to import. `export/node` is inside this module, so it may import it, and re-exports the names agentiscaled uses as type and function aliases. It adds no behaviour. The aliases also expose existing authorization inputs and helpers so agentiscaled can enforce them on its own owner-only local agent API. |
 | Added `internal/controlplane/bound_peer.go` and its test, plus two calls in `internal/controlplane/server.go` (marked "agentiscale fork") | A bootstrap token whose description starts with `agentiscale-bound-peer:<peer ID>` admits only that peer: `/enroll` refuses any other key before issuing a credential, and `/admin/bootstrap-tokens` refuses an invalid peer ID. Upstream tokens admit any key, so a node could hand its token to another. The binding lives in the description so that the patch needs no schema or API change. |
 | Added this file | Records the fork. |
 | Left out `site/`, `sdk/`, `tests/`, `mobile/`, `charts/`, `deploy/`, `development/`, `hack/`, `scripts/`, Dockerfiles and the Makefile | Not needed to build the Go packages. Everything under `api/`, `cmd/`, `internal/` and `agents/` is byte-identical to upstream except the bound-peer patch above. |
