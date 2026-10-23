@@ -15,8 +15,8 @@ import (
 	"time"
 )
 
-// authConfig names the Auth0 tenant, application and API that `agentiscaled
-// up` signs the owner in with. The application is a native one, so
+// authConfig names the OIDC issuer, application and API that `agentiscaled
+// up` signs the owner in with. The application is a public one, so
 // its client ID is public and it has no secret.
 type authConfig struct {
 	issuer   string
@@ -24,11 +24,11 @@ type authConfig struct {
 	audience string
 }
 
-// defaultAuth is agentiscale's hosted sign-in: its Auth0 tenant, the "CLI"
+// defaultAuth is agentiscale's hosted sign-in: its Kinde issuer, the CLI
 // application with the Device Code grant, and the control service's API.
 var defaultAuth = authConfig{
-	issuer:   "https://whiteredhouse.eu.auth0.com/",
-	clientID: "zPqccXu1JRBfhMKHP3tNcWzFVBNgMaeT",
+	issuer:   "https://auth.agentiscale.net",
+	clientID: "bfdebf0736014192b4c474f28e1eea8c",
 	audience: "https://control.agentiscale.net",
 }
 
@@ -47,7 +47,7 @@ func deviceLogin(ctx context.Context, auth authConfig, out io.Writer) (string, e
 		ExpiresIn               int    `json:"expires_in"`
 		Interval                int    `json:"interval"`
 	}
-	if _, err := postForm(ctx, base+"/oauth/device/code", url.Values{
+	if _, err := postForm(ctx, base+"/oauth2/device/auth", url.Values{
 		"client_id": {auth.clientID},
 		"audience":  {auth.audience},
 		"scope":     {"openid email"},
@@ -83,7 +83,7 @@ func deviceLogin(ctx context.Context, auth authConfig, out io.Writer) (string, e
 			Error            string `json:"error"`
 			ErrorDescription string `json:"error_description"`
 		}
-		_, err := postForm(ctx, base+"/oauth/token", url.Values{
+		_, err := postForm(ctx, base+"/oauth2/token", url.Values{
 			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
 			"device_code": {code.DeviceCode},
 			"client_id":   {auth.clientID},
@@ -103,7 +103,7 @@ func deviceLogin(ctx context.Context, auth authConfig, out io.Writer) (string, e
 		case err != nil:
 			return "", fmt.Errorf("sign-in: %w", err)
 		default:
-			return "", errors.New("sign-in: Auth0 answered without an access token")
+			return "", errors.New("sign-in: the identity provider answered without an access token")
 		}
 		if time.Now().After(deadline) {
 			return "", errors.New("the sign-in code expired; run 'agentiscaled up' again")

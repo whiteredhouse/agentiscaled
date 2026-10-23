@@ -17,11 +17,15 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const a2aInstructions = `agentiscale: use list_local_services (type "a2a") to find agents hosted on this node; call send_task with their name as service and omit peer_id. Use discover_remote_services (type "a2a") to find agents on other nodes; call send_task with their peer_id and srv_name as service. Follow tasks with get_task until terminal (completed, rejected, cancelled, timeout or failed); cancel_task stops them. Use the same target for send/get/cancel. Do not use the a2a CLI or hand-written requests. An offline remote node cannot be reached and nothing is queued.`
+const a2aInstructions = `agentiscale: use list_local_services (type "a2a") to find agents hosted on this node; call send_task with their name as service and omit peer_id. Use discover_remote_services (type "a2a") to find agents on other nodes; inspect their current card with get_agent_card using peer_id and srv_name as service, then call send_task with the same target. Follow tasks with get_task until terminal (completed, rejected, cancelled, timeout or failed); cancel_task stops them. Use the same target for send/get/cancel. Do not use the a2a CLI or hand-written requests. An offline remote node cannot be reached and nothing is queued.`
 
 // maxWait bounds how long get_task holds one tool call, below the timeouts
 // MCP clients put on a call.
 const maxWait = 50 * time.Second
+
+// Match the node's remote-card ingestion budget, with a separate call deadline.
+const maxAgentCardBytes = 1 << 20
+const agentCardTimeout = 30 * time.Second
 
 var serviceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
@@ -66,6 +70,11 @@ type taskOut struct {
 }
 
 func addA2ATools(server *mcp.Server, t *a2aTasks) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "get_agent_card",
+		Description: "Read the current card of a discovered A2A agent through this node's encrypted mesh connection. Use its peer_id and service name (srv_name). An unavailable or refused service returns an error; this does not send a task.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, t.card)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "send_task",
 		Description: "Send one task to an A2A agent on this node or another node of your agentiscale network. Remote calls use the network's end-to-end encrypted connection. Returns at once with the task ID and state; follow it with get_task.",
@@ -132,6 +141,60 @@ func (t *a2aTasks) localInfo(ctx context.Context) (localAgentInfo, error) {
 		return info, errors.New("invalid local service name")
 	}
 	return info, nil
+}
+
+func (t *a2aTasks) endpoint(target taskTarget) (string, error) {
+	if _, err := peer.Decode(target.PeerID); err != nil {
+		return "", fmt.Errorf("peer_id %q is not a peer ID", target.PeerID)
+	}
+	if !serviceName.MatchString(target.Service) {
+		return "", fmt.Errorf("service %q is not a service name", target.Service)
+	}
+	return fmt.Sprintf("%s/mesh/%s/a2a/%s", t.base, target.PeerID, target.Service), nil
+}
+
+func (t *a2aTasks) card(ctx context.Context, _ *mcp.CallToolRequest, target taskTarget) (*mcp.CallToolResult, any, error) {
+	endpoint, err := t.endpoint(target)
+	if err != nil {
+		return nil, nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, agentCardTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/.well-known/agent-card.json", nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Only the selected node's mesh route may answer. A redirect must not
+	// become a request to a different route, host or advertised interface.
+	client := *t.http
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get agent card of %s on node %s: %w", target.Service, target.PeerID, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("get agent card of %s on node %s: HTTP %d; the service is unavailable or refused", target.Service, target.PeerID, response.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxAgentCardBytes+1))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read agent card: %w", err)
+	}
+	if len(data) > maxAgentCardBytes {
+		return nil, nil, errors.New("agent card exceeds the size limit")
+	}
+	var card *a2a.AgentCard
+	if err := json.Unmarshal(data, &card); err != nil {
+		return nil, nil, fmt.Errorf("invalid agent card: %w", err)
+	}
+	if card == nil || card.Name == "" || len(card.SupportedInterfaces) == 0 {
+		return nil, nil, errors.New("invalid agent card: name and supported interfaces are required")
+	}
+	data, err = json.Marshal(card)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode agent card: %w", err)
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(data)}}}, nil, nil
 }
 
 func (t *a2aTasks) send(ctx context.Context, _ *mcp.CallToolRequest, in sendTaskIn) (*mcp.CallToolResult, taskOut, error) {

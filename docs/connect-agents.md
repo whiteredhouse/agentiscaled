@@ -36,7 +36,7 @@ Open Settings, Developer, Edit Config, which opens
 Quit and reopen Claude Desktop. The `agentiscale` server's tools
 (`get_mesh_info`, `discover_remote_services`, `find_remote_tools`,
 `describe_remote_tool`, `call_remote_tool`, `list_local_services`, and the A2A
-task tools `send_task`, `get_task` and `cancel_task`) then appear in a new chat. Ask it to "show my agentiscale mesh info" to check the connection.
+agent tools `get_agent_card`, `send_task`, `get_task` and `cancel_task`) then appear in a new chat. Ask it to "show my agentiscale mesh info" to check the connection.
 
 ## Codex CLI
 
@@ -69,11 +69,11 @@ client configuration files.
 
 ## Send a task from Claude Desktop to Codex
 
-Here Claude Desktop sends a task to a Codex CLI agent that works read-only in
-one directory, and the task crosses your network's encrypted mesh between two
-nodes. Both nodes can run on the same Mac. The examples use a code review, but
-the task can be anything Codex can do by reading that directory: explain how
-something works, find where something is handled, summarise notes.
+Here Claude Desktop sends a task to a Codex CLI agent working in a configured
+directory under your runtime permissions. The task crosses your network's
+encrypted mesh between two nodes, which can both run on the same Mac. Tasks can
+include implementation, code review, explaining code or summarising notes,
+according to the permissions you configure locally in Codex.
 
 **Node A** is the one you already run, with Claude Desktop connected as above.
 It serves no services; Claude Desktop only sends. Configure node B with
@@ -99,16 +99,19 @@ serves the A2A 1.0 agent `a2a://codex` to the other nodes of your network.
 description other agents see on its card. Each task runs:
 
 ```sh
-codex exec --ephemeral -c approval_policy="never" \
-  -c shell_environment_policy.inherit="core" \
-  -c default_permissions="agentiscale-read-only" \
-  -c 'permissions.agentiscale-read-only={extends=":read-only", filesystem={":root"="deny", ":minimal"="read", ":workspace_roots"="read", "<codex install>"="read"}}' \
+codex exec --ephemeral -c shell_environment_policy.inherit="core" \
   -C <agent-dir> --output-last-message <file> -
 ```
 
 with the request on standard input, framed as an untrusted task: the agent
-does it and answers with the result, and describes any change the task asks
-for instead of making it. Codex runs as yours
+does it and answers with the result. With the default `-agent-owner-config=true`,
+Codex uses your configured filesystem and network permissions. A writable policy can
+allow it to implement changes; a read-only policy can limit it to inspection.
+The remote task cannot select another permission policy or change the receiving
+node's working directory. `codex exec` is non-interactive: human approval prompts
+are unavailable and escalation is refused. An owner-configured automatic reviewer
+can use Codex's supported unattended approval flow. The adapter does not turn that
+reviewer on or approve requests on your behalf. Codex runs as yours
 does, with your `CODEX_HOME` (`~/.codex`, or the `CODEX_HOME` set when you ran `up`,
 which `up` keeps for node B's service): your sign-in, skills, plugins, settings and MCP
 servers, agentiscale included if you connected Codex, so the agent can call your
@@ -131,11 +134,14 @@ someone you don't trust, `-agent-dir-instructions=false` passes `-c project_doc_
 above the directory (`.agents/skills`, `.codex/skills`), the machine's
 `/etc/codex/skills` and Codex's bundled skills. Commands Codex
 runs see only basic environment variables (`HOME`, `PATH`, `USER` and the like)
-and can read only the agent's directory, the system files a shell needs and the Codex
-install: not your home directory, and not the `CODEX_HOME` with the sign-in.
-They cannot write anything.
+and their filesystem/network access follows your selected runtime policy. With
+`-agent-owner-config=false`, the isolated runtime instead enforces the existing
+read-only profile with approvals off: it can read only the agent's directory,
+minimal system files and the Codex install, with its sign-in directory denied.
+It cannot write files. The adapter does not force that profile onto your own
+configuration.
 To check this on your machine without signing in:
-`AGENTISCALE_TEST_CODEX=$(command -v codex) go test ./cmd/agentiscaled -run TestCodexAgainstAHostileCheckout -v`.
+`AGENTISCALE_TEST_CODEX=$(command -v codex) go test ./cmd/agentiscaled -run 'TestCodexAgainstAHostileCheckout|TestCodexOwnerWorkspaceWrite' -v`.
 
 Each task belongs to the node that sent it: no other node can read its result or
 cancel it. Limits: one task at a time (others are refused, not
@@ -147,17 +153,24 @@ its task is running is rejected by the same one-task-at-a-time gate. That gate i
 not a general delegation boundary: outgoing `send_task` calls use depth zero;
 the hosted runtime's delegation provenance is not automatically propagated.
 A repeated message ID from the same node is refused instead of run
-again, also after node B restarts (`<data-dir>/tasks-delivered.jsonl`).
+again, also after node B restarts (`<data-dir>/tasks-delivered.jsonl`). Incomplete
+final log writes are repaired before new tasks start. A malformed completed
+record prevents the service from starting because its duplicate history cannot
+be trusted. Preserve that file and restore a verified complete copy or reconcile its
+history before restarting; deleting it removes duplicate protection.
 
 **In Claude Desktop**, ask for example "Use agentiscale to ask codex to
 review the last commit", or "… to explain how requests are authenticated".
-The `agentiscale` server also has `send_task`, `get_task` and `cancel_task`: Claude finds the agent with
-`discover_remote_services` (type `a2a`), sends the task and follows it to one
+The `agentiscale` server also has `get_agent_card`, `send_task`, `get_task` and `cancel_task`: Claude finds the agent with
+`discover_remote_services` (type `a2a`), reads its current card with `get_agent_card`
+(using the discovered `peer_id` and `srv_name` as `service`), sends the task and follows it to one
 of `completed`, `rejected`, `cancelled`, `timeout` or `failed`. A review of one
 commit takes about a minute. The agent always works in node B's `-agent-dir`,
 never on files on the sender's machine; with both nodes on one Mac, that is
 your checkout as it is on disk. If node B is offline the call fails at once;
-the mesh keeps no mailbox.
+the mesh keeps no mailbox. A stopped, refused or offline service also makes
+`get_agent_card` return a visible error; an earlier card is never reused as a
+current availability result.
 
 Claude Desktop starts `agentiscaled mcp` when it opens and keeps that process,
 so after rebuilding `agentiscaled`, quit Claude Desktop (Cmd+Q) and open it

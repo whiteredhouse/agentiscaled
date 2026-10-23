@@ -60,7 +60,7 @@ type config struct {
 	// service about when it cannot reach it.
 	networkID string
 
-	// signInToken is the owner's Auth0 access token during `agentiscaled up`.
+	// signInToken is the owner's access token during `agentiscaled up`.
 	// It lives in memory for enrollment only and is never stored.
 	signInToken string
 }
@@ -148,7 +148,7 @@ func nodeFlags(fs *flag.FlagSet, c *config) {
 	fs.StringVar(&c.agentDescription, "agent-description", "", "What the agent does, as other agents see it on its card (default: the runtime's)")
 	fs.BoolVar(&c.agentPolicy.DirInstructions, "agent-dir-instructions", true, "Let the agent load the instruction files (AGENTS.md) of -agent-dir; =false ignores them")
 	fs.BoolVar(&c.agentPolicy.DirSkills, "agent-dir-skills", true, "Let the agent load the skills of -agent-dir; =false turns them off")
-	fs.BoolVar(&c.agentPolicy.OwnerConfig, "agent-owner-config", true, "Run the agent with your own configuration of its runtime (sign-in, skills, plugins, MCP servers, settings); =false gives it its own in -data-dir")
+	fs.BoolVar(&c.agentPolicy.OwnerConfig, "agent-owner-config", true, "Run the agent with your own configuration of its runtime (sign-in, skills, plugins, MCP servers, settings and permissions); =false uses an isolated read-only configuration in -data-dir")
 	fs.StringVar(&c.machineName, "hostname", defaultMachineName(), "Name of this machine in your network's member list")
 }
 
@@ -572,7 +572,7 @@ func postJoin(ctx context.Context, url, bearer string, body map[string]string) (
 	return answer, resp.StatusCode, nil
 }
 
-// httpClient bounds every call to the control service and Auth0.
+// httpClient bounds every call to the control service and the identity provider.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 // apiTokenFor returns the TCP API token from --api-token-path, or from

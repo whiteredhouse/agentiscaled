@@ -26,9 +26,9 @@ func runReset(ctx context.Context, args []string, out io.Writer) error {
 	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node")
 	control := fs.String("control", "", "Control service URL for a foreground node without saved settings (default: the hosted control service)")
 	var auth authConfig
-	fs.StringVar(&auth.issuer, "auth-issuer", defaultAuth.issuer, "Auth0 tenant that signs you in")
-	fs.StringVar(&auth.clientID, "auth-client-id", defaultAuth.clientID, "Auth0 application agentiscaled signs in with")
-	fs.StringVar(&auth.audience, "auth-audience", defaultAuth.audience, "Auth0 API the sign-in is for")
+	fs.StringVar(&auth.issuer, "auth-issuer", defaultAuth.issuer, "OIDC issuer that signs you in")
+	fs.StringVar(&auth.clientID, "auth-client-id", defaultAuth.clientID, "Public client ID agentiscaled signs in with")
+	fs.StringVar(&auth.audience, "auth-audience", defaultAuth.audience, "API audience the sign-in is for")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

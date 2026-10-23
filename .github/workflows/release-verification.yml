@@ -1,0 +1,67 @@
+name: Release verification
+
+on:
+  pull_request:
+    paths: ['qa/releases/**', 'spec/exacly/**', '.github/actions/release-setup/**', '.github/workflows/release-*.yml']
+  schedule:
+    - cron: '37 */6 * * *'
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  attestations: read
+
+concurrency:
+  group: release-verification-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  native:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    name: Native ${{ matrix.system }}/${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: macos-15, system: darwin, arch: arm64}
+          - {runner: macos-15-intel, system: darwin, arch: amd64}
+          - {runner: ubuntu-24.04, system: linux, arch: amd64}
+          - {runner: ubuntu-24.04-arm, system: linux, arch: arm64}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/release-setup
+      - name: Validate public model
+        run: .venv-evidence/bin/python -I -m exacly validate spec/exacly
+      - name: Draft producer policy for independent review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p reports
+          .venv-evidence/bin/python -I -m exacly evidence propose-policy github-actions \
+            --repository whiteredhouse/agentiscaled --revision "$(git rev-parse HEAD)" \
+            --proposal 'qa/releases/producers/${{ matrix.system }}-${{ matrix.arch }}.yaml' \
+            --model-file spec/exacly/releases.yaml --name 'release-${{ matrix.system }}-${{ matrix.arch }}' \
+            --version 1 --out 'reports/policy-${{ matrix.system }}-${{ matrix.arch }}.candidate.json'
+      - name: Run native release acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SYSTEM: ${{ matrix.system }}
+          RELEASE_ARCH: ${{ matrix.arch }}
+          RELEASE_DISCOVER: ${{ github.event_name != 'pull_request' }}
+        run: .venv-evidence/bin/python -I -m pytest -c qa/releases/pytest.ini --rootdir=. qa/releases --junitxml=reports/junit.xml --maxfail=1
+      - name: Retain diagnostic test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: native-${{ matrix.system }}-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: reports/
+          retention-days: 14
+          if-no-files-found: ignore

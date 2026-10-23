@@ -459,7 +459,7 @@ func TestResetKeepsEverythingButTheIdentity(t *testing.T) {
 		return newNetwork, nil
 	}
 	t.Cleanup(func() { enrollNew = enrollOnly })
-	auth := newFakeAuth0(t, "")
+	auth := newFakeIdP(t, "")
 	var out bytes.Buffer
 	if err := runReset(context.Background(), []string{"-data-dir", dir, "-auth-issuer", auth.config().issuer, "-auth-client-id", "CLIENT", "-auth-audience", "https://control.test"}, &out); err != nil {
 		t.Fatalf("reset: %v\n%s", err, out.String())

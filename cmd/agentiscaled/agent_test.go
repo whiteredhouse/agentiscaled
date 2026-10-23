@@ -422,7 +422,7 @@ func TestCodexRuntimeIsReadOnlyAndUnconfigured(t *testing.T) {
 	// The request reaches Codex on stdin, framed as untrusted data with its
 	// authenticated sender.
 	p, _ := os.ReadFile(argsFile + ".prompt")
-	for _, want := range []string{"must not modify", "If the task asks for changes", "from node " + testSender, "<request>\nReview main.go\n</request>"} {
+	for _, want := range []string{"permissions and approval rules", "Make changes only when", "from node " + testSender, "<request>\nReview main.go\n</request>"} {
 		if !strings.Contains(string(p), want) {
 			t.Errorf("prompt on stdin %q lacks %q", p, want)
 		}
