@@ -130,8 +130,9 @@ instruction files or skills when it may hold content from someone you don't trus
 The agent runs on the same node your local apps use. There is one mesh identity,
 one sign-in to agentiscale, and one background service. If Codex needs a runtime
 sign-in, `up` runs `codex login` during agent setup, before joining the node and
-starting the service. Local apps can discover and call this agent through the same
-node, as well as agents on other machines.
+starting the service. Agents on other nodes can discover and call the hosted agent.
+Local apps connected to this node can call agents on other nodes; task calls to the
+agent hosted on their own node are not supported yet.
 
 To configure it with flags instead of the wizard:
 
@@ -152,15 +153,11 @@ reported. A service that was already stopped is not restarted as recovery.
 Client setup uses your invoking shell's Codex configuration, even when the hosted
 agent uses a different saved `CODEX_HOME`.
 
-The MCP tools preserve Agent Mesh's discovery distinction: `list_local_services`
-with type `a2a` lists this node's hosted agent; `discover_remote_services` lists
-agents on other nodes. For a local agent, call `send_task` with its `name` as
-`service` and omit `peer_id`. For a remote agent, pass its `srv_name` as `service`
-and its `peer_id`. Use the same target with `get_task` and `cancel_task`.
-
-Local task calls use agentiscaled's owner-only Unix socket. They use the same
-agent handler and permissions as network calls; Agent Mesh's network discovery
-and proxy routes are unchanged.
+The MCP tools keep their existing behavior: `list_local_services` with type `a2a`
+lists this node's hosted agent; `discover_remote_services` lists agents on other
+nodes. Use `send_task` with the remote agent's `srv_name` as `service` and its
+`peer_id`, then use the same target with `get_task` and `cancel_task`. The local
+inventory does not provide a same-node task route.
 
 See [Send a task from Claude Desktop to Codex](connect-agents.md#send-a-task-from-claude-desktop-to-codex)
 for an example.

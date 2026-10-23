@@ -37,10 +37,6 @@ type (
 	Reachability       = inode.Reachability
 	TokenSource        = inode.TokenSource
 	TokenSourceConfig  = inode.TokenSourceConfig
-	// Authorization inputs for embedders' own local APIs; these are aliases,
-	// not changes to mesh discovery or transport behavior.
-	RequestContext   = inode.RequestContext
-	HTTPRequestFacts = inode.HTTPRequestFacts
 
 	// ControlPlaneStatusError is a control plane answer other than success,
 	// with its status code.
@@ -88,7 +84,4 @@ var (
 	// MintBootstrapBiscuitToken signs a node credential, as a control plane
 	// does on enrollment; tests use it to stand in for a mesh.
 	MintBootstrapBiscuitToken = identity.MintBootstrapBiscuitToken
-	// Existing authorization helpers used by the embedder's local agent API.
-	RequirePublish    = identity.RequirePublish
-	AuthorizerOptions = identity.AuthorizerOptions
 )

@@ -371,11 +371,6 @@ func run(ctx context.Context, c config) error {
 		}}); err != nil {
 			return fmt.Errorf("register agent %s: %w", c.agentName, err)
 		}
-		localAPI, err := serveLocalAgent(nodeCtx, node, nodeConfig, c.agentName, target, c.dataDir)
-		if err != nil {
-			return fmt.Errorf("start local agent API: %w", err)
-		}
-		defer localAPI.Close()
 		log.Printf("serving a2a://%s: %s agent in %s", c.agentName, c.agent, c.agentDir)
 	}
 	node.StartRenewalLoop(nodeCtx, "", "", "", "")
