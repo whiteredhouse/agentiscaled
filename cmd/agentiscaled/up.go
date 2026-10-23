@@ -146,7 +146,7 @@ func runSaved(ctx context.Context, args []string) error {
 // runUp is `agentiscaled up`: it signs the owner in through the
 // browser if the node has no identity yet, joins the node to their network,
 // saves its settings and (re)starts it as a per-user background service.
-func runUp(ctx context.Context, args []string, out io.Writer) error {
+func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 	var c config
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	nodeFlags(fs, &c)
@@ -179,7 +179,8 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("load settings: %w", err)
 	}
-	preserveAgentEnv := err == nil && !set["agent"] && !set["agent-owner-config"]
+	haveSaved := err == nil
+	preserveAgentEnv := haveSaved && !set["agent"] && !set["agent-owner-config"]
 	if err == nil {
 		values := map[string]string{
 			"control": saved.Control, "config": saved.ConfigFile, "bind-addr": saved.BindAddr,
@@ -212,52 +213,15 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 			c.bindAddr = ""
 		}
 	}
-	// Validate against the saved owner configuration, including its absence
-	// of an override such as CODEX_HOME, rather than this invocation's shell.
-	if preserveAgentEnv && c.agentPolicy.OwnerConfig {
-		for _, name := range runtimes[c.agent].ownerEnv {
-			previous, existed := os.LookupEnv(name)
-			defer func() {
-				if existed {
-					_ = os.Setenv(name, previous)
-				} else {
-					_ = os.Unsetenv(name)
-				}
-			}()
-			value := ""
-			for _, kv := range c.agentEnv {
-				key, v, _ := strings.Cut(kv, "=")
-				if key == name {
-					value = v
-					break
-				}
-			}
-			if err := os.Setenv(name, value); err != nil {
-				return err
-			}
-		}
-	}
-	if err := checkAgent(&c, !*noService); err != nil {
+	if err := checkUpAgent(&c, !*noService, preserveAgentEnv); err != nil {
 		return err
 	}
 	if err := checkClients(*clients); err != nil {
 		return err
 	}
 
-	svc := newService(c.dataDir)
-	// The running node holds its store; stop it so `up` can read and enroll.
-	if svc != nil {
-		if err := svc.stop(); err != nil {
-			return err
-		}
-	}
-	joined, err := ensureJoined(ctx, &c, auth, out)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "This node is %s in network %s.\n", joined.peerID, joined.networkID)
-	// The questions come after the sign-in, which may take the owner to the
-	// browser, and before anything is started.
+	// Gather and validate changes while the existing node remains available.
+	// Runtime login or an invalid workspace must not stop a working service.
 	if ask != nil {
 		if !set["clients"] {
 			if *clients, err = ask.chooseClients(installedClients()); err != nil {
@@ -284,6 +248,45 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		}
 	}
 
+	exe, err := stableExecutable()
+	if err != nil {
+		return err
+	}
+	svc := newService(c.dataDir)
+	wasRunning := false
+	if svc != nil {
+		_, wasRunning = svc.state()
+		// Unload an installed job even between automatic restart attempts.
+		if svc.installed() {
+			if err := svc.stop(); err != nil {
+				return err
+			}
+		}
+	}
+	settingsChanged := false
+	// Once the store must be opened, recover only a service we actually stopped.
+	// Restore its settings before restarting it; surface recovery failures too.
+	defer func() {
+		if runErr == nil || !wasRunning || !haveSaved {
+			return
+		}
+		if settingsChanged {
+			if err := saveSettings(c.dataDir, saved); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("restore previous node settings: %w", err))
+				return
+			}
+		}
+		if err := svc.start(serviceSpec{exe: exe, dataDir: c.dataDir, path: saved.Path}); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("restart previous background service: %w", err))
+		} else {
+			fmt.Fprintln(out, "Restored the previous background service and settings.")
+		}
+	}()
+	joined, err := ensureJoined(ctx, &c, auth, out)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "This node is %s in network %s.\n", joined.peerID, joined.networkID)
 	if !preserveAgentEnv {
 		c.agentEnv = agentOwnerEnv(c.agent, c.agentPolicy)
 	}
@@ -313,10 +316,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 	if err := saveSettings(c.dataDir, s); err != nil {
 		return fmt.Errorf("save settings: %w", err)
 	}
-	exe, err := stableExecutable()
-	if err != nil {
-		return err
-	}
+	settingsChanged = true
 	if *noService || svc == nil {
 		if svc == nil {
 			fmt.Fprintln(out, "No background service on this system; run the node yourself:")
@@ -328,6 +328,9 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		return nil
 	}
 	if err := svc.start(serviceSpec{exe: exe, dataDir: c.dataDir, path: s.Path}); err != nil {
+		if wasRunning && haveSaved {
+			return fmt.Errorf("start updated background service: %w", err)
+		}
 		return fmt.Errorf("start the background service: %w\nThe node has joined; run it yourself with:\n  %s run -data-dir %s", err, shellQuote(exe), shellQuote(c.dataDir))
 	}
 	fmt.Fprintf(out, "Started the background service %s; it starts again when you log in.\n", svc.name())
@@ -341,6 +344,35 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 	}
 	nextSteps(ctx, out, *clients, c, exe)
 	return nil
+}
+
+// checkUpAgent limits the saved runtime environment to validation. Client
+// setup and interactive questions use the invoking shell's configuration.
+func checkUpAgent(c *config, service, preserveEnv bool) error {
+	if preserveEnv && c.agentPolicy.OwnerConfig {
+		for _, name := range runtimes[c.agent].ownerEnv {
+			previous, existed := os.LookupEnv(name)
+			defer func() {
+				if existed {
+					_ = os.Setenv(name, previous)
+				} else {
+					_ = os.Unsetenv(name)
+				}
+			}()
+			value := ""
+			for _, kv := range c.agentEnv {
+				key, v, _ := strings.Cut(kv, "=")
+				if key == name {
+					value = v
+					break
+				}
+			}
+			if err := os.Setenv(name, value); err != nil {
+				return err
+			}
+		}
+	}
+	return checkAgent(c, service)
 }
 
 // nextSteps connects the chosen agent clients to the node, or prints how to.

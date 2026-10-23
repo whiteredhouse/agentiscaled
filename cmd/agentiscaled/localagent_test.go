@@ -301,3 +301,39 @@ func TestLocalAgentTransportStreamsAndRejectsTCP(t *testing.T) {
 		t.Fatal("closing stream did not cancel backend request")
 	}
 }
+
+// A hosted runtime with the owner's MCP configuration can address its own
+// local agent. The active parent must prevent that call from running again.
+func TestLocalAgentRejectsSelfCallWhileRunning(t *testing.T) {
+	_, fix, tasks, _ := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	target := taskTarget{Service: "helper"}
+	_, parent, err := tasks.send(ctx, nil, sendTaskIn{taskTarget: target, Text: "parent task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-fix.prompts:
+	case <-ctx.Done():
+		t.Fatal("parent did not start")
+	}
+	_, child, err := tasks.send(ctx, nil, sendTaskIn{taskTarget: target, Text: "call myself"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rejected, err := tasks.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: target, TaskID: child.TaskID}, WaitSeconds: 5})
+	if err != nil || rejected.Terminal != "rejected" || !strings.Contains(rejected.Message, "already running") {
+		t.Fatalf("self-call: %+v %v", rejected, err)
+	}
+	select {
+	case <-fix.prompts:
+		t.Fatal("self-call executed a second runtime")
+	default:
+	}
+	fix.release <- "parent completed"
+	_, completed, err := tasks.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: target, TaskID: parent.TaskID}, WaitSeconds: 5})
+	if err != nil || completed.Terminal != "completed" {
+		t.Fatalf("parent: %+v %v", completed, err)
+	}
+}

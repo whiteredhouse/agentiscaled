@@ -140,6 +140,13 @@ agent. Running `up` again preserves saved settings unless you override their fla
 `-agent=` stops offering the agent. `status`, `down`, `reset` and `tasks` address this
 same node. Reset keeps its agent configuration and runtime sign-in.
 
+Agent questions, runtime login and validation finish before `up` stops an existing
+service. If a later enrollment, save or startup step fails, `up` attempts to restore
+the old settings and restart a previously running service; recovery errors are
+reported. A service that was already stopped is not restarted as recovery.
+Client setup uses your invoking shell's Codex configuration, even when the hosted
+agent uses a different saved `CODEX_HOME`.
+
 The MCP tools preserve Agent Mesh's discovery distinction: `list_local_services`
 with type `a2a` lists this node's hosted agent; `discover_remote_services` lists
 agents on other nodes. For a local agent, call `send_task` with its `name` as

@@ -142,7 +142,11 @@ cancel it. Limits: one task at a time (others are refused, not
 queued), 15 minutes per task, and a request that says it was delegated is
 refused. With your configuration the agent can itself send tasks to your other
 agents through your agentiscale MCP server; nothing counts those calls as delegation,
-so use `-agent-owner-config=false` where that must not happen. A repeated message ID from the same node is refused instead of run
+so use `-agent-owner-config=false` where that must not happen. Calling itself while
+its task is running is rejected by the same one-task-at-a-time gate. That gate is
+not a general delegation boundary: outgoing `send_task` calls use depth zero;
+the hosted runtime's delegation provenance is not automatically propagated.
+A repeated message ID from the same node is refused instead of run
 again, also after node B restarts (`<data-dir>/tasks-delivered.jsonl`).
 
 **In Claude Desktop**, ask for example "Use agentiscale to ask codex to
