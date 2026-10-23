@@ -157,7 +157,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 	fs.StringVar(&auth.audience, "auth-audience", defaultAuth.audience, "Auth0 API the sign-in is for")
 	noService := fs.Bool("foreground", false, "Do not install a background service; join and exit, then run 'agentiscaled run' yourself")
 	assumeYes := fs.Bool("y", false, "Ask nothing; take every default, as when 'up' runs without a terminal")
-	clients := fs.String("clients", clientsAuto, "Agent clients to connect to this node: auto (every installed one, including when it hosts an agent), none, or a list of "+strings.Join(clientNames, ","))
+	clients := fs.String("clients", clientsAuto, "Agent clients to connect to this node: auto (every installed one, unless the node serves an agent), none, or a list of "+strings.Join(clientNames, ","))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -222,26 +222,31 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 
 	// Gather and validate changes while the existing node remains available.
 	// Runtime login or an invalid workspace must not stop a working service.
+	var offer *agentOffer
 	if ask != nil {
 		if !set["clients"] {
-			if *clients, err = ask.chooseClients(installedClients()); err != nil {
+			if *clients, err = ask.chooseClients(installedClients(), c.agent != ""); err != nil {
 				return err
 			}
 		}
 		if c.agent == "" && !set["agent"] {
-			offer, err := ask.offerAgent()
+			offer, err = ask.offerAgent()
 			if err != nil {
 				return err
 			}
 			if offer != nil {
-				preserveAgentEnv = false
-				offer.dataDir = c.dataDir
 				if err := ask.prepareAgent(ctx, offer); err != nil {
 					return err
 				}
-				c.agent, c.agentDir, c.agentName, c.agentDescription, c.agentPolicy = offer.runtime, offer.agentDir, offer.name, offer.description, offer.policy
-				c.agentEnv = agentOwnerEnv(c.agent, c.agentPolicy)
-				if err := checkAgent(&c, !*noService); err != nil {
+				// Validate the offered agent against its own node, without
+				// changing the sending node's saved configuration.
+				agentConfig := c
+				agentConfig.dataDir = offer.dataDir
+				agentConfig.agent, agentConfig.agentDir = offer.runtime, offer.agentDir
+				agentConfig.agentName, agentConfig.agentDescription = offer.name, offer.description
+				agentConfig.agentPolicy = offer.policy
+				agentConfig.agentCommand = ""
+				if err := checkAgent(&agentConfig, true); err != nil {
 					return err
 				}
 			}
@@ -264,10 +269,11 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 		}
 	}
 	settingsChanged := false
+	setupComplete := false
 	// Once the store must be opened, recover only a service we actually stopped.
 	// Restore its settings before restarting it; surface recovery failures too.
 	defer func() {
-		if runErr == nil || !wasRunning || !haveSaved {
+		if runErr == nil || setupComplete || !wasRunning || !haveSaved {
 			return
 		}
 		if settingsChanged {
@@ -324,8 +330,9 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 			fmt.Fprintln(out, "Run the node with:")
 		}
 		fmt.Fprintf(out, "  %s run -data-dir %s\n", shellQuote(exe), shellQuote(c.dataDir))
+		setupComplete = true
 		nextSteps(ctx, out, *clients, c, exe)
-		return nil
+		return setUpOffer(ctx, ask, exe, offer)
 	}
 	if err := svc.start(serviceSpec{exe: exe, dataDir: c.dataDir, path: s.Path}); err != nil {
 		if wasRunning && haveSaved {
@@ -342,8 +349,9 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 	} else {
 		fmt.Fprintln(out, "Connected to the mesh.")
 	}
+	setupComplete = true
 	nextSteps(ctx, out, *clients, c, exe)
-	return nil
+	return setUpOffer(ctx, ask, exe, offer)
 }
 
 // checkUpAgent limits the saved runtime environment to validation. Client
@@ -375,13 +383,23 @@ func checkUpAgent(c *config, service, preserveEnv bool) error {
 	return checkAgent(c, service)
 }
 
+// setUpOffer configures the separate agent node after the sender is ready.
+func setUpOffer(ctx context.Context, ask *wizard, exe string, offer *agentOffer) error {
+	if offer == nil {
+		return nil
+	}
+	return ask.setUpAgent(ctx, exe, offer)
+}
+
 // nextSteps connects the chosen agent clients to the node, or prints how to.
 func nextSteps(ctx context.Context, out io.Writer, clients string, c config, exe string) {
 	switch {
 	case clients == "none":
 		printNextSteps(out, exe, c.dataDir)
+	case clients == clientsAuto && c.agent != "":
+		fmt.Fprintf(out, "This node serves the %s agent, so no agent client was connected to it; '-clients %s' connects them too.\n", c.agent, strings.Join(clientNames, ","))
 	default:
-		connectClients(ctx, out, selectClients(clients), exe, c.dataDir)
+		connectClients(ctx, out, selectClients(clients, c.agent != ""), exe, c.dataDir)
 	}
 }
 

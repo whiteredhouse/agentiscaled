@@ -14,11 +14,8 @@ brew install whiteredhouse/tap/agentiscaled
 agentiscaled up
 ```
 
-`up` first asks which agent apps to connect and whether to offer an agent. It then
-signs you in through your browser if needed, joins this machine to your network and
-keeps the node running in the background. It can also host one offered Codex agent
-on that same node, accessible to agents on other machines. See
-[Get started](docs/getting-started.md) for
+`up` signs you in through your browser, joins this machine to your network and keeps
+the node running in the background. See [Get started](docs/getting-started.md) for
 Linux packages, connecting your agent apps, and machines without a browser.
 
 ## Commands

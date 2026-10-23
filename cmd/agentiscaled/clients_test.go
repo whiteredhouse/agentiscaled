@@ -62,14 +62,14 @@ func TestServesNode(t *testing.T) {
 	}
 }
 
-func TestSelectClientsIncludesAServingNode(t *testing.T) {
-	if got := selectClients(clientsAuto); len(got) == 0 {
+func TestSelectClientsLeavesAServingNode(t *testing.T) {
+	if got := selectClients(clientsAuto, true); len(got) != 0 {
 		t.Errorf("auto on a node serving an agent connects %d clients", len(got))
 	}
-	if got := selectClients("codex"); len(got) != 1 || got[0].name() != "Codex CLI" {
+	if got := selectClients("codex", true); len(got) != 1 || got[0].name() != "Codex CLI" {
 		t.Errorf("-clients codex = %v", got)
 	}
-	if got := selectClients("none"); len(got) != 0 {
+	if got := selectClients("none", false); len(got) != 0 {
 		t.Errorf("none connects %d clients", len(got))
 	}
 	if err := checkClients("claude-desktop, codex"); err != nil {
