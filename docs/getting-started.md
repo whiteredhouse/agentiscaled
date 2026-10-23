@@ -37,6 +37,15 @@ log in. Your sign-in is used once and not stored on the machine.
 `agentiscaled status` shows the node, its network and whether it is connected.
 `agentiscaled down` stops it; `agentiscaled up` starts it again without signing in.
 
+A node keeps trying to reach its network through an outage. If the network is gone
+for good, because it was deleted, the node was removed from it, or the network no
+longer accepts the node's credential, the node stops trying and says so in one line,
+in `agentiscaled status` and in its log. That line names the fix,
+`agentiscaled reset`: it signs you in, as `up` did the first time, and joins the node
+to your current network with a new identity. Everything else stays as it was: the
+options `up` saved, the agent the node offers and that agent's own sign-in, and the
+entries in your agent apps, which need no change.
+
 On a Linux server, run the `sudo loginctl enable-linger <you>` command that `up`
 prints, so the node keeps running after you log out.
 
@@ -125,7 +134,7 @@ Desktop, is in
 ## More than one node on a machine
 
 Each node has its own data directory. Give a second node another one, and pass the
-same `-data-dir` to `status`, `down` and `mcp`. Its server in your agent apps is named
+same `-data-dir` to `status`, `down`, `reset` and `mcp`. Its server in your agent apps is named
 after the directory, such as `agentiscale-agent`. A node that offers an agent, like
 the one below, is not added to your apps unless you ask with
 `-clients claude-desktop,codex`:

@@ -23,6 +23,8 @@
 package node
 
 import (
+	cpclient "github.com/google/agentmesh/internal/controlplane/client"
+	"github.com/google/agentmesh/internal/identity"
 	"github.com/google/agentmesh/internal/logging"
 	inode "github.com/google/agentmesh/internal/node"
 )
@@ -35,6 +37,10 @@ type (
 	Reachability       = inode.Reachability
 	TokenSource        = inode.TokenSource
 	TokenSourceConfig  = inode.TokenSourceConfig
+
+	// ControlPlaneStatusError is a control plane answer other than success,
+	// with its status code.
+	ControlPlaneStatusError = cpclient.StatusError
 )
 
 const (
@@ -48,6 +54,7 @@ const (
 	DefaultSocketName               = inode.DefaultSocketName
 	DefaultControlPlaneSyncInterval = inode.DefaultControlPlaneSyncInterval
 	DefaultSecretsDir               = inode.DefaultSecretsDir
+	StoreFile                       = inode.StoreFile
 )
 
 // LoggingOptions and SetupLogging configure the node's logger the way the
@@ -65,4 +72,14 @@ var (
 	StartSidecarServer       = inode.StartSidecarServer
 	StartUnauthSidecarServer = inode.StartUnauthSidecarServer
 	StartMetricsServer       = inode.StartMetricsServer
+)
+
+var (
+	// ErrControlPlaneNotFound marks a 404 from the control plane.
+	ErrControlPlaneNotFound = cpclient.ErrNotFound
+	// ErrFatalAuth marks a router's refusal of the node's credential.
+	ErrFatalAuth = inode.ErrFatalAuth
+	// MintBootstrapBiscuitToken signs a node credential, as a control plane
+	// does on enrollment; tests use it to stand in for a mesh.
+	MintBootstrapBiscuitToken = identity.MintBootstrapBiscuitToken
 )

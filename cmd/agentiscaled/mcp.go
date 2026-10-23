@@ -28,6 +28,11 @@ func runMCP(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if h, err := loadHalt(*dataDir); err != nil {
+		return err
+	} else if h != nil {
+		return errors.New(h.Message)
+	}
 	socket := filepath.Join(*dataDir, meshnode.DefaultSocketName)
 	if err := waitForSocket(ctx, socket, nodeStartWait); err != nil {
 		return fmt.Errorf("no running agentiscaled at %s: start it first (%w)", socket, err)
