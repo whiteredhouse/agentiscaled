@@ -25,8 +25,27 @@ Check it with `agentiscaled version`.
 agentiscaled up
 ```
 
-`up` opens your browser to sign in with Google and shows a code. Check that the page
-shows the same code, and approve. On a machine without a browser, such as a server,
+In a terminal, `up` first asks which agent apps to connect and whether to offer an
+agent. Pressing Enter at each takes its default, which is what `up` does without
+asking:
+
+```text
+Agent clients on this machine can use this node.
+  Connect Claude Desktop? [Y/n]:
+  Connect Codex CLI? [Y/n]:
+
+Offer an agent from this machine to your network? [y/N]:
+```
+
+`up -y` asks nothing, and neither does `up` in a script, a service or an SSH session
+without a terminal. Flags answer the questions too: `-clients` the first,
+`-agent` and `-agent-dir` the second.
+
+If you offer an agent, its setup questions and any required `codex login` finish
+before the agentiscale browser sign-in.
+
+`up` then opens your browser to sign in with Google if this node has not joined
+yet, and shows a code. Check that the page shows the same code, and approve. On a machine without a browser, such as a server,
 open the printed link on your phone or laptop instead.
 
 The first time you sign in, agentiscale creates your private network, which takes
@@ -55,21 +74,6 @@ If that node uses a custom control service, pass `reset -control <URL>`.
 
 On a Linux server, run the `sudo loginctl enable-linger <you>` command that `up`
 prints, so the node keeps running after you log out.
-
-In a terminal, `up` then asks two questions. Pressing Enter at each takes its default,
-which is what `up` does without asking:
-
-```text
-Agent clients on this machine can use this node.
-  Connect Claude Desktop? [Y/n]:
-  Connect Codex CLI? [Y/n]:
-
-Offer an agent from this machine to your network? [y/N]:
-```
-
-`up -y` asks nothing, and neither does `up` in a script, a service or an SSH session
-without a terminal. Flags answer the questions too: `-clients` the first,
-`-agent` and `-agent-dir` the second.
 
 ## 3. Your agents are connected
 
@@ -125,8 +129,9 @@ instruction files or skills when it may hold content from someone you don't trus
 
 The agent runs on the same node your local apps use. There is one mesh identity,
 one sign-in to agentiscale, and one background service. If Codex needs a runtime
-sign-in, `up` runs `codex login` before starting the service. Local apps can discover
-and call this agent through the same node, as well as agents on other machines.
+sign-in, `up` runs `codex login` during agent setup, before joining the node and
+starting the service. Local apps can discover and call this agent through the same
+node, as well as agents on other machines.
 
 To configure it with flags instead of the wizard:
 
