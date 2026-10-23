@@ -76,9 +76,8 @@ the task can be anything Codex can do by reading that directory: explain how
 something works, find where something is handled, summarise notes.
 
 **Node A** is the one you already run, with Claude Desktop connected as above.
-It serves no services; Claude Desktop only sends. Since node B serves an agent,
-`up` does not add it to your agent clients, so Claude Desktop sees one
-`agentiscale` server.
+It serves no services; Claude Desktop only sends. Configure node B with
+`-clients none` below so Claude Desktop keeps using node A's `agentiscale` server.
 
 **Node B** serves the agent. Give it its own data directory and the directory
 the agent works in:
@@ -87,6 +86,7 @@ the agent works in:
 agentiscaled up \
   -data-dir ~/Library/Application\ Support/agentiscale-codex \
   -agent codex \
+  -clients none \
   -agent-dir /absolute/path/to/the/directory
 ```
 
