@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -156,7 +157,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 	fs.StringVar(&auth.audience, "auth-audience", defaultAuth.audience, "Auth0 API the sign-in is for")
 	noService := fs.Bool("foreground", false, "Do not install a background service; join and exit, then run 'agentiscaled run' yourself")
 	assumeYes := fs.Bool("y", false, "Ask nothing; take every default, as when 'up' runs without a terminal")
-	clients := fs.String("clients", clientsAuto, "Agent clients to connect to this node: auto (every installed one, unless the node serves an agent), none, or a list of "+strings.Join(clientNames, ","))
+	clients := fs.String("clients", clientsAuto, "Agent clients to connect to this node: auto (every installed one, including when it hosts an agent), none, or a list of "+strings.Join(clientNames, ","))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -174,15 +175,66 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	c.dataDir = dataDir
+	saved, err := loadSettings(c.dataDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("load settings: %w", err)
+	}
+	preserveAgentEnv := err == nil && !set["agent"] && !set["agent-owner-config"]
+	if err == nil {
+		values := map[string]string{
+			"control": saved.Control, "config": saved.ConfigFile, "bind-addr": saved.BindAddr,
+			"api-token-path": saved.APITokenPath, "listen": saved.Listen, "log-level": saved.LogLevel,
+			"agent": saved.Agent, "agent-dir": saved.AgentDir, "agent-command": saved.AgentCommand,
+			"agent-name": saved.AgentName, "agent-description": saved.AgentDescription, "hostname": saved.MachineName,
+			"agent-dir-instructions": strconv.FormatBool(!saved.AgentIgnoreDirInstructions),
+			"agent-dir-skills":       strconv.FormatBool(!saved.AgentIgnoreDirSkills),
+			"agent-owner-config":     strconv.FormatBool(!saved.AgentOwnConfig),
+		}
+		for name, value := range values {
+			if !set[name] {
+				if err := fs.Set(name, value); err != nil {
+					return err
+				}
+			}
+		}
+		if preserveAgentEnv {
+			c.agentEnv = saved.AgentEnv
+		}
+	}
 	// A second node on the machine must not take the first one's ports, so
 	// unless told otherwise it listens on free ones and serves its API on its
 	// Unix socket only.
-	if c.dataDir != defaultDataDir() {
+	if c.dataDir != defaultDataDir() && errors.Is(err, os.ErrNotExist) {
 		if !set["listen"] {
 			c.listen = "/ip4/0.0.0.0/udp/0/quic-v1,/ip4/0.0.0.0/tcp/0"
 		}
 		if !set["bind-addr"] {
 			c.bindAddr = ""
+		}
+	}
+	// Validate against the saved owner configuration, including its absence
+	// of an override such as CODEX_HOME, rather than this invocation's shell.
+	if preserveAgentEnv && c.agentPolicy.OwnerConfig {
+		for _, name := range runtimes[c.agent].ownerEnv {
+			previous, existed := os.LookupEnv(name)
+			defer func() {
+				if existed {
+					_ = os.Setenv(name, previous)
+				} else {
+					_ = os.Unsetenv(name)
+				}
+			}()
+			value := ""
+			for _, kv := range c.agentEnv {
+				key, v, _ := strings.Cut(kv, "=")
+				if key == name {
+					value = v
+					break
+				}
+			}
+			if err := os.Setenv(name, value); err != nil {
+				return err
+			}
 		}
 	}
 	if err := checkAgent(&c, !*noService); err != nil {
@@ -203,6 +255,38 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	fmt.Fprintf(out, "This node is %s in network %s.\n", joined.peerID, joined.networkID)
+	// The questions come after the sign-in, which may take the owner to the
+	// browser, and before anything is started.
+	if ask != nil {
+		if !set["clients"] {
+			if *clients, err = ask.chooseClients(installedClients()); err != nil {
+				return err
+			}
+		}
+		if c.agent == "" && !set["agent"] {
+			offer, err := ask.offerAgent()
+			if err != nil {
+				return err
+			}
+			if offer != nil {
+				preserveAgentEnv = false
+				offer.dataDir = c.dataDir
+				if err := ask.prepareAgent(ctx, offer); err != nil {
+					return err
+				}
+				c.agent, c.agentDir, c.agentName, c.agentDescription, c.agentPolicy = offer.runtime, offer.agentDir, offer.name, offer.description, offer.policy
+				c.agentEnv = agentOwnerEnv(c.agent, c.agentPolicy)
+				if err := checkAgent(&c, !*noService); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if !preserveAgentEnv {
+		c.agentEnv = agentOwnerEnv(c.agent, c.agentPolicy)
+	}
 	s := settings{
 		Control:          c.control,
 		ConfigFile:       c.configFile,
@@ -220,7 +304,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		AgentIgnoreDirInstructions: !c.agentPolicy.DirInstructions,
 		AgentIgnoreDirSkills:       !c.agentPolicy.DirSkills,
 		AgentOwnConfig:             !c.agentPolicy.OwnerConfig,
-		AgentEnv:                   agentOwnerEnv(c.agent, c.agentPolicy),
+		AgentEnv:                   c.agentEnv,
 		Path:                       os.Getenv("PATH"),
 		PeerID:                     joined.peerID,
 		NetworkID:                  joined.networkID,
@@ -229,24 +313,6 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 	if err := saveSettings(c.dataDir, s); err != nil {
 		return fmt.Errorf("save settings: %w", err)
 	}
-	fmt.Fprintf(out, "This node is %s in network %s.\n", joined.peerID, joined.networkID)
-
-	// The questions come after the sign-in, which may take the owner to the
-	// browser, and before anything is started.
-	var offer *agentOffer
-	if ask != nil {
-		if !set["clients"] {
-			if *clients, err = ask.chooseClients(installedClients(), c.agent != ""); err != nil {
-				return err
-			}
-		}
-		if c.agent == "" && !set["agent"] {
-			if offer, err = ask.offerAgent(); err != nil {
-				return err
-			}
-		}
-	}
-
 	exe, err := stableExecutable()
 	if err != nil {
 		return err
@@ -259,7 +325,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		}
 		fmt.Fprintf(out, "  %s run -data-dir %s\n", shellQuote(exe), shellQuote(c.dataDir))
 		nextSteps(ctx, out, *clients, c, exe)
-		return setUpOffer(ctx, ask, exe, offer)
+		return nil
 	}
 	if err := svc.start(serviceSpec{exe: exe, dataDir: c.dataDir, path: s.Path}); err != nil {
 		return fmt.Errorf("start the background service: %w\nThe node has joined; run it yourself with:\n  %s run -data-dir %s", err, shellQuote(exe), shellQuote(c.dataDir))
@@ -274,14 +340,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 		fmt.Fprintln(out, "Connected to the mesh.")
 	}
 	nextSteps(ctx, out, *clients, c, exe)
-	return setUpOffer(ctx, ask, exe, offer)
-}
-
-func setUpOffer(ctx context.Context, ask *wizard, exe string, offer *agentOffer) error {
-	if offer == nil {
-		return nil
-	}
-	return ask.setUpAgent(ctx, exe, offer)
+	return nil
 }
 
 // nextSteps connects the chosen agent clients to the node, or prints how to.
@@ -289,10 +348,8 @@ func nextSteps(ctx context.Context, out io.Writer, clients string, c config, exe
 	switch {
 	case clients == "none":
 		printNextSteps(out, exe, c.dataDir)
-	case clients == clientsAuto && c.agent != "":
-		fmt.Fprintf(out, "This node serves the %s agent, so no agent client was connected to it; '-clients %s' connects them too.\n", c.agent, strings.Join(clientNames, ","))
 	default:
-		connectClients(ctx, out, selectClients(clients, c.agent != ""), exe, c.dataDir)
+		connectClients(ctx, out, selectClients(clients), exe, c.dataDir)
 	}
 }
 

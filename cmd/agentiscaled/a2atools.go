@@ -16,7 +16,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const a2aInstructions = `agentiscale: to use an A2A agent on another node of your network, do not use the a2a CLI or hand-written requests. Find it with discover_remote_services (type "a2a"), then call send_task with its peer_id and srv_name, and follow the task with get_task until it reaches a terminal state (completed, rejected, cancelled, timeout or failed). cancel_task stops it. A node that is offline cannot be reached: there is no mailbox, so the call fails and you should tell the user.`
+const a2aInstructions = `agentiscale: to use an A2A agent on this node or another node of your network, do not use the a2a CLI or hand-written requests. Find it with discover_remote_services (type "a2a"), then call send_task with its peer_id and srv_name, and follow the task with get_task until it reaches a terminal state (completed, rejected, cancelled, timeout or failed). cancel_task stops it. A node that is offline cannot be reached: there is no mailbox, so the call fails and you should tell the user.`
 
 // maxWait bounds how long get_task holds one tool call, below the timeouts
 // MCP clients put on a call.
@@ -25,7 +25,7 @@ const maxWait = 50 * time.Second
 var serviceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // a2aTasks sends A2A tasks through this node's mesh proxy, which carries
-// them to the receiving node over the network's encrypted connection.
+// to a local agent or over the network's encrypted connection to another node.
 type a2aTasks struct {
 	http *http.Client
 	base string // the node's local API
@@ -66,7 +66,7 @@ type taskOut struct {
 func addA2ATools(server *mcp.Server, t *a2aTasks) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "send_task",
-		Description: "Send one task to an A2A agent on another node of your agentiscale network, over its end-to-end encrypted connection. Returns at once with the task ID and state; follow it with get_task.",
+		Description: "Send one task to an A2A agent on this node or another node of your agentiscale network. Remote calls use the network's end-to-end encrypted connection. Returns at once with the task ID and state; follow it with get_task.",
 	}, t.send)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_task",

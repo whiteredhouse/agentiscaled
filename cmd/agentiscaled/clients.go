@@ -65,18 +65,14 @@ func contains(list []string, s string) bool {
 }
 
 // selectClients turns a checked -clients value into the clients to connect.
-// auto connects every client this system can have, unless the node serves an
-// agent: such a node is there to do work for the others, and its tools would
-// appear next to the sending node's in the same client.
-func selectClients(value string, servesAgent bool) []agentClient {
+// auto connects every client this system can have, including on a node
+// that hosts an agent.
+func selectClients(value string) []agentClient {
 	var names []string
 	switch value {
 	case "none":
 		return nil
 	case clientsAuto:
-		if servesAgent {
-			return nil
-		}
 		for _, n := range clientNames {
 			if n != "claude-desktop" || goruntime.GOOS == "darwin" {
 				names = append(names, n)

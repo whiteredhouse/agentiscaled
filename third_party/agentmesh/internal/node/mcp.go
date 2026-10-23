@@ -79,7 +79,7 @@ func NewMCPServer(node *AgentMeshNode) *mcp.Server {
 	// Add discover_remote_services tool
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "discover_remote_services",
-		Description: "Discover remote services in the mesh. Provide only `type` to browse every reachable service of that type (returns name + description for each); add `name` to target a specific service. For `type: inference`, each result's `local_proxy_url` is called directly over HTTP (NOT via call_remote_tool) — the response includes a usage hint with the exact headers required. For `type: a2a`, `local_proxy_url` is the agent's base URL for any stock A2A client.",
+		Description: "Discover services in the mesh, including A2A agents hosted on this node. Provide only `type` to browse every reachable service of that type (returns name + description for each); add `name` to target a specific service. For `type: inference`, each result's `local_proxy_url` is called directly over HTTP (NOT via call_remote_tool) — the response includes a usage hint with the exact headers required. For `type: a2a`, `local_proxy_url` is the agent's base URL for any stock A2A client.",
 	}, node.handleDiscoverRemoteServices)
 
 	// Add the get_mesh_info tool.
