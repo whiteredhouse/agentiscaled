@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,7 +132,7 @@ func TestSetUpAgentSignsInOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(ran) != 2 || ran[0][len(ran[0])-1] != "login" ||
-		strings.Join(ran[1], " ") != "/bin/agentiscaled up -y -data-dir "+offer.dataDir+" -agent codex -agent-dir "+offer.agentDir+" -agent-owner-config=false" {
+		strings.Join(ran[1], " ") != "/bin/agentiscaled up -y -data-dir "+offer.dataDir+" -agent codex -agent-dir "+offer.agentDir+" -agent-name codex -agent-description  -agent-dir-instructions=true -agent-dir-skills=true -agent-owner-config=false" {
 		t.Errorf("ran %q\n%s", ran, out)
 	}
 
@@ -152,11 +153,11 @@ func TestSetUpAgentSignsInOnce(t *testing.T) {
 
 func o(t *testing.T) *agentOffer {
 	dir := filepath.Join(os.Getenv("HOME"), "repo")
-	return &agentOffer{runtime: "codex", agentDir: dir, dataDir: agentDataDir("codex", dir), policy: agentPolicy{DirInstructions: true, DirSkills: true}} // the agent's own config
+	return &agentOffer{runtime: "codex", name: "codex", agentDir: dir, dataDir: agentDataDir("codex", dir), policy: agentPolicy{DirInstructions: true, DirSkills: true}} // the agent's own config
 }
 
 // With the owner's configuration, the owner signs in to their own Codex,
-// if they have not, and the agent's node gets no flag for it.
+// if they have not; the agent node gets the explicit owner-config answer.
 func TestSetUpAgentWithTheOwnersConfig(t *testing.T) {
 	withDefaultDataDir(t)
 	t.Setenv("CODEX_HOME", filepath.Join(os.Getenv("HOME"), "owner-codex"))
@@ -175,7 +176,7 @@ func TestSetUpAgentWithTheOwnersConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(ran) != 2 || strings.Join(ran[0].Args, " ") != "codex login" || ran[0].Env != nil ||
-		strings.Join(ran[1].Args, " ") != "/bin/agentiscaled up -y -data-dir "+offer.dataDir+" -agent codex -agent-dir "+offer.agentDir {
+		strings.Join(ran[1].Args, " ") != "/bin/agentiscaled up -y -data-dir "+offer.dataDir+" -agent codex -agent-dir "+offer.agentDir+" -agent-name codex -agent-description  -agent-dir-instructions=true -agent-dir-skills=true -agent-owner-config=true" {
 		t.Errorf("ran %v\n%s", ran, out)
 	}
 	if err := os.MkdirAll(os.Getenv("CODEX_HOME"), 0o700); err != nil {
@@ -247,5 +248,64 @@ func TestUserDataDir(t *testing.T) {
 		if got := userDataDir(); got != want {
 			t.Errorf("XDG_DATA_HOME=%q: %s, want %s", xdg, got, want)
 		}
+	}
+}
+
+func TestReofferAgentOverridesSavedAnswers(t *testing.T) {
+	for _, defaults := range []bool{true, false} {
+		t.Run(fmt.Sprintf("defaults=%v", defaults), func(t *testing.T) {
+			withDefaultDataDir(t)
+			workspace := t.TempDir()
+			dir := agentDataDir("codex", workspace)
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			mesh := newStandInMesh(t, "fine")
+			pid := seedNode(t, dir, mesh.srv.URL, mesh.key)
+			bin := t.TempDir()
+			command := filepath.Join(bin, "codex")
+			write(t, command, "#!/bin/sh\necho codex-cli-test\n")
+			if err := os.Chmod(command, 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("CODEX_HOME", t.TempDir())
+			write(t, filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"), "{}")
+			write(t, filepath.Join(dir, "codex", "auth.json"), "{}")
+			writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", Agent: "codex", AgentDir: workspace, AgentCommand: command, AgentName: "old-helper", AgentDescription: "Old description", AgentOwnConfig: defaults, AgentIgnoreDirInstructions: defaults, AgentIgnoreDirSkills: defaults, PeerID: pid, NetworkID: "saved-network", MeshURL: mesh.srv.URL})
+			input := "y\n\n\n" + workspace + "\n\n\n\n"
+			if !defaults {
+				input = "y\nnew-helper\nNew description\n" + workspace + "\nn\nn\nn\n"
+			}
+			w, _ := testWizard(input)
+			offer, err := w.offerAgent()
+			if err != nil || offer == nil {
+				t.Fatalf("offer: %+v %v", offer, err)
+			}
+			if offer.dataDir != dir {
+				t.Fatalf("did not reuse agent node: %q, want %q", offer.dataDir, dir)
+			}
+			oldRun := runAttached
+			runAttached = func(ctx context.Context, cmd *exec.Cmd) error {
+				if len(cmd.Args) < 2 || cmd.Args[1] != "up" {
+					t.Fatalf("unexpected command: %v", cmd.Args)
+				}
+				// Exercise the actual child's saved-settings merge and persistence,
+				// without installing a service or changing real client configs.
+				args := append(append([]string(nil), cmd.Args[2:]...), "-foreground", "-clients", "none")
+				return runUp(ctx, args, io.Discard)
+			}
+			t.Cleanup(func() { runAttached = oldRun })
+			if err := w.setUpAgent(context.Background(), "/bin/agentiscaled", offer); err != nil {
+				t.Fatal(err)
+			}
+			got, err := loadSettings(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.PeerID != pid || got.AgentName != offer.name || got.AgentDescription != offer.description || got.AgentOwnConfig != !offer.policy.OwnerConfig || got.AgentIgnoreDirInstructions != !offer.policy.DirInstructions || got.AgentIgnoreDirSkills != !offer.policy.DirSkills {
+				t.Fatalf("saved answers: name=%q description=%q ownerConfig=%v instructions=%v skills=%v; want name=%q description=%q policy=%+v", got.AgentName, got.AgentDescription, !got.AgentOwnConfig, !got.AgentIgnoreDirInstructions, !got.AgentIgnoreDirSkills, offer.name, offer.description, offer.policy)
+			}
+		})
 	}
 }
