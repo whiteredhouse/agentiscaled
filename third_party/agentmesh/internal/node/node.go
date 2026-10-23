@@ -2163,18 +2163,10 @@ func (n *AgentMeshNode) DiscoverRemoteServices(ctx context.Context, serviceType 
 	if err != nil {
 		return nil, err
 	}
-	local := n.localA2AProviders(serviceType, serviceName)
-	var remote []*api.DiscoveredProvider
 	if serviceName == "" {
-		remote, err = n.discoverServicesByType(ctx, serviceType, typeStr)
-	} else {
-		remote, err = n.discoverServicesByName(ctx, serviceType, typeStr, serviceName)
+		return n.discoverServicesByType(ctx, serviceType, typeStr)
 	}
-	// A directory outage must not hide an agent hosted by this node.
-	if err != nil && len(local) == 0 {
-		return nil, err
-	}
-	return append(local, remote...), nil
+	return n.discoverServicesByName(ctx, serviceType, typeStr, serviceName)
 }
 
 // DiscoverRemoteServicesStream performs service discovery and streams results down the returned channel.
@@ -2190,13 +2182,6 @@ func (n *AgentMeshNode) DiscoverRemoteServicesStream(ctx context.Context, servic
 	go func() {
 		defer close(out)
 
-		for _, provider := range n.localA2AProviders(serviceType, serviceName) {
-			select {
-			case out <- provider:
-			case <-ctx.Done():
-				return
-			}
-		}
 		if serviceName != "" {
 			peers, err := n.FindProvidersByName(ctx, serviceType, serviceName)
 			if err != nil {
@@ -2411,7 +2396,179 @@ func (n *AgentMeshNode) StartIngressServer(ctx context.Context) error {
 		// Bound header-read time only: proxied backend responses can stream.
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
-		Handler:           n.ingressHandler(),
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rc := &readCloserWithCount{ReadCloser: r.Body}
+			r.Body = rc
+			wc := &responseWriterWithCount{ResponseWriter: w, statusCode: http.StatusOK}
+			w = wc
+
+			var remotePeer peer.ID
+			var target string
+
+			defer func() {
+				peerIDStr := ""
+				if remotePeer != "" {
+					peerIDStr = remotePeer.String()
+				}
+				finalTarget := target
+				if finalTarget == "" {
+					finalTarget = "unauthenticated_or_failed"
+				}
+				logger.Infow("Stream Accounting",
+					"peer_id", peerIDStr,
+					"target", finalTarget,
+					"protocol", "/libp2p-http",
+					"bytes_read", rc.bytesRead.Load(),
+					"bytes_written", wc.bytesWritten.Load(),
+				)
+			}()
+
+			// The path is remote-controlled and the peer is not yet authorized:
+			// it is logged only after VerifyBiscuitToken passes.
+			path := r.URL.Path
+			// Policy is decided on the /{type}/{name} prefix; a ".." segment in
+			// what follows could resolve to a sibling service on a shared backend.
+			if hasDotSegment(path) {
+				http.Error(w, "Invalid path", http.StatusBadRequest)
+				return
+			}
+			parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
+			if len(parts) < 2 {
+				http.Error(w, "Invalid path", http.StatusBadRequest)
+				return
+			}
+			serviceTypeStr := parts[0]
+			serviceName := parts[1]
+			upstreamPath := ""
+			if len(parts) > 2 {
+				upstreamPath = parts[2]
+			}
+
+			serviceType, err := api.ParseServiceType(serviceTypeStr)
+			if err != nil || serviceType == api.ServiceType_SERVICE_TYPE_UNSPECIFIED {
+				http.Error(w, "Invalid service type", http.StatusBadRequest)
+				return
+			}
+
+			// Extract biscuit from X-Mesh-Biscuit header
+			biscuitB64 := r.Header.Get(api.HeaderMeshBiscuit)
+			if biscuitB64 == "" {
+				http.Error(w, "Missing X-Mesh-Biscuit header", http.StatusUnauthorized)
+				return
+			}
+			biscuitBytes, err := base64.StdEncoding.DecodeString(biscuitB64)
+			if err != nil {
+				http.Error(w, "Invalid X-Mesh-Biscuit encoding", http.StatusBadRequest)
+				return
+			}
+
+			// Parse remote peer from RemoteAddr
+			remotePeer, err = peer.Decode(r.RemoteAddr)
+			if err != nil {
+				http.Error(w, "Invalid remote peer", http.StatusBadRequest)
+				return
+			}
+			if n.rateLimiter != nil && !n.rateLimiter.Allow(remotePeer.String()) {
+				logger.Warnf("[Ingress] Rate limit exceeded for %s", remotePeer)
+				http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+				return
+			}
+
+			target = strings.ToLower(serviceTypeStr) + "://" + serviceName
+			reqCtx := RequestContext{
+				PeerID:   remotePeer,
+				User:     "", // Extracted implicitly if needed, or left empty
+				Protocol: "/libp2p-http",
+				Target:   target,
+				// The path policy sees is the one the backend will see, decided
+				// here so it can never be the routing prefix.
+				HTTP: &HTTPRequestFacts{Method: r.Method, Path: "/" + upstreamPath},
+			}
+			if serviceType == api.ServiceType_SERVICE_TYPE_EGRESS {
+				if svc, ok := n.services.GetTyped(serviceType, serviceName); ok {
+					reqCtx.Egress = egressFactsFor(svc)
+				}
+				if strings.EqualFold(r.Header.Get("Upgrade"), HeaderMeshTunnelUpgrade) {
+					reqPort, _ := strconv.Atoi(r.Header.Get(HeaderMeshEgressPort))
+					reqCtx.HTTP = &HTTPRequestFacts{Method: http.MethodConnect, Path: ""}
+					reqCtx.Egress = &EgressFacts{Host: serviceName, Port: reqPort}
+				}
+			}
+			if serviceType == api.ServiceType_SERVICE_TYPE_MCP {
+				preCtx := reqCtx
+				preCtx.AllowMCPStreamInit = true
+				if err := n.VerifyBiscuitToken(biscuitBytes, preCtx); err != nil {
+					logger.Warnf("[Ingress] AuthZ Denied for %s: %v", remotePeer, err)
+					refuse(w, http.StatusForbidden, "Authorization failed", proxyStatusDenied)
+					return
+				}
+				mcpTool, allowInit, err := inspectMCPHTTPRequestBody(r)
+				if err != nil {
+					refuse(w, http.StatusRequestEntityTooLarge, err.Error(), proxyStatusDenied)
+					return
+				}
+				reqCtx.MCPTool = mcpTool
+				reqCtx.AllowMCPStreamInit = allowInit
+			}
+
+			// Verify authorization
+			if err := n.VerifyBiscuitToken(biscuitBytes, reqCtx); err != nil {
+				logger.Warnf("[Ingress] AuthZ Denied for %s: %v", remotePeer, err)
+				if serviceType == api.ServiceType_SERVICE_TYPE_EGRESS {
+					recordEgressDecision(serviceName, egressOutcomeDeny)
+				}
+				refuse(w, http.StatusForbidden, "Authorization failed", proxyStatusDenied)
+				return
+			}
+			if serviceType == api.ServiceType_SERVICE_TYPE_EGRESS {
+				recordEgressDecision(serviceName, egressOutcomeAllow)
+			}
+
+			// Strip the biscuit header and any caller-supplied X-Mesh-* headers so
+			// only transport-verified identity attributes reach the backend service.
+			for name := range r.Header {
+				lower := strings.ToLower(name)
+				if lower == "cookie" || strings.HasPrefix(lower, "x-mesh-") {
+					delete(r.Header, name)
+				}
+			}
+			r.Header.Set(api.HeaderPeerID, remotePeer.String())
+			if claims, cErr := n.VerifyLocalBiscuit(biscuitBytes); cErr == nil && claims != nil {
+				if p := claims.Principal(); p != "" {
+					r.Header.Set(api.HeaderMeshPrincipal, p)
+				}
+				if len(claims.Roles) > 0 {
+					r.Header.Set(api.HeaderMeshRoles, strings.Join(claims.Roles, ","))
+				}
+			}
+
+			// Under the type the policy was evaluated on: a same-named service
+			// of another type is not what the caller was granted.
+			svc, ok := n.services.GetTyped(serviceType, serviceName)
+			if !ok {
+				logger.Errorf("[Ingress] Service not found: %s", truncateForLog(target))
+				http.Error(w, "Service not found", http.StatusNotFound)
+				return
+			}
+			if svc.Handler() == nil {
+				logger.Errorf("[Ingress] Service %s has nil handler", serviceName)
+				http.Error(w, "Service not found", http.StatusNotFound)
+				return
+			}
+			logger.Infof("[Ingress] %s from %s: forwarding to service %s, upstreamPath: %q", r.Method, remotePeer, serviceName, truncateForLog(upstreamPath))
+
+			if upstreamPath == "" {
+				r.URL.Path = "/"
+				if len(parts) == 2 {
+					r.Header.Set(api.HeaderMeshNoTrailingSlash, "true")
+				}
+			} else {
+				r.URL.Path = "/" + upstreamPath
+			}
+			r.URL.RawPath = ""
+
+			svc.Handler().ServeHTTP(w, r.WithContext(WithCallerBiscuit(r.Context(), biscuitBytes)))
+		}),
 	}
 
 	go func() {
@@ -2432,184 +2589,6 @@ func (n *AgentMeshNode) StartIngressServer(ctx context.Context) error {
 	}()
 
 	return nil
-}
-
-// ingressHandler is shared by authenticated mesh streams and same-node A2A
-// dispatch. Both paths verify the caller and apply the same service policy.
-func (n *AgentMeshNode) ingressHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rc := &readCloserWithCount{ReadCloser: r.Body}
-		r.Body = rc
-		wc := &responseWriterWithCount{ResponseWriter: w, statusCode: http.StatusOK}
-		w = wc
-
-		var remotePeer peer.ID
-		var target string
-
-		defer func() {
-			peerIDStr := ""
-			if remotePeer != "" {
-				peerIDStr = remotePeer.String()
-			}
-			finalTarget := target
-			if finalTarget == "" {
-				finalTarget = "unauthenticated_or_failed"
-			}
-			logger.Infow("Stream Accounting",
-				"peer_id", peerIDStr,
-				"target", finalTarget,
-				"protocol", "/libp2p-http",
-				"bytes_read", rc.bytesRead.Load(),
-				"bytes_written", wc.bytesWritten.Load(),
-			)
-		}()
-
-		// The path is remote-controlled and the peer is not yet authorized:
-		// it is logged only after VerifyBiscuitToken passes.
-		path := r.URL.Path
-		// Policy is decided on the /{type}/{name} prefix; a ".." segment in
-		// what follows could resolve to a sibling service on a shared backend.
-		if hasDotSegment(path) {
-			http.Error(w, "Invalid path", http.StatusBadRequest)
-			return
-		}
-		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
-		if len(parts) < 2 {
-			http.Error(w, "Invalid path", http.StatusBadRequest)
-			return
-		}
-		serviceTypeStr := parts[0]
-		serviceName := parts[1]
-		upstreamPath := ""
-		if len(parts) > 2 {
-			upstreamPath = parts[2]
-		}
-
-		serviceType, err := api.ParseServiceType(serviceTypeStr)
-		if err != nil || serviceType == api.ServiceType_SERVICE_TYPE_UNSPECIFIED {
-			http.Error(w, "Invalid service type", http.StatusBadRequest)
-			return
-		}
-
-		// Extract biscuit from X-Mesh-Biscuit header
-		biscuitB64 := r.Header.Get(api.HeaderMeshBiscuit)
-		if biscuitB64 == "" {
-			http.Error(w, "Missing X-Mesh-Biscuit header", http.StatusUnauthorized)
-			return
-		}
-		biscuitBytes, err := base64.StdEncoding.DecodeString(biscuitB64)
-		if err != nil {
-			http.Error(w, "Invalid X-Mesh-Biscuit encoding", http.StatusBadRequest)
-			return
-		}
-
-		// Parse remote peer from RemoteAddr
-		remotePeer, err = peer.Decode(r.RemoteAddr)
-		if err != nil {
-			http.Error(w, "Invalid remote peer", http.StatusBadRequest)
-			return
-		}
-		if n.rateLimiter != nil && !n.rateLimiter.Allow(remotePeer.String()) {
-			logger.Warnf("[Ingress] Rate limit exceeded for %s", remotePeer)
-			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
-			return
-		}
-
-		target = strings.ToLower(serviceTypeStr) + "://" + serviceName
-		reqCtx := RequestContext{
-			PeerID:   remotePeer,
-			User:     "", // Extracted implicitly if needed, or left empty
-			Protocol: "/libp2p-http",
-			Target:   target,
-			// The path policy sees is the one the backend will see, decided
-			// here so it can never be the routing prefix.
-			HTTP: &HTTPRequestFacts{Method: r.Method, Path: "/" + upstreamPath},
-		}
-		if serviceType == api.ServiceType_SERVICE_TYPE_EGRESS {
-			if svc, ok := n.services.GetTyped(serviceType, serviceName); ok {
-				reqCtx.Egress = egressFactsFor(svc)
-			}
-			if strings.EqualFold(r.Header.Get("Upgrade"), HeaderMeshTunnelUpgrade) {
-				reqPort, _ := strconv.Atoi(r.Header.Get(HeaderMeshEgressPort))
-				reqCtx.HTTP = &HTTPRequestFacts{Method: http.MethodConnect, Path: ""}
-				reqCtx.Egress = &EgressFacts{Host: serviceName, Port: reqPort}
-			}
-		}
-		if serviceType == api.ServiceType_SERVICE_TYPE_MCP {
-			preCtx := reqCtx
-			preCtx.AllowMCPStreamInit = true
-			if err := n.VerifyBiscuitToken(biscuitBytes, preCtx); err != nil {
-				logger.Warnf("[Ingress] AuthZ Denied for %s: %v", remotePeer, err)
-				refuse(w, http.StatusForbidden, "Authorization failed", proxyStatusDenied)
-				return
-			}
-			mcpTool, allowInit, err := inspectMCPHTTPRequestBody(r)
-			if err != nil {
-				refuse(w, http.StatusRequestEntityTooLarge, err.Error(), proxyStatusDenied)
-				return
-			}
-			reqCtx.MCPTool = mcpTool
-			reqCtx.AllowMCPStreamInit = allowInit
-		}
-
-		// Verify authorization
-		if err := n.VerifyBiscuitToken(biscuitBytes, reqCtx); err != nil {
-			logger.Warnf("[Ingress] AuthZ Denied for %s: %v", remotePeer, err)
-			if serviceType == api.ServiceType_SERVICE_TYPE_EGRESS {
-				recordEgressDecision(serviceName, egressOutcomeDeny)
-			}
-			refuse(w, http.StatusForbidden, "Authorization failed", proxyStatusDenied)
-			return
-		}
-		if serviceType == api.ServiceType_SERVICE_TYPE_EGRESS {
-			recordEgressDecision(serviceName, egressOutcomeAllow)
-		}
-
-		// Strip the biscuit header and any caller-supplied X-Mesh-* headers so
-		// only transport-verified identity attributes reach the backend service.
-		for name := range r.Header {
-			lower := strings.ToLower(name)
-			if lower == "cookie" || strings.HasPrefix(lower, "x-mesh-") {
-				delete(r.Header, name)
-			}
-		}
-		r.Header.Set(api.HeaderPeerID, remotePeer.String())
-		if claims, cErr := n.VerifyLocalBiscuit(biscuitBytes); cErr == nil && claims != nil {
-			if p := claims.Principal(); p != "" {
-				r.Header.Set(api.HeaderMeshPrincipal, p)
-			}
-			if len(claims.Roles) > 0 {
-				r.Header.Set(api.HeaderMeshRoles, strings.Join(claims.Roles, ","))
-			}
-		}
-
-		// Under the type the policy was evaluated on: a same-named service
-		// of another type is not what the caller was granted.
-		svc, ok := n.services.GetTyped(serviceType, serviceName)
-		if !ok {
-			logger.Errorf("[Ingress] Service not found: %s", truncateForLog(target))
-			http.Error(w, "Service not found", http.StatusNotFound)
-			return
-		}
-		if svc.Handler() == nil {
-			logger.Errorf("[Ingress] Service %s has nil handler", serviceName)
-			http.Error(w, "Service not found", http.StatusNotFound)
-			return
-		}
-		logger.Infof("[Ingress] %s from %s: forwarding to service %s, upstreamPath: %q", r.Method, remotePeer, serviceName, truncateForLog(upstreamPath))
-
-		if upstreamPath == "" {
-			r.URL.Path = "/"
-			if len(parts) == 2 {
-				r.Header.Set(api.HeaderMeshNoTrailingSlash, "true")
-			}
-		} else {
-			r.URL.Path = "/" + upstreamPath
-		}
-		r.URL.RawPath = ""
-
-		svc.Handler().ServeHTTP(w, r.WithContext(WithCallerBiscuit(r.Context(), biscuitBytes)))
-	})
 }
 
 // announceFilter selects which of the host's addresses are published to the

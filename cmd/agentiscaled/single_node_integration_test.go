@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -134,12 +133,27 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 			}
 		}
 		client := socketClient(filepath.Join(dir, meshnode.DefaultSocketName))
-		transport := &mcp.StreamableClientTransport{Endpoint: "http://agentiscaled/mcp", HTTPClient: client}
-		session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, transport, nil)
+		toBridge, fromClient := io.Pipe()
+		toClient, fromBridge := io.Pipe()
+		bridged := make(chan error, 1)
+		go func() {
+			bridged <- bridgeMCP(ctx, &mcp.IOTransport{Reader: toBridge, Writer: fromBridge}, filepath.Join(dir, meshnode.DefaultSocketName))
+		}()
+		session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, &mcp.IOTransport{Reader: toClient, Writer: fromClient}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer session.Close()
+		defer func() {
+			session.Close()
+			select {
+			case err := <-bridged:
+				if err != nil {
+					t.Error(err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Error("MCP bridge did not stop")
+			}
+		}()
 		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "discover_remote_services", Arguments: map[string]any{"type": "a2a", "name": "helper"}})
 		if err != nil || result.IsError {
 			t.Fatalf("discovery: %+v, %v", result, err)
@@ -148,23 +162,35 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 		if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &rows); err != nil {
 			t.Fatal(err)
 		}
-		if len(rows) != 1 || rows[0].PeerId != pid {
-			t.Fatalf("discovery: %+v", rows)
+		if len(rows) != 0 {
+			t.Fatalf("remote discovery included this node: %+v", rows)
 		}
-		cardResponse, err := client.Get("http://agentiscaled/mesh/" + pid + "/a2a/helper/.well-known/agent-card.json")
+		local, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_local_services", Arguments: map[string]any{"type": "a2a"}})
+		if err != nil || local.IsError {
+			t.Fatalf("local inventory: %+v %v", local, err)
+		}
+		var services []*api.ServiceInfo
+		if err := json.Unmarshal([]byte(local.Content[0].(*mcp.TextContent).Text), &services); err != nil {
+			t.Fatal(err)
+		}
+		if len(services) != 1 || services[0].Name != "helper" {
+			t.Fatalf("local services: %+v", services)
+		}
+		localAPI, err := serveLocalAgent(ctx, node, &meshnode.NodeConfigComplete{}, c.agentName, targetURL, dir)
 		if err != nil {
 			t.Fatal(err)
 		}
-		cardBody, err := io.ReadAll(cardResponse.Body)
-		cardResponse.Body.Close()
-		if err != nil || cardResponse.StatusCode != 200 || !strings.Contains(string(cardBody), "/mesh/"+pid+"/a2a/helper") {
-			t.Fatalf("local agent card: %d %s %v", cardResponse.StatusCode, cardBody, err)
-		}
-		tasks := &a2aTasks{http: client, base: "http://agentiscaled"}
+		defer localAPI.Close()
+		tasks := &a2aTasks{http: client, base: "http://agentiscaled", local: socketClient(filepath.Join(dir, localAgentSocketName))}
 		target := taskTarget{PeerID: pid, Service: "helper"}
 		fix.release <- "completed locally"
-		_, sent, err := tasks.send(ctx, nil, sendTaskIn{taskTarget: target, Text: "review locally"})
-		if err != nil {
+		// Omitting peer_id must work through the real bridge and its tool schema.
+		sentResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "send_task", Arguments: map[string]any{"service": "helper", "text": "review locally"}})
+		if err != nil || sentResult.IsError {
+			t.Fatalf("local send_task through MCP: %+v %v", sentResult, err)
+		}
+		var sent taskOut
+		if err := json.Unmarshal([]byte(sentResult.Content[0].(*mcp.TextContent).Text), &sent); err != nil {
 			t.Fatal(err)
 		}
 		select {

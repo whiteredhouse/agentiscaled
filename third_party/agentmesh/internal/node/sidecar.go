@@ -727,7 +727,7 @@ func (node *AgentMeshNode) prepareEgressPeer(ctx context.Context, peerID string)
 }
 
 func createEgressProxy(node *AgentMeshNode) http.Handler {
-	transport := &localA2ATransport{node: node, remote: libp2phttp.NewTransport(node.Host)}
+	transport := libp2phttp.NewTransport(node.Host)
 
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {

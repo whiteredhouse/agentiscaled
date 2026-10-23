@@ -140,6 +140,16 @@ agent. Running `up` again preserves saved settings unless you override their fla
 `-agent=` stops offering the agent. `status`, `down`, `reset` and `tasks` address this
 same node. Reset keeps its agent configuration and runtime sign-in.
 
+The MCP tools preserve Agent Mesh's discovery distinction: `list_local_services`
+with type `a2a` lists this node's hosted agent; `discover_remote_services` lists
+agents on other nodes. For a local agent, call `send_task` with its `name` as
+`service` and omit `peer_id`. For a remote agent, pass its `srv_name` as `service`
+and its `peer_id`. Use the same target with `get_task` and `cancel_task`.
+
+Local task calls use agentiscaled's owner-only Unix socket. They use the same
+agent handler and permissions as network calls; Agent Mesh's network discovery
+and proxy routes are unchanged.
+
 See [Send a task from Claude Desktop to Codex](connect-agents.md#send-a-task-from-claude-desktop-to-codex)
 for an example.
 

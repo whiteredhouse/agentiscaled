@@ -221,18 +221,6 @@ func (n *AgentMeshNode) VerifyPeerLabels(ctx context.Context, peerID peer.ID, re
 // still held to the floor — the whole point of a floor is that the party being
 // constrained does not get to opt out of it by saying nothing.
 func (n *AgentMeshNode) VerifyProvider(ctx context.Context, peerID peer.ID, required map[string]string, service string) error {
-	// A local provider is verified from its current credential on every call,
-	// including expiry, revocation, labels and publish grants; never self-dial.
-	if n.Host != nil && peerID == n.Host.ID() {
-		if n.peerIsRevoked(peerID) {
-			return fmt.Errorf("local provider is revoked")
-		}
-		token := n.GetIdentity()
-		if _, err := n.VerifyLocalBiscuit(token); err != nil {
-			return fmt.Errorf("local provider identity: %w", err)
-		}
-		return n.checkProvider(token, peerID, required, service)
-	}
 	floor := n.egressFloor()
 	// No early return for an empty requirement: with nothing to attest this
 	// still verifies that the peer holds a control-plane-signed biscuit bound

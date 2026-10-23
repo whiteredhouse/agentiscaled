@@ -17,7 +17,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Format
-        run: test -z "$(gofmt -l cmd third_party/agentmesh/export third_party/agentmesh/internal/controlplane/bound_peer*.go third_party/agentmesh/internal/node/local_a2a*.go third_party/agentmesh/internal/node/{labels_gate,mcp,node,sidecar}.go)"
+        run: test -z "$(gofmt -l cmd third_party/agentmesh/export third_party/agentmesh/internal/controlplane/bound_peer*.go)"
       - name: Vet
         run: go vet ./...
       - name: Test
@@ -25,9 +25,9 @@ jobs:
       - name: Build the fork
         working-directory: third_party/agentmesh
         run: go build ./...
-      - name: Test the fork's patches
+      - name: Test the fork's patch
         working-directory: third_party/agentmesh
-        run: go test -race -run 'TestBootstrapTokenBoundToOnePeer|TestLocalA2A|TestLocalProvider' ./internal/controlplane/ ./internal/node/
+        run: go test -race -run TestBootstrapTokenBoundToOnePeer ./internal/controlplane/
 
   release-check:
     runs-on: ubuntu-latest
