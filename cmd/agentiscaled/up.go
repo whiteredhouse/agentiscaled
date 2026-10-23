@@ -98,7 +98,16 @@ func (s settings) config(dataDir string) config {
 		agentPolicy:      agentPolicy{DirInstructions: !s.AgentIgnoreDirInstructions, DirSkills: !s.AgentIgnoreDirSkills, OwnerConfig: !s.AgentOwnConfig},
 		machineName:      s.MachineName,
 		agentEnv:         s.AgentEnv,
+		networkID:        s.network(),
 	}
+}
+
+// network is the network the node joined.
+func (s settings) network() string {
+	if s.NetworkID != "" {
+		return s.NetworkID
+	}
+	return networkFromMeshURL(s.MeshURL)
 }
 
 // networkFromMeshURL reads the network ID from a hosted mesh URL, whose first
@@ -369,6 +378,11 @@ func ensureJoined(ctx context.Context, c *config, auth authConfig, out io.Writer
 		return joinedNode{}, err
 	}
 	if len(identity) > 0 && meshURL != "" {
+		if h, err := loadHalt(c.dataDir); err != nil {
+			return joinedNode{}, err
+		} else if h != nil {
+			return joinedNode{}, errors.New(h.Message)
+		}
 		fmt.Fprintln(out, "This node has already joined; keeping its identity.")
 		network := networkFromMeshURL(meshURL)
 		if s, err := loadSettings(c.dataDir); err == nil && s.NetworkID != "" {
@@ -472,11 +486,7 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "Node:     %s (%s)\n", s.PeerID, s.MachineName)
-	network := s.NetworkID
-	if network == "" {
-		network = networkFromMeshURL(s.MeshURL)
-	}
-	fmt.Fprintf(out, "Network:  %s\n", network)
+	fmt.Fprintf(out, "Network:  %s\n", s.network())
 	fmt.Fprintf(out, "Mesh:     %s\n", s.MeshURL)
 	if s.Agent != "" {
 		fmt.Fprintf(out, "Agent:    %s in %s\n", s.Agent, s.AgentDir)
@@ -486,6 +496,12 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 		var state string
 		state, serviceRuns = svc.state()
 		fmt.Fprintf(out, "Service:  %s, %s\n", svc.name(), state)
+	}
+	if h, err := loadHalt(dir); err != nil {
+		return err
+	} else if h != nil {
+		fmt.Fprintf(out, "Mesh connection: %s\n", h.Message)
+		return nil
 	}
 	switch err := nodeReady(ctx, dir); {
 	case err == nil:

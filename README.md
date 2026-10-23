@@ -25,6 +25,7 @@ Linux packages, connecting your agent apps, and machines without a browser.
 | `agentiscaled up` | Sign in if needed, join, and start the node as a background service |
 | `agentiscaled status` | Show the node, its network and its mesh connection |
 | `agentiscaled down` | Stop and remove the background service; the node keeps its identity |
+| `agentiscaled reset` | Sign in and give the node a new identity in your network; its settings stay |
 | `agentiscaled mcp` | Serve the node's tools over stdio to an MCP client ([Connect an agent client](docs/connect-agents.md)) |
 | `agentiscaled tasks stop\|resume\|status` | Stop or resume tasks for an agent this node offers |
 | `agentiscaled run` | Run the node in the foreground with the options saved by `up` |

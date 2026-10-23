@@ -36,6 +36,8 @@ type service interface {
 	stop() error
 	// remove stops the service and uninstalls it.
 	remove() error
+	// installed says whether the service is installed.
+	installed() bool
 	// state says whether the service is installed and running, and
 	// running whether its process runs now.
 	state() (desc string, running bool)
@@ -141,6 +143,11 @@ func (s *launchdService) state() (string, bool) {
 		}
 	}
 	return "installed", false
+}
+
+func (s *launchdService) installed() bool {
+	_, err := os.Stat(s.plistPath())
+	return err == nil
 }
 
 func (s *launchdService) hint() string { return "" }
@@ -250,6 +257,11 @@ func (s *systemdService) state() (string, bool) {
 	out, _ := commandRunner("systemctl", "--user", "is-active", s.unit)
 	v := strings.TrimSpace(string(out))
 	return "installed, " + v, v == "active"
+}
+
+func (s *systemdService) installed() bool {
+	_, err := os.Stat(s.unitPath())
+	return err == nil
 }
 
 // hint tells the owner of a server how to keep the node running after they

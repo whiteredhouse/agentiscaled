@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -55,6 +56,9 @@ type config struct {
 	// runtime starts (agentOwnerEnv).
 	agentEnv    []string
 	machineName string
+	// networkID is the network the node joined, which it asks the control
+	// service about when it cannot reach it.
+	networkID string
 
 	// signInToken is the owner's Auth0 access token during `agentiscaled up`.
 	// It lives in memory for enrollment only and is never stored.
@@ -71,6 +75,7 @@ Commands:
   down     stop the node's background service; its identity stays
   status   show the node's service, network and mesh connection
   version  print the version
+  reset    give the node a new identity in your current network; its settings stay
   run      run the node in the foreground with the settings 'up' saved
   mcp      serve the node's MCP tools on stdio, for agent clients
   tasks    stop, resume or show the agent's task execution
@@ -94,6 +99,8 @@ func main() {
 			err = runUp(ctx, args, os.Stdout)
 		case "down":
 			err = runDown(args, os.Stdout)
+		case "reset":
+			err = runReset(ctx, args, os.Stdout)
 		case "status":
 			err = runStatus(ctx, args, os.Stdout)
 		case "version":
@@ -260,6 +267,11 @@ func run(ctx context.Context, c config) error {
 	if err := os.MkdirAll(c.dataDir, 0o700); err != nil {
 		return err
 	}
+	if h, err := loadHalt(c.dataDir); err != nil {
+		return err
+	} else if h != nil {
+		return waitHalted(ctx, *h)
+	}
 	store, err := meshnode.NewStore(c.dataDir)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
@@ -315,13 +327,31 @@ func run(ctx context.Context, c config) error {
 	if err != nil {
 		return fmt.Errorf("create node: %w", err)
 	}
-	if err := node.SyncControlPlane(ctx); err != nil {
-		log.Printf("control plane sync before start failed, using stored config: %v", err)
+	diag := diagnosis{dataDir: c.dataDir, control: c.control, network: c.networkID, priv: priv}
+	if diag.network == "" {
+		meshURL, _ := store.LoadControlPlaneURL()
+		diag.network = networkFromMeshURL(meshURL)
 	}
-	if err := node.Start(ctx); err != nil {
+	if err := syncForDiagnosis(ctx, node); err != nil {
+		log.Printf("control plane sync before start failed, using stored config: %v", err)
+		if meshAnswerOf(err).suspect() {
+			if h := diag.check(ctx, err); h != nil {
+				return halt(ctx, c.dataDir, *h)
+			}
+		}
+	}
+	// The node runs until ctx ends or its network turns out to be gone.
+	nodeCtx, stopNode := context.WithCancel(ctx)
+	defer stopNode()
+	if err := node.Start(nodeCtx); err != nil {
+		if h := diag.check(ctx, err); h != nil {
+			node.Teardown()
+			return halt(ctx, c.dataDir, *h)
+		}
 		return fmt.Errorf("start node: %w", err)
 	}
-	defer node.Teardown()
+	var teardown sync.Once
+	defer teardown.Do(func() { node.Teardown() })
 
 	if nodeConfig != nil && len(nodeConfig.Services) > 0 {
 		if err := node.RegisterStaticServices(ctx, nodeConfig.Services); err != nil {
@@ -329,7 +359,7 @@ func run(ctx context.Context, c config) error {
 		}
 	}
 	if agent != nil {
-		target, err := serveAgent(ctx, agent, c.agentName)
+		target, err := serveAgent(nodeCtx, agent, c.agentName)
 		if err != nil {
 			return fmt.Errorf("start agent %s: %w", c.agentName, err)
 		}
@@ -343,7 +373,7 @@ func run(ctx context.Context, c config) error {
 		}
 		log.Printf("serving a2a://%s: %s agent in %s", c.agentName, c.agent, c.agentDir)
 	}
-	node.StartRenewalLoop(ctx, "", "", "", "")
+	node.StartRenewalLoop(nodeCtx, "", "", "", "")
 
 	socket := filepath.Join(c.dataDir, meshnode.DefaultSocketName)
 	srv, err := meshnode.StartSidecarServer(node, c.bindAddr, socket, apiToken, "", "", "")
@@ -352,13 +382,23 @@ func run(ctx context.Context, c config) error {
 	}
 	log.Printf("agentiscaled running")
 
-	<-ctx.Done()
+	var halted *nodeHalt
+	select {
+	case <-ctx.Done():
+	case h := <-watchNetwork(nodeCtx, node, diag):
+		halted = &h
+	}
+	stopNode()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Printf("node API shutdown: %v", err)
 	}
-	return nil
+	if halted == nil {
+		return nil
+	}
+	teardown.Do(func() { node.Teardown() })
+	return halt(ctx, c.dataDir, *halted)
 }
 
 // nodeOptions builds the embedded node's options for its mesh's control plane
