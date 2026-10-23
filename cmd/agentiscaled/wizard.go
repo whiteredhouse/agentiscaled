@@ -324,6 +324,34 @@ func agentDataDir(rt, agentDir string) string {
 // setUpAgent signs the agent in, if its runtime needs it and it has not,
 // and sets up its node with `up` for that data directory.
 func (w *wizard) setUpAgent(ctx context.Context, exe string, o *agentOffer) error {
+	if err := w.prepareAgent(ctx, o); err != nil {
+		return err
+	}
+	fmt.Fprintf(w.out, "\nSetting up the agent's own node in %s:\n", o.dataDir)
+	// Every wizard answer is explicit, including empty and default values:
+	// the child preserves saved settings for any flag we omit.
+	args := []string{
+		"up", "-y", "-data-dir", o.dataDir, "-agent", o.runtime, "-agent-dir", o.agentDir,
+		"-agent-name", o.name, "-agent-description", o.description,
+		fmt.Sprintf("-agent-dir-instructions=%t", o.policy.DirInstructions),
+		fmt.Sprintf("-agent-dir-skills=%t", o.policy.DirSkills),
+		fmt.Sprintf("-agent-owner-config=%t", o.policy.OwnerConfig),
+	}
+	return runAttached(ctx, exec.CommandContext(ctx, exe, args...))
+}
+
+// runAttached runs a command on this terminal, for steps that talk to the
+// owner themselves, such as a sign-in.
+var runAttached = func(ctx context.Context, cmd *exec.Cmd) error {
+	if cmd.Stdin == nil {
+		cmd.Stdin = os.Stdin
+	}
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	return cmd.Run()
+}
+
+// prepareAgent completes runtime login before changing a running node.
+func (w *wizard) prepareAgent(ctx context.Context, o *agentOffer) error {
 	spec := runtimes[o.runtime]
 	if spec.login != nil && !spec.signedIn(o.dataDir, o.policy) {
 		cmd, shown := spec.login(ctx, spec.defaultCommand, o.dataDir, o.policy)
@@ -338,32 +366,5 @@ func (w *wizard) setUpAgent(ctx context.Context, exe string, o *agentOffer) erro
 			return fmt.Errorf("the agent's sign-in: %w", err)
 		}
 	}
-	fmt.Fprintf(w.out, "\nSetting up the agent's own node in %s:\n", o.dataDir)
-	args := []string{"up", "-y", "-data-dir", o.dataDir, "-agent", o.runtime, "-agent-dir", o.agentDir}
-	if o.name != "" && o.name != spec.defaultName {
-		args = append(args, "-agent-name", o.name)
-	}
-	if o.description != "" {
-		args = append(args, "-agent-description", o.description)
-	}
-	if !o.policy.DirInstructions {
-		args = append(args, "-agent-dir-instructions=false")
-	}
-	if !o.policy.DirSkills {
-		args = append(args, "-agent-dir-skills=false")
-	}
-	if !o.policy.OwnerConfig {
-		args = append(args, "-agent-owner-config=false")
-	}
-	return runAttached(ctx, exec.CommandContext(ctx, exe, args...))
-}
-
-// runAttached runs a command on this terminal, for steps that talk to the
-// owner themselves, such as a sign-in.
-var runAttached = func(ctx context.Context, cmd *exec.Cmd) error {
-	if cmd.Stdin == nil {
-		cmd.Stdin = os.Stdin
-	}
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	return cmd.Run()
+	return nil
 }

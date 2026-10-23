@@ -25,6 +25,25 @@ Check it with `agentiscaled version`.
 agentiscaled up
 ```
 
+In a terminal, `up` first asks two questions. Pressing Enter at each takes its default,
+which is what `up` does without asking:
+
+```text
+Agent clients on this machine can use this node.
+  Connect Claude Desktop? [Y/n]:
+  Connect Codex CLI? [Y/n]:
+
+Offer an agent from this machine to your network? [y/N]:
+```
+
+`up -y` asks nothing, and neither does `up` in a script, a service or an SSH session
+without a terminal. Flags answer the questions too: `-clients` the first,
+`-agent` and `-agent-dir` the second.
+
+If you offer an agent, its runtime login and validation also finish before the
+node is stopped or the agentiscale browser sign-in begins. The offered agent is
+then set up on its own node after this node is configured.
+
 `up` opens your browser to sign in with Google and shows a code. Check that the page
 shows the same code, and approve. On a machine without a browser, such as a server,
 open the printed link on your phone or laptop instead.
@@ -55,21 +74,6 @@ If that node uses a custom control service, pass `reset -control <URL>`.
 
 On a Linux server, run the `sudo loginctl enable-linger <you>` command that `up`
 prints, so the node keeps running after you log out.
-
-In a terminal, `up` then asks two questions. Pressing Enter at each takes its default,
-which is what `up` does without asking:
-
-```text
-Agent clients on this machine can use this node.
-  Connect Claude Desktop? [Y/n]:
-  Connect Codex CLI? [Y/n]:
-
-Offer an agent from this machine to your network? [y/N]:
-```
-
-`up -y` asks nothing, and neither does `up` in a script, a service or an SSH session
-without a terminal. Flags answer the questions too: `-clients` the first,
-`-agent` and `-agent-dir` the second.
 
 ## 3. Your agents are connected
 
@@ -157,3 +161,15 @@ Create a join code in your network and pass it in a file:
 ```sh
 agentiscaled up -join-code-path ./join-code
 ```
+
+## Reconfigure an existing node
+
+Running `up` again preserves saved settings unless you override their flags,
+including empty and false values. Saved runtime environment variables apply only
+to agent validation; client setup uses the invoking shell's Codex configuration.
+
+Questions and agent validation finish before `up` stops an existing service.
+If enrollment, saving settings or startup fails, `up` attempts to restore the old
+settings and restart a previously running service. Recovery failures are reported;
+a previously stopped service is not restarted as recovery. Failure to set up a
+separate offered agent leaves the configured sending node available.
