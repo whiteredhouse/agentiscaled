@@ -125,11 +125,7 @@ func TestUpAgentSetupFailureKeepsServiceRunning(t *testing.T) {
 				return errors.New("login cancelled")
 			}
 			t.Cleanup(func() { runAttached = oldRun })
-			args := []string{"-clients", "none"}
-			if failure == "invalid workspace" {
-				args = append(args, "-agent", "codex", "-agent-dir", dir)
-			}
-			if err := runUp(context.Background(), args, io.Discard); err == nil {
+			if err := runUp(context.Background(), []string{"-clients", "none"}, io.Discard); err == nil {
 				t.Fatal("setup unexpectedly succeeded")
 			}
 			got, err := loadSettings(dir)
@@ -261,37 +257,5 @@ func TestUpStopsInstalledServiceBeforeStoreAccess(t *testing.T) {
 	}
 	if supervisor.stops != 1 || supervisor.starts != 0 {
 		t.Fatalf("service transitions: stops=%d starts=%d", supervisor.stops, supervisor.starts)
-	}
-}
-
-// The sender's completed settings must not be rolled back when the separate
-// agent-node subprocess fails. Foreground mode deliberately leaves it stopped.
-func TestUpOfferFailurePreservesCompletedSenderSettings(t *testing.T) {
-	dir, saved := seededUpSettings(t)
-	supervisor := installTestSupervisor(t, dir, true)
-	home := t.TempDir()
-	t.Setenv("CODEX_HOME", home)
-	write(t, filepath.Join(home, "auth.json"), "{}")
-	bin := t.TempDir()
-	command := filepath.Join(bin, "codex")
-	write(t, command, "#!/bin/sh\necho codex-cli-test\n")
-	if err := os.Chmod(command, 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	upWizardInput(t, "y\n\n\n"+t.TempDir()+"\n\n\n\n")
-	oldRun := runAttached
-	runAttached = func(context.Context, *exec.Cmd) error { return errors.New("child node setup failed") }
-	t.Cleanup(func() { runAttached = oldRun })
-	err := runUp(context.Background(), []string{"-foreground", "-clients", "none", "-log-level", "debug"}, io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "child node setup failed") {
-		t.Fatalf("child failure = %v", err)
-	}
-	got, err := loadSettings(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.LogLevel != "debug" || got.PeerID != saved.PeerID || got.Agent != "" || supervisor.starts != 0 {
-		t.Fatalf("child failure rolled back completed sender setup: settings=%+v starts=%d", got, supervisor.starts)
 	}
 }

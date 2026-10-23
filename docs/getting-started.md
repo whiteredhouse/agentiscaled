@@ -25,8 +25,9 @@ Check it with `agentiscaled version`.
 agentiscaled up
 ```
 
-In a terminal, `up` first asks two questions. Pressing Enter at each takes its default,
-which is what `up` does without asking:
+In a terminal, `up` first asks which agent apps to connect and whether to offer an
+agent. Pressing Enter at each takes its default, which is what `up` does without
+asking:
 
 ```text
 Agent clients on this machine can use this node.
@@ -40,12 +41,11 @@ Offer an agent from this machine to your network? [y/N]:
 without a terminal. Flags answer the questions too: `-clients` the first,
 `-agent` and `-agent-dir` the second.
 
-If you offer an agent, its runtime login and validation also finish before the
-node is stopped or the agentiscale browser sign-in begins. The offered agent is
-then set up on its own node after this node is configured.
+If you offer an agent, its setup questions and any required `codex login` finish
+before the agentiscale browser sign-in.
 
-`up` opens your browser to sign in with Google and shows a code. Check that the page
-shows the same code, and approve. On a machine without a browser, such as a server,
+`up` then opens your browser to sign in with Google if this node has not joined
+yet, and shows a code. Check that the page shows the same code, and approve. On a machine without a browser, such as a server,
 open the printed link on your phone or laptop instead.
 
 The first time you sign in, agentiscale creates your private network, which takes
@@ -127,32 +127,62 @@ no MCP servers (`-agent-owner-config=false`), or to leave out the directory's
 instruction files or skills when it may hold content from someone you don't trust
 (`-agent-dir-instructions=false`, `-agent-dir-skills=false`).
 
-The agent gets a node of its own, so your agent apps stay on the first one, which only
-sends. If the agent's Codex is not signed in, `up` runs `codex login` first (with its
-own configuration, for the agent's `CODEX_HOME`), then sets up that node as
+The agent runs on the same node your local apps use. There is one mesh identity,
+one sign-in to agentiscale, and one background service. If Codex needs a runtime
+sign-in, `up` runs `codex login` during agent setup, before joining the node and
+starting the service. Local apps can discover and call this agent through the same
+node, as well as agents on other machines.
+
+To configure it with flags instead of the wizard:
 
 ```sh
-agentiscaled up -y -data-dir <config dir>/agentiscale-codex-my-project -agent codex -agent-dir ~/work/my-project
+agentiscaled up -agent codex -agent-dir ~/work/my-project
 ```
 
-with `-agent-name <name>` added for a name other than the default, and
-`-agent-description "<text>"` for a description of your own. That signs in to
-agentiscale once more for the new node. You can run that line
-yourself instead. What the `codex` runtime does today, with an example from Claude
-Desktop, is in
-[Send a task from Claude Desktop to Codex](connect-agents.md#send-a-task-from-claude-desktop-to-codex).
+Add `-agent-name <name>` for a name other than the default, or
+`-agent-description "<text>"` for your own description. The node currently hosts one
+agent. Running `up` again preserves saved settings unless you override their flags;
+`-agent=` stops offering the agent. `status`, `down`, `reset` and `tasks` address this
+same node. Reset keeps its agent configuration and runtime sign-in.
+
+Agent questions, runtime login and validation finish before `up` stops an existing
+service. If a later enrollment, save or startup step fails, `up` attempts to restore
+the old settings and restart a previously running service; recovery errors are
+reported. A service that was already stopped is not restarted as recovery.
+Client setup uses your invoking shell's Codex configuration, even when the hosted
+agent uses a different saved `CODEX_HOME`.
+
+The MCP tools preserve Agent Mesh's discovery distinction: `list_local_services`
+with type `a2a` lists this node's hosted agent; `discover_remote_services` lists
+agents on other nodes. For a local agent, call `send_task` with its `name` as
+`service` and omit `peer_id`. For a remote agent, pass its `srv_name` as `service`
+and its `peer_id`. Use the same target with `get_task` and `cancel_task`.
+
+Local task calls use agentiscaled's owner-only Unix socket. They use the same
+agent handler and permissions as network calls; Agent Mesh's network discovery
+and proxy routes are unchanged.
+
+See [Send a task from Claude Desktop to Codex](connect-agents.md#send-a-task-from-claude-desktop-to-codex)
+for an example.
 
 ## More than one node on a machine
 
-Each node has its own data directory. Give a second node another one, and pass the
-same `-data-dir` to `status`, `down`, `reset` and `mcp`. Its server in your agent apps is named
-after the directory, such as `agentiscale-agent`. A node that offers an agent, like
-the one below, is not added to your apps unless you ask with
-`-clients claude-desktop,codex`:
+Separate nodes remain available explicitly. Each has its own data directory,
+identity, service and recovery target. Pass the same `-data-dir` to `status`, `down`,
+`reset`, `tasks` and `mcp`. Its server in your agent apps is named after the directory,
+such as `agentiscale-agent`. Use `-clients none` if this node should not be connected
+to your local apps:
 
 ```sh
-agentiscaled up -data-dir ~/agentiscale-agent -agent codex -agent-dir ~/work/my-project
+agentiscaled up -data-dir ~/agentiscale-agent -agent codex -agent-dir ~/work/my-project -clients none
 ```
+
+Nodes created by older versions in directories such as `agentiscale-codex-2` stay
+independent. This version does not move their configuration or remove their services.
+To move an agent onto the default node, explicitly configure its workspace, name and
+runtime policy there. Stop the old node with `down -data-dir <old-directory>` before
+offering the same service name from the default node. Keep its data directory until
+you have verified the new setup; isolated runtime sign-ins are specific to that directory.
 
 ## Machines that cannot sign in
 
@@ -161,15 +191,3 @@ Create a join code in your network and pass it in a file:
 ```sh
 agentiscaled up -join-code-path ./join-code
 ```
-
-## Reconfigure an existing node
-
-Running `up` again preserves saved settings unless you override their flags,
-including empty and false values. Saved runtime environment variables apply only
-to agent validation; client setup uses the invoking shell's Codex configuration.
-
-Questions and agent validation finish before `up` stops an existing service.
-If enrollment, saving settings or startup fails, `up` attempts to restore the old
-settings and restart a previously running service. Recovery failures are reported;
-a previously stopped service is not restarted as recovery. Failure to set up a
-separate offered agent leaves the configured sending node available.
