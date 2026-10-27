@@ -74,7 +74,7 @@ type agentPolicy struct {
 	// DirSkills loads the directory's skills (-agent-dir-skills).
 	DirSkills bool
 	// OwnerConfig runs the agent with the owner's own configuration of its
-	// runtime: their sign-in, skills, plugins, MCP servers and settings
+	// runtime: their sign-in, skills, plugins, MCP servers, settings and permissions
 	// (-agent-owner-config). Without it the agent has its own, in the node's
 	// data directory, and signs in on its own.
 	OwnerConfig bool

@@ -69,11 +69,11 @@ client configuration files.
 
 ## Send a task from Claude Desktop to Codex
 
-Here Claude Desktop sends a task to a Codex CLI agent that works read-only in
-one directory, and the task crosses your network's encrypted mesh between two
-nodes. Both nodes can run on the same Mac. The examples use a code review, but
-the task can be anything Codex can do by reading that directory: explain how
-something works, find where something is handled, summarise notes.
+Here Claude Desktop sends a task to a Codex CLI agent working in a configured
+directory under your runtime permissions. The task crosses your network's
+encrypted mesh between two nodes, which can both run on the same Mac. Tasks can
+include implementation, code review, explaining code or summarising notes,
+according to the permissions you configure locally in Codex.
 
 **Node A** is the one you already run, with Claude Desktop connected as above.
 It serves no services; Claude Desktop only sends. Since node B serves an agent,
@@ -99,16 +99,19 @@ serves the A2A 1.0 agent `a2a://codex` to the other nodes of your network.
 description other agents see on its card. Each task runs:
 
 ```sh
-codex exec --ephemeral -c approval_policy="never" \
-  -c shell_environment_policy.inherit="core" \
-  -c default_permissions="agentiscale-read-only" \
-  -c 'permissions.agentiscale-read-only={extends=":read-only", filesystem={":root"="deny", ":minimal"="read", ":workspace_roots"="read", "<codex install>"="read"}}' \
+codex exec --ephemeral -c shell_environment_policy.inherit="core" \
   -C <agent-dir> --output-last-message <file> -
 ```
 
 with the request on standard input, framed as an untrusted task: the agent
-does it and answers with the result, and describes any change the task asks
-for instead of making it. Codex runs as yours
+does it and answers with the result. With the default `-agent-owner-config=true`,
+Codex uses your configured filesystem and network permissions. A writable policy can
+allow it to implement changes; a read-only policy can limit it to inspection.
+The remote task cannot select another permission policy or change the receiving
+node's working directory. `codex exec` is non-interactive: human approval prompts
+are unavailable and escalation is refused. An owner-configured automatic reviewer
+can use Codex's supported unattended approval flow. The adapter does not turn that
+reviewer on or approve requests on your behalf. Codex runs as yours
 does, with your `CODEX_HOME` (`~/.codex`, or the `CODEX_HOME` set when you ran `up`,
 which `up` keeps for node B's service): your sign-in, skills, plugins, settings and MCP
 servers, agentiscale included if you connected Codex, so the agent can call your
@@ -131,11 +134,14 @@ someone you don't trust, `-agent-dir-instructions=false` passes `-c project_doc_
 above the directory (`.agents/skills`, `.codex/skills`), the machine's
 `/etc/codex/skills` and Codex's bundled skills. Commands Codex
 runs see only basic environment variables (`HOME`, `PATH`, `USER` and the like)
-and can read only the agent's directory, the system files a shell needs and the Codex
-install: not your home directory, and not the `CODEX_HOME` with the sign-in.
-They cannot write anything.
+and their filesystem/network access follows your selected runtime policy. With
+`-agent-owner-config=false`, the isolated runtime instead enforces the existing
+read-only profile with approvals off: it can read only the agent's directory,
+minimal system files and the Codex install, with its sign-in directory denied.
+It cannot write files. The adapter does not force that profile onto your own
+configuration.
 To check this on your machine without signing in:
-`AGENTISCALE_TEST_CODEX=$(command -v codex) go test ./cmd/agentiscaled -run TestCodexAgainstAHostileCheckout -v`.
+`AGENTISCALE_TEST_CODEX=$(command -v codex) go test ./cmd/agentiscaled -run 'TestCodexAgainstAHostileCheckout|TestCodexOwnerWorkspaceWrite' -v`.
 
 Each task belongs to the node that sent it: no other node can read its result or
 cancel it. Limits: one task at a time (others are refused, not
