@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"log"
 	"net"
@@ -193,7 +194,7 @@ type deliveryRecord struct {
 
 func loadDeliveries(path string) (*deliveries, error) {
 	d := &deliveries{path: path, seen: map[deliveryKey]a2a.TaskID{}}
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return d, nil
 	}
@@ -201,15 +202,54 @@ func loadDeliveries(path string) (*deliveries, error) {
 		return nil, err
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		var r deliveryRecord
-		// A line cut short by a crash recorded nothing that started.
-		if json.Unmarshal(sc.Bytes(), &r) == nil {
-			d.seen[deliveryKey{r.Sender, r.MessageID}] = r.TaskID
+	reader := bufio.NewReader(f)
+	var offset int64
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return nil, readErr
+		}
+		if len(line) == 0 {
+			return d, nil
+		}
+		complete := line[len(line)-1] == '\n'
+		var record deliveryRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			if complete {
+				// This may include an action that already ran. Never discard
+				// completed, corrupt history and silently allow its retry.
+				return nil, fmt.Errorf("invalid delivery log %s at byte %d: %w", path, offset, err)
+			}
+			// A torn final append did not authorize execution. Remove it and
+			// sync the repair before a later append may authorize new work.
+			if err := f.Truncate(offset); err != nil {
+				return nil, err
+			}
+			if err := f.Sync(); err != nil {
+				return nil, err
+			}
+			return d, nil
+		}
+		if record.Sender == "" || record.MessageID == "" || record.TaskID == "" {
+			return nil, fmt.Errorf("invalid delivery log %s at byte %d: missing identity fields", path, offset)
+		}
+		d.seen[deliveryKey{record.Sender, record.MessageID}] = record.TaskID
+		offset += int64(len(line))
+		if !complete {
+			// Preserve a valid record missing only its separator. Otherwise
+			// the next append would turn both records into one invalid line.
+			if _, err := f.Seek(0, io.SeekEnd); err != nil {
+				return nil, err
+			}
+			if _, err := f.Write([]byte{'\n'}); err != nil {
+				return nil, err
+			}
+			if err := f.Sync(); err != nil {
+				return nil, err
+			}
+			return d, nil
 		}
 	}
-	return d, sc.Err()
 }
 
 func (d *deliveries) first(sender, messageID string) (a2a.TaskID, bool) {
