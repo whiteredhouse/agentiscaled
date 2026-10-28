@@ -1,0 +1,207 @@
+name: Release verification
+
+on:
+  pull_request:
+    paths: ['qa/releases/**', '.github/workflows/release-verification.yml']
+  push:
+    branches: [main]
+    paths: ['qa/releases/**', '.github/workflows/release-verification.yml']
+  schedule:
+    - cron: '37 */6 * * *'
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      discover_releases:
+        description: Check all stable releases since the reviewed baseline
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-verification-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      pairs: ${{ steps.plan.outputs.pairs }}
+      native: ${{ steps.plan.outputs.native }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.13.9'
+      - name: Verifier negative controls
+        run: python3 -m unittest discover -s qa/releases -p 'test_*.py' -v
+      - name: Plan every adjacent stable release pair and required native targets
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTOMATIC: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.discover_releases) }}
+        run: |
+          args=()
+          if [ "$AUTOMATIC" = true ]; then args+=(--automatic); fi
+          python3 qa/releases/discover.py "${args[@]}" > "$RUNNER_TEMP/pairs.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          pairs = json.loads((Path(os.environ['RUNNER_TEMP']) / 'pairs.json').read_text())
+          if len(pairs['include']) > 60:
+              raise SystemExit('native matrix budget exceeded; advance reviewed baseline explicitly')
+          platforms = [('macos-15','darwin','arm64'), ('macos-15-intel','darwin','amd64'),
+                       ('ubuntu-24.04','linux','amd64'), ('ubuntu-24.04-arm','linux','arm64')]
+          native = {'include': [{**p, 'runner':r, 'system':s, 'arch':a}
+                               for p in pairs['include'] for r,s,a in platforms]}
+          if len(json.dumps([pairs, native]).encode('utf-16-le')) > 900000:
+              raise SystemExit('plan output budget exceeded; advance reviewed baseline explicitly')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('pairs=' + json.dumps(pairs, separators=(',', ':')) + '\n')
+              out.write('native=' + json.dumps(native, separators=(',', ':')) + '\n')
+          PY
+
+  artifacts:
+    needs: plan
+    name: artifacts (${{ matrix.version }})
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.pairs) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.13.9'
+      - name: Record immutable release inputs
+        env:
+          PINS_JSON: ${{ toJSON(matrix.pins) }}
+          VERSION: ${{ matrix.version }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('reports/pairs') / os.environ['VERSION'] / 'pins.json'
+          path.parent.mkdir(parents=True)
+          path.write_text(json.dumps(json.loads(os.environ['PINS_JSON']), indent=2) + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as out:
+              out.write('AGENTISCALE_RELEASE_PINS=' + str(path.resolve()) + '\n')
+          PY
+      - name: Anonymous download, notices, checksums and exact-source provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 qa/releases/verify.py --directory "$RUNNER_TEMP/releases" --report 'reports/pairs/${{ matrix.version }}/release-artifacts.json'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: artifacts-${{ matrix.version }}-${{ github.run_attempt }}
+          path: reports/
+          retention-days: 14
+          if-no-files-found: error
+
+  native:
+    needs: [plan, artifacts]
+    name: native (${{ matrix.system }}/${{ matrix.arch }}, ${{ matrix.version }})
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.native) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.13.9'
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.26.6'
+          cache: false
+      - name: Write immutable release inputs
+        env:
+          PINS_JSON: ${{ toJSON(matrix.pins) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ['RUNNER_TEMP']) / 'release-pins.json'
+          path.write_text(json.dumps(json.loads(os.environ['PINS_JSON'])))
+          with open(os.environ['GITHUB_ENV'], 'a') as out:
+              out.write('AGENTISCALE_RELEASE_PINS=' + str(path) + '\n')
+          PY
+      - name: Prepare actual Linux user service manager
+        if: runner.os == 'Linux'
+        run: |
+          if [ -d /home/linuxbrew/.linuxbrew ]; then
+            sudo chown -R "$(id -un):$(id -gn)" /home/linuxbrew/.linuxbrew
+            echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
+          fi
+          uid=$(id -u)
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@$uid.service"
+          export XDG_RUNTIME_DIR="/run/user/$uid"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          systemctl --user start dbus.socket
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+      - name: Require real macOS login service domain
+        if: runner.os == 'macOS'
+        run: launchctl print "gui/$(id -u)" > "$RUNNER_TEMP/launchd-domain.txt"
+      - name: Native archives, Homebrew and Linux package installation and upgrade
+        run: |
+          python3 qa/releases/native.py --system '${{ matrix.system }}' --arch '${{ matrix.arch }}' \
+            --directory "$RUNNER_TEMP/releases" --report 'reports/pairs/${{ matrix.version }}/release-${{ matrix.system }}-${{ matrix.arch }}.json'
+      - name: Enrolled identity and real service executable across upgrade
+        run: |
+          python3 qa/releases/lifecycle.py --directory "$RUNNER_TEMP/releases" \
+            --report 'reports/pairs/${{ matrix.version }}/lifecycle-${{ matrix.system }}-${{ matrix.arch }}.json'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: native-${{ matrix.system }}-${{ matrix.arch }}-${{ matrix.version }}-${{ github.run_attempt }}
+          path: reports/
+          retention-days: 14
+          if-no-files-found: error
+
+  proof:
+    needs: [plan, artifacts, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.13.9'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          path: reports
+          merge-multiple: true
+      - name: Require complete fresh native proof
+        run: python3 qa/releases/proof.py --directory reports
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: release-proof-${{ github.run_attempt }}
+          path: reports/
+          retention-days: 14
+          if-no-files-found: error
