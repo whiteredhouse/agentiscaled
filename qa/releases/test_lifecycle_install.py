@@ -10,7 +10,7 @@ from lifecycle_install import HomebrewInstallation
 class HomebrewImageTests(unittest.TestCase):
     def test_installed_image_requires_release_hash_version_and_cask_target(self):
         release = {"version": "0.1.10", "commit": "c41a62a120be89fef6417fc67779e759cf672ec2"}
-        expected_version = "agentiscaled 0.1.10 (commit c41a62a120be8, linux/amd64)"
+        expected_version = "agentiscaled 0.1.10 (commit c41a62a120be, linux/amd64)"
         with tempfile.TemporaryDirectory() as directory:
             prefix = Path(directory)
             target = prefix / "Caskroom/agentiscaled/0.1.10/agentiscaled"
