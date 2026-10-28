@@ -1,7 +1,8 @@
 """Real enrolled native node upgrade on disposable CI; never rebuild a release.
 
 Only the companion mesh is compiled, from the public source commit pinned for
-our newer release. Release executables come exclusively from native_payloads.
+our newer release. Homebrew-installed published executables must match the
+verified native_payloads release bytes exactly.
 """
 import argparse
 import hashlib
@@ -20,6 +21,7 @@ import urllib.request
 
 from verify import PINS, download, native_payloads
 from lifecycle_platform import (DarwinSupervisor, LinuxSupervisor, native_target, verified_image)
+from lifecycle_install import homebrew_installation
 
 
 def digest(path):
@@ -140,7 +142,7 @@ def running(supervisor, image, data, release, report, since_us, previous=None):
     return observation["mesh"]["peer_id"]
 
 
-def exercise(payloads, root, report):
+def exercise(payloads, root, report, installation):
     env = os.environ.copy()
     home = root / "home"
     home.mkdir()
@@ -150,8 +152,7 @@ def exercise(payloads, root, report):
                AGENTISCALE_NO_BROWSER="1")
     data = root / "node"
     data.mkdir(mode=0o700)
-    stable = root / "bin" / "agentiscaled"
-    stable.parent.mkdir()
+    stable = installation.stable
     supervisor_type = LinuxSupervisor if report["system"] == "linux" else DarwinSupervisor
     supervisor = supervisor_type(env, home, data, stable, run)
     process = None
@@ -172,7 +173,6 @@ def exercise(payloads, root, report):
             time.sleep(0.2)
         fixture = json.loads(descriptor.read_text())
         old, new = payloads
-        shutil.copy2(old[1] / "agentiscaled", stable)
         if digest(stable) != old[2]:
             raise ValueError("old stable binary differs from verified release")
         for release, folder, _ in payloads:
@@ -199,15 +199,18 @@ def exercise(payloads, root, report):
         supervisor.start()
         if running(supervisor, old_image, data, old[0], report, since_us, report["observations"][-1]) != old_peer:
             raise ValueError("old release restart changed peer identity")
-        # Replace the stable executable while the old process still runs. The
-        # subsequent restart must change the actual loaded executable bytes.
-        report["stage"] = "verified executable replacement and service restart"
-        replacement = stable.with_suffix(".new")
-        shutil.copy2(new[1] / "agentiscaled", replacement)
-        if digest(replacement) != new[2] or new[2] == old[2]:
-            raise ValueError("upgrade must use different verified release bytes")
-        os.replace(replacement, stable)
-        new_image = verified_image(stable, new[2])
+        # Upgrade the real cask while the old enrolled service still runs.
+        # Homebrew removes its old Caskroom executable; the generated service
+        # must retain brew/bin and pick up the new release on its next start.
+        report["stage"] = "actual Homebrew upgrade while old enrolled service runs"
+        new_image = installation.upgrade()
+        still_running = supervisor.unchanged_process(report["observations"][-1])
+        upgrade_mesh = wait_ready(data)
+        supervisor.unchanged_process(still_running)
+        if upgrade_mesh["peer_id"] != old_peer:
+            raise ValueError("Homebrew upgrade changed the still-running old node identity")
+        report["upgrade_method"]["old_service_remained_running"] = {
+            "main_pid": still_running["pid"], "start": still_running["start"], "readyz": 200, "mesh": upgrade_mesh}
         since_us = time.time_ns() // 1000
         supervisor.restart()
         if running(supervisor, new_image, data, new[0], report, since_us, report["observations"][-1]) != old_peer:
@@ -270,7 +273,8 @@ def main():
             raise ValueError("lifecycle requires exactly the two reviewed releases")
         # Short /tmp pathname keeps Unix sockets below native pathname limits.
         with tempfile.TemporaryDirectory(prefix="release-life-", dir="/tmp") as temporary:
-            exercise(payloads, Path(temporary).resolve(), report)
+            with homebrew_installation(payloads, system, arch, report, run) as installation:
+                exercise(payloads, Path(temporary).resolve(), report, installation)
         report.update(success=True, stage="complete")
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"

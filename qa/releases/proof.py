@@ -28,6 +28,11 @@ def check_pair(directory):
             raise ValueError('missing Homebrew install/upgrade')
         if system == 'linux' and {p['format'] for p in consumer['packages'] if p['install_upgrade'] == 'passed'} != {'deb', 'rpm'}:
             raise ValueError('missing native Linux packages')
+        method = lifecycle['upgrade_method']
+        if method['manager'] != 'Homebrew' or [(o['operation'], o['version']) for o in method['operations']] != [('install', versions[0]), ('upgrade', versions[1])]:
+            raise ValueError('missing actual Homebrew service upgrade')
+        if method['old_versioned_executable_removed'] is not True or lifecycle['homebrew_cleanup'] != 'passed':
+            raise ValueError('incomplete real package upgrade/cleanup')
         observations = lifecycle['observations']
         if [o['version'] for o in observations] != [versions[0], *versions]:
             raise ValueError('missing service restart/upgrade observations')

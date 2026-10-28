@@ -190,6 +190,11 @@ class LinuxSupervisor:
         return dict(before, proc_exe=os.readlink(process / "exe"), proc_exe_sha256=actual_digest,
                     proof="SHA-256 of actual /proc/MainPID/exe", mesh=mesh)
 
+    def unchanged_process(self, previous):
+        current = self.identity()
+        validate_fresh_process(previous, current)
+        return current
+
     def stop(self):
         self.ctl("stop", self.name)
 
@@ -228,7 +233,7 @@ class ProcBSDInfo(ctypes.Structure):
     _fields_ += [("nice", ctypes.c_int32), ("start_sec", ctypes.c_uint64), ("start_usec", ctypes.c_uint64)]
 
 
-def darwin_process(pid):
+def darwin_process(pid, with_path=True):
     libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
     libproc.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
     libproc.proc_pidinfo.restype = ctypes.c_int
@@ -240,6 +245,9 @@ def darwin_process(pid):
         raise ProcessLookupError(errno.ESRCH, "libproc PID disappeared", pid)
     if size != ctypes.sizeof(info) or info.pid != pid or info.uid != os.getuid() or info.start_sec <= 0:
         raise RuntimeError("cannot read exact native libproc PID/start/owner evidence")
+    result = {"pid": pid, "start": [info.start_sec, info.start_usec], "uid": info.uid}
+    if not with_path:
+        return result
     libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
     libproc.proc_pidpath.restype = ctypes.c_int
     path = ctypes.create_string_buffer(4096)
@@ -248,8 +256,7 @@ def darwin_process(pid):
         if ctypes.get_errno() == errno.ESRCH:
             raise ProcessLookupError(errno.ESRCH, "libproc executable disappeared", pid)
         raise RuntimeError("cannot read actual libproc executable path")
-    return {"pid": pid, "start": [info.start_sec, info.start_usec], "uid": info.uid,
-            "executable_path": os.fsdecode(path.value)}
+    return dict(result, executable_path=os.fsdecode(path.value))
 
 
 class DarwinSupervisor:
@@ -317,7 +324,7 @@ class DarwinSupervisor:
             try:
                 os.kill(identity["pid"], 0)
                 # Exit can occur between the kill probe and either libproc call.
-                current = darwin_process(identity["pid"])
+                current = darwin_process(identity["pid"], with_path=False)
             except ProcessLookupError:
                 return
             # PID reuse is distinguishable from the stopped process.
@@ -327,8 +334,18 @@ class DarwinSupervisor:
                 raise RuntimeError("launchd process remains alive after bootout")
             time.sleep(0.1)
 
+    def unchanged_process(self, previous):
+        values = parse_launchctl(self.ctl("print", self.target))
+        current = darwin_process(values["pid"], with_path=False)
+        validate_fresh_process(previous, current)
+        return current
+
     def stop(self):
-        identity = self.identity()
+        values = parse_launchctl(self.ctl("print", self.target))
+        # After brew upgrade the old executable path has been removed; obtain
+        # its kernel PID/start identity without reopening that deleted path.
+        identity = darwin_process(values["pid"], with_path=False)
+        self.last_process = identity
         self.ctl("bootout", self.target)
         self.wait_stopped(identity)
 

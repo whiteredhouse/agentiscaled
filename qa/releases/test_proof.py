@@ -27,7 +27,10 @@ class CompleteProof(unittest.TestCase):
                 'identity_after': {'key': 'same'}, 'cleanup': 'passed',
                 'observations': [{'version': v, 'proc_exe_sha256': 'expected',
                                   'expected_release_exe_sha256': 'expected'} for v in ('old', 'old', 'new')],
-                'mesh_evidence': {'enrollments': ['one']}})
+                'mesh_evidence': {'enrollments': ['one']}, 'homebrew_cleanup': 'passed',
+                'upgrade_method': {'manager': 'Homebrew', 'old_versioned_executable_removed': True,
+                                   'operations': [{'operation': 'install', 'version': 'old'},
+                                                  {'operation': 'upgrade', 'version': 'new'}]}})
 
     def test_missing_native_target_cannot_pass(self):
         with tempfile.TemporaryDirectory() as temp:

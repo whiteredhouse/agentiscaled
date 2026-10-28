@@ -12,7 +12,8 @@ and upgrades deb/rpm packages in digest-pinned containers with Go unavailable.
 A separate lifecycle fixture uses controlled OAuth/control endpoints and a real
 loopback mesh. Only the mesh companion is compiled, from the immutable public
 source; published node executables are never rebuilt. It enrolls an old executable,
-starts its actual OS service, restarts, upgrades and restarts again. Every start
+starts its actual OS service, restarts, runs a real Homebrew upgrade while the
+old process stays ready, and restarts through the stable Homebrew bin link. Every start
 must be ready, attached to the router and load the expected executable. Enrolled
 key/credential/peer identity and configuration are preserved; inspection uses a
 copy of the stopped database. Cleanup stops and removes the service. This checks
