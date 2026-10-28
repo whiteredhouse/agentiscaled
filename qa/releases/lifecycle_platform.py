@@ -4,6 +4,7 @@ These helpers never install an alternative service. The release's own `up`
 command must generate and start the systemd unit or launchd LaunchAgent.
 """
 import ctypes
+import errno
 import hashlib
 import os
 from pathlib import Path
@@ -233,13 +234,19 @@ def darwin_process(pid):
     libproc.proc_pidinfo.restype = ctypes.c_int
     info = ProcBSDInfo()
     # PROC_PIDTBSDINFO = 3; exact returned size fails closed on an ABI mismatch.
+    ctypes.set_errno(0)
     size = libproc.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+    if size <= 0 and ctypes.get_errno() == errno.ESRCH:
+        raise ProcessLookupError(errno.ESRCH, "libproc PID disappeared", pid)
     if size != ctypes.sizeof(info) or info.pid != pid or info.uid != os.getuid() or info.start_sec <= 0:
         raise RuntimeError("cannot read exact native libproc PID/start/owner evidence")
     libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
     libproc.proc_pidpath.restype = ctypes.c_int
     path = ctypes.create_string_buffer(4096)
+    ctypes.set_errno(0)
     if libproc.proc_pidpath(pid, path, len(path)) <= 0:
+        if ctypes.get_errno() == errno.ESRCH:
+            raise ProcessLookupError(errno.ESRCH, "libproc executable disappeared", pid)
         raise RuntimeError("cannot read actual libproc executable path")
     return {"pid": pid, "start": [info.start_sec, info.start_usec], "uid": info.uid,
             "executable_path": os.fsdecode(path.value)}
@@ -309,10 +316,11 @@ class DarwinSupervisor:
         while True:
             try:
                 os.kill(identity["pid"], 0)
+                # Exit can occur between the kill probe and either libproc call.
+                current = darwin_process(identity["pid"])
             except ProcessLookupError:
                 return
             # PID reuse is distinguishable from the stopped process.
-            current = darwin_process(identity["pid"])
             if current["start"] != identity["start"]:
                 return
             if time.monotonic() >= deadline:

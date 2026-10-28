@@ -1,8 +1,12 @@
 """Negative controls for process evidence; exercised by CI, never a service shim."""
 import copy
+import ctypes
+import errno
+from pathlib import Path
 import unittest
+from unittest import mock
 
-from lifecycle_platform import (native_target, parse_launchctl, parse_linux_start,
+from lifecycle_platform import (DarwinSupervisor, ProcBSDInfo, darwin_process, native_target, parse_launchctl, parse_linux_start,
                                 parse_lsof, validate_fresh_process, validate_mapping)
 
 
@@ -60,6 +64,45 @@ class ProcessEvidenceTests(unittest.TestCase):
             validate_mapping(parse_lsof(output.replace("i701\n", ""), 4123), expected)
         with self.assertRaises(ValueError):
             validate_mapping(parse_lsof(output.replace("agentiscaled\n", "agentiscaled (deleted)\n"), 4123), expected)
+
+    def test_cleanup_accepts_process_disappearing_between_kill_and_libproc(self):
+        supervisor = DarwinSupervisor({}, Path("/tmp/home"), Path("/tmp/node"), Path("/tmp/bin/node"), None)
+        identity = {"pid": 4123, "start": [1700000000, 200]}
+        with mock.patch("lifecycle_platform.os.kill", return_value=None), mock.patch(
+                "lifecycle_platform.darwin_process", side_effect=ProcessLookupError(errno.ESRCH, "exited")):
+            self.assertIsNone(supervisor.wait_stopped(identity))
+        # An inaccessible or malformed process is not evidence of its exit.
+        for error in (PermissionError(errno.EPERM, "denied"), RuntimeError("ABI mismatch")):
+            with mock.patch("lifecycle_platform.os.kill", return_value=None), mock.patch(
+                    "lifecycle_platform.darwin_process", side_effect=error):
+                with self.assertRaises(type(error)):
+                    supervisor.wait_stopped(identity)
+
+    def test_libproc_only_classifies_esrch_as_a_disappeared_process(self):
+        for operation in ("info", "path"):
+            for error_number, expected in ((errno.ESRCH, ProcessLookupError),
+                                           (errno.EPERM, RuntimeError), (0, RuntimeError)):
+                libproc = mock.Mock()
+
+                def info(pid, flavor, argument, pointer, size):
+                    if operation == "info":
+                        ctypes.set_errno(error_number)
+                        return 0
+                    value = ctypes.cast(pointer, ctypes.POINTER(ProcBSDInfo)).contents
+                    value.pid, value.uid, value.start_sec = pid, 501, 1700000000
+                    return size
+
+                def path(*args):
+                    ctypes.set_errno(error_number)
+                    return 0
+
+                libproc.proc_pidinfo.side_effect = info
+                libproc.proc_pidpath.side_effect = path
+                with self.subTest(operation=operation, errno=error_number), mock.patch(
+                        "lifecycle_platform.ctypes.CDLL", return_value=libproc), mock.patch(
+                        "lifecycle_platform.os.getuid", return_value=501):
+                    with self.assertRaises(expected):
+                        darwin_process(4123)
 
     def test_fresh_start_guard_rejects_reused_or_unstable_process(self):
         before = {"pid": 4123, "start": [1700000000, 200]}
