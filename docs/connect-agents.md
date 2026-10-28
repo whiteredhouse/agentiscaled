@@ -149,7 +149,11 @@ queued), 15 minutes per task, and a request that says it was delegated is
 refused. With your configuration the agent can itself send tasks to your other
 agents through your agentiscale MCP server; nothing counts those calls as delegation,
 so use `-agent-owner-config=false` where that must not happen. A repeated message ID from the same node is refused instead of run
-again, also after node B restarts (`<data-dir>/tasks-delivered.jsonl`).
+again, also after node B restarts (`<data-dir>/tasks-delivered.jsonl`). Incomplete
+final log writes are repaired before new tasks start. A malformed completed
+record prevents the service from starting because its duplicate history cannot
+be trusted. Preserve that file and restore a verified complete copy or reconcile its
+history before restarting; deleting it removes duplicate protection.
 
 **In Claude Desktop**, ask for example "Use agentiscale to ask codex to
 review the last commit", or "… to explain how requests are authenticated".
