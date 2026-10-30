@@ -21,14 +21,14 @@ class IsolatedToolEntrypoints(unittest.TestCase):
                 for step in job['steps']:
                     for line in step.get('run', '').splitlines():
                         if line.startswith('.venv-evidence/bin/python '):
-                            words = shlex.split(line)
+                            words = shlex.split(line.rstrip().removesuffix('\\'))
                             marker = words.index('-m')
                             prefixes.add(tuple(words[1:marker + 2]))
         action = yaml.safe_load((ROOT / '.github/actions/release-setup/action.yml').read_text())
         for step in action['runs']['steps']:
             for line in step.get('run', '').splitlines():
                 if line.startswith(('python3 ', '.venv-evidence/bin/python ')):
-                    words = shlex.split(line)
+                    words = shlex.split(line.rstrip().removesuffix('\\'))
                     marker = words.index('-m')
                     prefixes.add(tuple(words[1:marker + 2]))
         self.assertEqual({prefix[-1] for prefix in prefixes}, {'pytest', 'exacly', 'venv', 'pip'})
