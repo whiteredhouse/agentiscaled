@@ -14,10 +14,11 @@ producer:
 observer_paths:
   - .github/workflows/release-linux-amd64.yml
   - .github/actions/release-setup
-  - qa/releases
+  - qa
+  - .venv-evidence
+  - __init__.py
   - pyproject.toml
   - pytest.ini
   - conftest.py
-  - qa/conftest.py
   - sitecustomize.py
   - usercustomize.py

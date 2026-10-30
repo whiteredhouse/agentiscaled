@@ -39,13 +39,13 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/release-setup
       - name: Validate public model
-        run: .venv-evidence/bin/exacly validate spec/exacly
+        run: .venv-evidence/bin/python -I -m exacly validate spec/exacly
       - name: Draft producer policy for independent review
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p reports
-          .venv-evidence/bin/exacly evidence propose-policy github-actions \
+          .venv-evidence/bin/python -I -m exacly evidence propose-policy github-actions \
             --repository whiteredhouse/agentiscaled --revision "$(git rev-parse HEAD)" \
             --proposal 'qa/releases/producers/${{ matrix.system }}-${{ matrix.arch }}.yaml' \
             --model-file spec/exacly/releases.yaml --name 'release-${{ matrix.system }}-${{ matrix.arch }}' \
@@ -56,7 +56,7 @@ jobs:
           RELEASE_SYSTEM: ${{ matrix.system }}
           RELEASE_ARCH: ${{ matrix.arch }}
           RELEASE_DISCOVER: ${{ github.event_name != 'pull_request' }}
-        run: .venv-evidence/bin/python -m pytest -c qa/releases/pytest.ini --rootdir=. qa/releases --junitxml=reports/junit.xml --maxfail=1
+        run: .venv-evidence/bin/python -I -m pytest -c qa/releases/pytest.ini --rootdir=. qa/releases --junitxml=reports/junit.xml --maxfail=1
       - name: Retain diagnostic test results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

@@ -26,13 +26,13 @@ jobs:
           RELEASE_SYSTEM: darwin
           RELEASE_ARCH: amd64
           RELEASE_DISCOVER: 'true'
-        run: .venv-evidence/bin/python -m pytest -c qa/releases/pytest.ini --rootdir=. qa/releases --junitxml=reports/junit.xml --maxfail=1
+        run: .venv-evidence/bin/python -I -m pytest -c qa/releases/pytest.ini --rootdir=. qa/releases --junitxml=reports/junit.xml --maxfail=1
       - name: Package verification evidence
         id: evidence
         if: always() && (steps.verification.outcome == 'success' || steps.verification.outcome == 'failure')
         env:
           EXACLY_TEST_OUTCOME: ${{ steps.verification.outcome }}
-        run: .venv-evidence/bin/exacly evidence package --report reports/junit.xml --out reports/evidence
+        run: .venv-evidence/bin/python -I -m exacly evidence package --report reports/junit.xml --out reports/evidence
       - name: Upload verification evidence
         if: always() && steps.evidence.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

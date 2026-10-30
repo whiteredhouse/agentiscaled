@@ -13,8 +13,9 @@ runs:
     - name: Install reviewed Python tools
       shell: bash
       run: |
-        python3 -m venv .venv-evidence
-        .venv-evidence/bin/python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r qa/releases/requirements.txt
+        test ! -e .venv-evidence && test ! -L .venv-evidence
+        python3 -I -m venv .venv-evidence
+        .venv-evidence/bin/python -I -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r qa/releases/requirements.txt
         echo "$GITHUB_WORKSPACE/.venv-evidence/bin" >> "$GITHUB_PATH"
         echo 'PYTEST_DISABLE_PLUGIN_AUTOLOAD=1' >> "$GITHUB_ENV"
         echo 'PYTHONNOUSERSITE=1' >> "$GITHUB_ENV"
