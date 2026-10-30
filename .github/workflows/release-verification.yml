@@ -40,6 +40,16 @@ jobs:
       - uses: ./.github/actions/release-setup
       - name: Validate public model
         run: .venv-evidence/bin/exacly validate spec/exacly
+      - name: Draft producer policy for independent review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p reports
+          .venv-evidence/bin/exacly evidence propose-policy github-actions \
+            --repository whiteredhouse/agentiscaled --revision "$(git rev-parse HEAD)" \
+            --proposal 'qa/releases/producers/${{ matrix.system }}-${{ matrix.arch }}.yaml' \
+            --model-file spec/exacly/releases.yaml --name 'release-${{ matrix.system }}-${{ matrix.arch }}' \
+            --version 1 --out 'reports/policy-${{ matrix.system }}-${{ matrix.arch }}.candidate.json'
       - name: Run native release acceptance
         env:
           GH_TOKEN: ${{ github.token }}

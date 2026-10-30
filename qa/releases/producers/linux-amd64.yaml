@@ -1,0 +1,23 @@
+# Candidate inputs; generating a policy does not approve this producer.
+producer:
+  branch: main
+  workflow:
+    path: .github/workflows/release-linux-amd64.yml
+    job_id: observe
+    job_name: Release linux/amd64
+    steps:
+      verification: Run native release acceptance
+      package: Package verification evidence
+      upload: Upload verification evidence
+  artifact:
+    name_prefix: release-linux-amd64
+observer_paths:
+  - .github/workflows/release-linux-amd64.yml
+  - .github/actions/release-setup
+  - qa/releases
+  - pyproject.toml
+  - pytest.ini
+  - conftest.py
+  - qa/conftest.py
+  - sitecustomize.py
+  - usercustomize.py
