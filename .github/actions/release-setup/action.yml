@@ -1,0 +1,41 @@
+name: Native release test setup
+description: Prepare pinned test tooling and the runner's real service manager
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+      with:
+        python-version: '3.13.9'
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      with:
+        go-version: '1.26.6'
+        cache: false
+    - name: Install reviewed Python tools
+      shell: bash
+      run: |
+        python3 -m venv .venv-evidence
+        .venv-evidence/bin/python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r qa/releases/requirements.txt
+        echo "$GITHUB_WORKSPACE/.venv-evidence/bin" >> "$GITHUB_PATH"
+        echo 'PYTEST_DISABLE_PLUGIN_AUTOLOAD=1' >> "$GITHUB_ENV"
+        echo 'PYTHONNOUSERSITE=1' >> "$GITHUB_ENV"
+        echo 'GOTOOLCHAIN=local' >> "$GITHUB_ENV"
+    - name: Prepare real Linux user service manager
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        if [ -d /home/linuxbrew/.linuxbrew ]; then
+          sudo chown -R "$(id -un):$(id -gn)" /home/linuxbrew/.linuxbrew
+          echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
+        fi
+        uid=$(id -u)
+        sudo loginctl enable-linger "$(id -un)"
+        sudo systemctl start "user@$uid.service"
+        export XDG_RUNTIME_DIR="/run/user/$uid"
+        export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+        systemctl --user start dbus.socket
+        echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+        echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+    - name: Require real macOS GUI service domain
+      if: runner.os == 'macOS'
+      shell: bash
+      run: launchctl print "gui/$(id -u)" > "$RUNNER_TEMP/launchd-domain.txt"

@@ -1,5 +1,6 @@
 """Consumer tests on disposable native runners; no source builds or live nodes."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -53,6 +54,63 @@ def unchanged(snapshot):
         raise ValueError("upgrade modified sentinel configuration/state/service files")
 
 
+@contextmanager
+def sentinel_files(paths):
+    """Remove only files this fixture created, including after a failed upgrade."""
+    owned = {}
+    snapshot = {}
+    try:
+        for i, path in enumerate(paths):
+            if path.exists() or path.is_symlink():
+                raise ValueError("consumer fixture must not overwrite existing state")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            contents = f"release-upgrade-fixture-{i}\n".encode()
+            with path.open("xb") as stream:
+                identity = os.fstat(stream.fileno())
+                owned[path] = (identity.st_dev, identity.st_ino)
+                stream.write(contents)
+            snapshot[path] = contents
+        yield snapshot
+    finally:
+        errors = []
+        for path, identity in owned.items():
+            try:
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) != identity:
+                    raise RuntimeError(f"sentinel ownership changed: {path}")
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                errors.append(str(exc))
+        if errors:
+            raise RuntimeError("sentinel cleanup failed: " + "; ".join(errors))
+
+
+@contextmanager
+def cask_operations(brew, env):
+    """Own only a previously absent cask and always clean an attempted install."""
+    prefix = Path(run(brew, "--prefix", env=env).splitlines()[-1])
+    cask = Path(run(brew, "--caskroom", env=env).splitlines()[-1]) / "agentiscaled"
+    stable = prefix / "bin" / "agentiscaled"
+    if cask.exists() or cask.is_symlink() or stable.exists() or stable.is_symlink():
+        raise ValueError("consumer fixture must not overwrite an existing Homebrew installation")
+    attempted = False
+
+    def operate(operation):
+        nonlocal attempted
+        attempted = True
+        run(brew, operation, "--cask", "whiteredhouse/tap/agentiscaled", env=env, timeout=1200)
+
+    try:
+        yield operate
+    finally:
+        if attempted:
+            run(brew, "uninstall", "--cask", "whiteredhouse/tap/agentiscaled", env=env, timeout=1200)
+            if cask.exists() or cask.is_symlink() or stable.exists() or stable.is_symlink():
+                raise RuntimeError("Homebrew consumer cleanup left the cask or executable installed")
+
+
 def consumer_environment(directory):
     env = os.environ.copy()
     # Disable PATH-based Go execution before any release binary is invoked.
@@ -102,27 +160,27 @@ def homebrew(payloads, system, arch, directory, env, go_log, report):
     config_home = Path(env.get("XDG_CONFIG_HOME", str(home / ".config")))
     node = home / "Library/Application Support/agentiscale" if system == "darwin" else config_home / "agentiscale"
     service = home / "Library/LaunchAgents/net.agentiscale.qa-fixture.plist" if system == "darwin" else config_home / "systemd/user/agentiscaled-qa-fixture.service"
-    snapshot = sentinels([node / "state-sentinel", node / "agentiscaled.json", service])
-    for i, (release, _, digest) in enumerate(payloads):
-        run("git", "-C", tap, "checkout", "--detach", release["tap_commit"], env=env)
-        operation = "install" if i == 0 else "upgrade"
-        run(brew, operation, "--cask", "whiteredhouse/tap/agentiscaled", env=env, timeout=1200)
-        prefix = run(brew, "--prefix", env=env).splitlines()[-1]
-        binary = Path(prefix) / "bin" / "agentiscaled"
-        binary_check(binary, release, system, arch, digest, env=env)
-        # Verify the active link points into this exact cask version, too.
-        resolved = str(binary.resolve())
-        if "/" + release["version"] + "/" not in resolved:
-            raise ValueError(f"brew link does not select reviewed version: {resolved}")
-        for filename, key in (("LICENSE", "license_sha256"), ("NOTICE", "notice_sha256")):
-            expected = release.get(key, PINS[key])
-            if hashlib.sha256((binary.resolve().parent / filename).read_bytes()).hexdigest() != expected:
-                raise ValueError("Homebrew staged notices differ from the reviewed release")
-        unchanged(snapshot)
-        report["operations"].append({"version": release["version"], "operation": operation, "binary": resolved, "sentinels": "preserved"})
+    with sentinel_files([node / "state-sentinel", node / "agentiscaled.json", service]) as snapshot:
+        with cask_operations(brew, env) as operate:
+            for i, (release, _, digest) in enumerate(payloads):
+                run("git", "-C", tap, "checkout", "--detach", release["tap_commit"], env=env)
+                operation = "install" if i == 0 else "upgrade"
+                operate(operation)
+                prefix = run(brew, "--prefix", env=env).splitlines()[-1]
+                binary = Path(prefix) / "bin" / "agentiscaled"
+                binary_check(binary, release, system, arch, digest, env=env)
+                # Verify the active link points into this exact cask version, too.
+                resolved = str(binary.resolve())
+                if "/" + release["version"] + "/" not in resolved:
+                    raise ValueError(f"brew link does not select reviewed version: {resolved}")
+                for filename, key in (("LICENSE", "license_sha256"), ("NOTICE", "notice_sha256")):
+                    expected = release.get(key, PINS[key])
+                    if hashlib.sha256((binary.resolve().parent / filename).read_bytes()).hexdigest() != expected:
+                        raise ValueError("Homebrew staged notices differ from the reviewed release")
+                unchanged(snapshot)
+                report["operations"].append({"version": release["version"], "operation": operation, "binary": resolved, "sentinels": "preserved"})
     if go_log.exists() and go_log.stat().st_size:
         raise ValueError("Homebrew consumer flow attempted to invoke Go")
-    run(brew, "uninstall", "--cask", "whiteredhouse/tap/agentiscaled", env=env)
     report["go"] = "PATH command disabled and not invoked"
 
 

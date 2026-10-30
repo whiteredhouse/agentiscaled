@@ -21,7 +21,7 @@ class HomebrewImageTests(unittest.TestCase):
             installation.stable = prefix / "bin/agentiscaled"
             installation.stable.parent.mkdir()
             installation.stable.symlink_to(target)
-            self.assertEqual(installation.checked_binary(item)["path"], str(target))
+            self.assertEqual(installation.checked_binary(item)["path"], str(target.resolve()))
             target.write_bytes(b"mutated-release")
             with self.assertRaisesRegex(ValueError, "verified release"):
                 installation.checked_binary(item)
