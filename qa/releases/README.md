@@ -8,6 +8,16 @@ Kernel PID/start and loaded-image checks, enrolled identity preservation and
 service/package cleanup are assertions in the tests, not inferred from job status.
 Only the loopback companion mesh is compiled from immutable release source.
 
+The lifecycle also kills each enrolled release through its native supervisor and
+requires automatic recovery with a fresh kernel PID/start, the expected loaded
+executable and the same connected peer. It never issues a start/restart command
+to cause that recovery. Repeated `up` updates a saved hostname without another
+login/enrollment. A second data directory joins through a code file, runs its own
+actual user service alongside the first node, reports live status, and survives
+`down`/`up` with its identity/settings intact after the code file is removed.
+Fixture request counters reject hidden login, enrollment or code reuse. The
+loopback control fixture is not proof of deployed account authorization.
+
 Run the standard suite on a native runner with the declared target:
 
 ```sh
@@ -42,5 +52,5 @@ from an older implementation's report.
 Captured JUnit output includes immutable inputs and concise phase diagnostics.
 Original provenance is verified by the actual artifact checks; public GitHub
 attestations remain its source. This suite does not test production account
-authentication, OS login/reboot/crash recovery, signing/notarization or signed
+authentication, OS login/reboot/logout, signing/notarization or signed
 package repositories. Those are separate capabilities.

@@ -124,6 +124,23 @@ def verified_image(path, expected_digest):
             "ctime_ns": before.st_ctime_ns, "sha256": actual}
 
 
+def wait_replacement(supervisor, previous, timeout=90):
+    """Do not accept an old ready socket while the supervisor processes a kill."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            current = supervisor.identity()
+            if current["pid"] != previous["pid"] and current["start"] != previous["start"]:
+                return current
+        except (ValueError, FileNotFoundError, ProcessLookupError):
+            # A loaded service may be waiting to restart, or its old process
+            # may disappear between the supervisor query and kernel lookup.
+            pass
+        if time.monotonic() >= deadline:
+            raise RuntimeError("supervisor did not produce a fresh process within the recovery deadline")
+        time.sleep(0.2)
+
+
 class LinuxSupervisor:
     kind = "systemd user service"
 
@@ -141,7 +158,7 @@ class LinuxSupervisor:
         if not self.env.get("XDG_RUNTIME_DIR") or not Path(self.env["XDG_RUNTIME_DIR"]).is_dir():
             raise RuntimeError("real systemd user runtime is unavailable; CI must enable linger and the user bus")
         self.ctl("show", "--property=Version", "--value")
-        self.path.parent.mkdir(parents=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         # Only a discovery link for the existing user manager; `up` overwrites
         # the bootstrap with its actual generated unit before it can run.
         self.path.write_text("[Service]\nExecStart=/usr/bin/false\n[Install]\nWantedBy=default.target\n")
@@ -204,11 +221,29 @@ class LinuxSupervisor:
     def restart(self):
         self.ctl("restart", self.name)
 
+    def crash(self, previous):
+        self.unchanged_process(previous)
+        # Target this isolated unit, never a potentially reused raw PID.
+        self.ctl("kill", "--signal=SIGKILL", self.name)
+
+    def removed(self, previous):
+        if self.path.exists() or self.path.is_symlink():
+            raise ValueError("down left the generated systemd unit installed")
+        values = self.ctl("show", self.name, "--property=MainPID,ActiveState")
+        if set(values.splitlines()) != {"MainPID=0", "ActiveState=inactive"}:
+            raise ValueError("down left the isolated systemd service running")
+
     def cleanup(self):
         errors = []
         if not self.linked:
             return errors
-        for arguments in (("stop", self.name), ("disable", self.name), ("disable", "--runtime", self.name)):
+        if not self.path.exists():
+            try:
+                self.removed(None)
+            except Exception as exc:
+                errors.append(str(exc))
+        commands = (("stop", self.name), ("disable", self.name), ("disable", "--runtime", self.name)) if self.path.exists() else ()
+        for arguments in commands:
             try:
                 self.ctl(*arguments)
             except Exception as exc:
@@ -356,9 +391,18 @@ class DarwinSupervisor:
         self.stop()
         self.start()
 
+    def crash(self, previous):
+        self.unchanged_process(previous)
+        self.ctl("kill", "SIGKILL", self.target)
+
+    def removed(self, previous):
+        self.wait_stopped(previous)
+        if self.path.exists() or self.path.is_symlink() or self.ctl("print", self.target, check=False):
+            raise ValueError("down left the isolated launchd agent installed or loaded")
+
     def cleanup(self):
         errors = []
-        if not self.prepared or not self.path.exists():
+        if not self.prepared:
             return errors
         # print distinguishes an already stopped service from a failed bootout.
         try:
@@ -369,7 +413,7 @@ class DarwinSupervisor:
             remaining = self.run("/bin/launchctl", "print", self.target, env=self.env, check=False)
             if remaining:
                 raise RuntimeError("launchd agent remains loaded after cleanup")
-            self.path.unlink()
+            self.path.unlink(missing_ok=True)
         except Exception as exc:
             errors.append(str(exc))
         return errors

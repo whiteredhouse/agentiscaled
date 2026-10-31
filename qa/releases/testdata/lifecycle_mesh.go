@@ -85,10 +85,11 @@ func inspect(dir string) (map[string]string, error) {
 func main() {
 	data := flag.String("data", "", "isolated mesh directory")
 	nodeData := flag.String("node-data", "", "stopped node database to inspect")
+	headlessData := flag.String("headless-node-data", "", "stopped join-code node database to inspect")
 	ready := flag.String("ready", "", "output JSON endpoint descriptor")
 	flag.Parse()
-	if os.Getenv("CI") != "true" || *data == "" || *nodeData == "" || *ready == "" {
-		log.Fatal("requires CI=true and --data, --node-data, --ready")
+	if os.Getenv("CI") != "true" || *data == "" || *nodeData == "" || *headlessData == "" || *ready == "" {
+		log.Fatal("requires CI=true and --data, --node-data, --headless-node-data, --ready")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -109,18 +110,29 @@ func main() {
 	base := "http://" + listener.Addr().String()
 	var mu sync.Mutex
 	enrollments := []string{}
+	joins := []string{}
+	deviceRequests, tokenRequests, enrollRequests, joinRequests := 0, 0, 0, 0
 	mux := http.NewServeMux()
 	respond := func(w http.ResponseWriter, value any) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(value)
 	}
 	mux.HandleFunc("POST /oauth/device/code", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		deviceRequests++
+		mu.Unlock()
 		respond(w, map[string]any{"device_code": "ci-device", "user_code": "CI-ONLY", "verification_uri": base + "/activate", "verification_uri_complete": base + "/activate", "expires_in": 60, "interval": 0})
 	})
 	mux.HandleFunc("POST /oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		tokenRequests++
+		mu.Unlock()
 		respond(w, map[string]string{"access_token": "ci-access", "token_type": "Bearer"})
 	})
 	mux.HandleFunc("POST /v1/enroll", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		enrollRequests++
+		mu.Unlock()
 		if r.Header.Get("Authorization") != "Bearer ci-access" {
 			http.Error(w, "unauthorized", 401)
 			return
@@ -141,8 +153,41 @@ func main() {
 		mu.Unlock()
 		respond(w, map[string]string{"network_id": "release-ci-network", "mesh_url": mesh.PublicURL(), "bootstrap_token": mesh.JoinToken()})
 	})
+	mux.HandleFunc("POST /v1/join", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		joinRequests++
+		mu.Unlock()
+		var request struct {
+			Code        string `json:"code"`
+			PeerID      string `json:"peer_id"`
+			MachineName string `json:"machine_name"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil || request.Code != "ci-only-join-code" || request.MachineName != "qa-headless" || r.Header.Get("Authorization") != "" {
+			http.Error(w, "bad join request", 400)
+			return
+		}
+		if _, err := peer.Decode(request.PeerID); err != nil {
+			http.Error(w, "bad peer", 400)
+			return
+		}
+		mu.Lock()
+		joins = append(joins, request.PeerID)
+		mu.Unlock()
+		respond(w, map[string]string{"network_id": "release-ci-network", "mesh_url": mesh.PublicURL(), "bootstrap_token": mesh.JoinToken()})
+	})
 	mux.HandleFunc("GET /inspect", func(w http.ResponseWriter, r *http.Request) {
-		result, err := inspect(*nodeData)
+		directory := *nodeData
+		switch r.URL.Query().Get("node") {
+		case "":
+		case "headless":
+			directory = *headlessData
+		default:
+			http.Error(w, "unknown node", 400)
+			return
+		}
+		result, err := inspect(directory)
 		if err != nil {
 			http.Error(w, fmt.Sprint(err), 500)
 			return
@@ -152,7 +197,8 @@ func main() {
 	mux.HandleFunc("GET /evidence", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
-		respond(w, map[string]any{"enrollments": enrollments, "router_peer_id": mesh.PeerID()})
+		respond(w, map[string]any{"enrollments": enrollments, "joins": joins, "router_peer_id": mesh.PeerID(),
+			"device_requests": deviceRequests, "token_requests": tokenRequests, "enroll_requests": enrollRequests, "join_requests": joinRequests})
 	})
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second}
 	go func() {

@@ -20,7 +20,7 @@ import time
 import urllib.request
 
 from verify import PINS, download, native_payloads
-from lifecycle_platform import (DarwinSupervisor, LinuxSupervisor, native_target, verified_image)
+from lifecycle_platform import (DarwinSupervisor, LinuxSupervisor, native_target, verified_image, wait_replacement)
 from lifecycle_install import homebrew_installation
 
 
@@ -142,6 +142,33 @@ def running(supervisor, image, data, release, report, since_us, previous=None):
     return observation["mesh"]["peer_id"]
 
 
+def recover(supervisor, image, data, release, report, peer):
+    previous = report["observations"][-1]
+    since_us = time.time_ns() // 1000
+    supervisor.crash(previous)
+    wait_replacement(supervisor, previous)
+    if running(supervisor, image, data, release, report, since_us, previous) != peer:
+        raise ValueError("automatic crash recovery changed the enrolled peer identity")
+    report.setdefault("crash_recovery", []).append({
+        "signal": "SIGKILL", "previous_pid": previous["pid"],
+        "replacement_pid": report["observations"][-1]["pid"], "explicit_start": False})
+
+
+def status(stable, data, env, peer, mesh_url, connected):
+    output = run(stable, "status", "-data-dir", data, env=env)
+    fields = dict(line.split(":", 1) for line in output.splitlines() if ":" in line)
+    fields = {key.strip(): value.strip() for key, value in fields.items()}
+    if (fields.get("Node", "").split(" ")[0] != peer or fields.get("Network") != "release-ci-network" or
+            fields.get("Mesh") != mesh_url):
+        raise ValueError("status lost the enrolled node/network identity")
+    if connected:
+        if fields.get("Mesh connection") != "connected" or "not installed" in fields.get("Service", "not installed"):
+            raise ValueError("status did not report the live connected user service")
+    elif fields.get("Mesh connection") != "node not running" or not fields.get("Service", "").endswith("not installed"):
+        raise ValueError("status did not report the removed service and stopped node")
+    return output
+
+
 def exercise(payloads, root, report, installation):
     env = os.environ.copy()
     home = root / "home"
@@ -155,6 +182,10 @@ def exercise(payloads, root, report, installation):
     stable = installation.stable
     supervisor_type = LinuxSupervisor if report["system"] == "linux" else DarwinSupervisor
     supervisor = supervisor_type(env, home, data, stable, run)
+    headless_data = root / "headless"
+    headless_data.mkdir(mode=0o700)
+    headless = supervisor_type(env, home, headless_data, stable, run)
+    headless_report = report["headless"] = {"observations": []}
     process = None
     logs = root / "mesh.log"
     descriptor = root / "mesh-ready.json"
@@ -165,7 +196,8 @@ def exercise(payloads, root, report, installation):
         report["stage"] = "standalone mesh fixture"
         with logs.open("w") as output:
             process = subprocess.Popen([str(companion), "--data", str(root / "mesh"), "--node-data", str(data),
-                                        "--ready", str(descriptor)], stdout=output, stderr=subprocess.STDOUT, env=env)
+                                        "--headless-node-data", str(headless_data), "--ready", str(descriptor)],
+                                       stdout=output, stderr=subprocess.STDOUT, env=env)
         deadline = time.monotonic() + 60
         while not descriptor.exists():
             if process.poll() is not None or time.monotonic() >= deadline:
@@ -189,6 +221,8 @@ def exercise(payloads, root, report, installation):
         preserved = {path: path.read_bytes() for path in (settings, supervisor.path)}
         report["preserved_files"] = {path.name: hashlib.sha256(value).hexdigest() for path, value in preserved.items()}
         old_peer = running(supervisor, old_image, data, old[0], report, since_us)
+        report["stage"] = "old release automatic crash recovery"
+        recover(supervisor, old_image, data, old[0], report, old_peer)
         supervisor.stop()
         identity_before = http_json(fixture["control"] + "/inspect")
         if identity_before["peer_id"] != old_peer or identity_before["mesh_url"] != fixture["mesh_url"]:
@@ -215,6 +249,8 @@ def exercise(payloads, root, report, installation):
         supervisor.restart()
         if running(supervisor, new_image, data, new[0], report, since_us, report["observations"][-1]) != old_peer:
             raise ValueError("new release changed the enrolled peer identity")
+        report["stage"] = "new release automatic crash recovery"
+        recover(supervisor, new_image, data, new[0], report, old_peer)
         supervisor.stop()
         identity_after = http_json(fixture["control"] + "/inspect")
         report["identity_after"] = identity_after
@@ -223,11 +259,64 @@ def exercise(payloads, root, report, installation):
         for path, contents in preserved.items():
             if path.read_bytes() != contents:
                 raise ValueError(f"upgrade changed persistent settings/service: {path.name}")
+        report["stage"] = "rerun up with changed options and retained identity"
+        since_us = time.time_ns() // 1000
+        run(stable, "up", "-data-dir", data, "-clients", "none", "-hostname", "qa-updated", "-y", env=env, timeout=150)
+        if running(supervisor, new_image, data, new[0], report, since_us, report["observations"][-1]) != old_peer:
+            raise ValueError("repeat up changed the enrolled peer identity")
+        updated = json.loads(settings.read_text())
+        expected_settings = dict(json.loads(preserved[settings]), machine_name="qa-updated")
+        if updated != expected_settings:
+            raise ValueError("repeat up did not change only the requested hostname option")
+        report["rerun"] = {"changed_option": "machine_name", "value": "qa-updated",
+                           "status": status(stable, data, env, old_peer, fixture["mesh_url"], True)}
+        report["stage"] = "second native service through headless join-code up"
+        headless.prepare()
+        if headless.name == supervisor.name or headless.path == supervisor.path:
+            raise ValueError("separate data directories collided on the same user service")
+        code = root / "join-code"
+        code.write_text("ci-only-join-code\n")
+        code.chmod(0o600)
+        since_us = time.time_ns() // 1000
+        run(stable, "up", "-data-dir", headless_data, "-control", fixture["control"],
+            "-join-code-path", code, "-clients", "none", "-listen", "/ip4/127.0.0.1/tcp/0",
+            "-bind-addr", "", "-hostname", "qa-headless", "-y", env=env, timeout=150)
+        code.unlink()
+        headless_peer = running(headless, new_image, headless_data, new[0], headless_report, since_us)
+        if headless_peer == old_peer:
+            raise ValueError("second node reused the first node's peer identity")
+        headless_report["connected_status"] = status(stable, headless_data, env, headless_peer, fixture["mesh_url"], True)
+        original_process = report["observations"][-1]
+        supervisor.unchanged_process(original_process)
+        if wait_ready(data)["peer_id"] != old_peer:
+            raise ValueError("second node setup disrupted the first node")
+        report["stage"] = "headless down retains identity and up resumes without a code"
+        headless_settings = (headless_data / "agentiscaled.json").read_bytes()
+        run(stable, "down", "-data-dir", headless_data, env=env)
+        headless.removed(headless_report["observations"][-1])
+        headless_identity = http_json(fixture["control"] + "/inspect?node=headless")
+        if headless_identity["peer_id"] != headless_peer or headless_identity["mesh_url"] != fixture["mesh_url"]:
+            raise ValueError("down changed headless node enrollment")
+        headless_report["stopped_status"] = status(stable, headless_data, env, headless_peer, fixture["mesh_url"], False)
+        since_us = time.time_ns() // 1000
+        run(stable, "up", "-data-dir", headless_data, "-clients", "none", "-y", env=env, timeout=150)
+        if running(headless, new_image, headless_data, new[0], headless_report, since_us, headless_report["observations"][-1]) != headless_peer:
+            raise ValueError("headless up after down changed peer identity")
+        run(stable, "down", "-data-dir", headless_data, env=env)
+        headless.removed(headless_report["observations"][-1])
+        if (http_json(fixture["control"] + "/inspect?node=headless") != headless_identity or
+                (headless_data / "agentiscaled.json").read_bytes() != headless_settings):
+            raise ValueError("headless down/up changed persisted credentials or options")
+        headless_report.update(identity=headless_identity, service=headless.name,
+                               down_removed_service=True, resumed_without_join_code=True)
+        supervisor.unchanged_process(original_process)
         evidence = http_json(fixture["control"] + "/evidence")
         report["mesh_evidence"] = evidence
-        if evidence["enrollments"] != [old_peer]:
-            raise ValueError("restart/upgrade unexpectedly enrolled a fresh node")
-        if any(evidence["router_peer_id"] not in item["mesh"]["attached_routers"] for item in report["observations"]):
+        if (evidence["enrollments"] != [old_peer] or evidence["joins"] != [headless_peer] or
+                any(evidence[key] != 1 for key in ("device_requests", "token_requests", "enroll_requests", "join_requests"))):
+            raise ValueError("restart/upgrade/repeat up unexpectedly logged in, enrolled or redeemed a code again")
+        if any(evidence["router_peer_id"] not in item["mesh"]["attached_routers"]
+               for item in report["observations"] + headless_report["observations"]):
             raise ValueError("node was not attached to the real fixture router on every start")
         report["service_unit"] = supervisor.name
         report["service"] = {"kind": supervisor.kind, "name": supervisor.name, "generated_file": str(supervisor.path)}
@@ -235,7 +324,7 @@ def exercise(payloads, root, report, installation):
     finally:
         # Always stop the actual service before deleting its private database.
         # Cleanup errors fail the run: a claimed success cannot leave a node up.
-        cleanup_errors = supervisor.cleanup()
+        cleanup_errors = headless.cleanup() + supervisor.cleanup()
         if process is not None:
             process.terminate()
             try:
@@ -246,6 +335,9 @@ def exercise(payloads, root, report, installation):
         node_log = data / "agentiscaled.log"
         if node_log.exists():
             report["node_log_tail"] = node_log.read_text(errors="replace")[-16000:]
+        headless_log = headless_data / "agentiscaled.log"
+        if headless_log.exists():
+            headless_report["node_log_tail"] = headless_log.read_text(errors="replace")[-16000:]
         if logs.exists():
             report["fixture_log_tail"] = logs.read_text(errors="replace")[-16000:]
         report["cleanup"] = "passed" if not cleanup_errors else cleanup_errors
