@@ -30,7 +30,7 @@ def native_target(system, machine, apple_arm64=False):
     return targets[(system, machine)]
 
 
-def parse_launchctl(output):
+def parse_launchctl(output, require_running=True):
     # launchctl print contains nested dictionaries with their own state/PIDs.
     # Only direct fields in the service dictionary describe the service.
     depth, values, saw_root = 0, {}, False
@@ -47,11 +47,14 @@ def parse_launchctl(output):
         if depth < 0:
             raise ValueError("malformed launchctl service dictionary")
         saw_root = saw_root or depth > 0
-    if not saw_root or depth != 0 or values.get("state") != "running" or not re.fullmatch(r"[0-9]+", values.get("pid", "")):
+    if not saw_root or depth != 0:
+        raise ValueError("malformed launchctl service dictionary")
+    if require_running and (values.get("state") != "running" or "pid" not in values):
         raise ValueError("launchd did not report a running service PID")
-    values["pid"] = int(values["pid"])
-    if values["pid"] <= 1:
-        raise ValueError("launchd reported an invalid service PID")
+    if "pid" in values:
+        if not re.fullmatch(r"[0-9]+", values["pid"]) or int(values["pid"]) <= 1:
+            raise ValueError("launchd reported an invalid service PID")
+        values["pid"] = int(values["pid"])
     return values
 
 
@@ -124,6 +127,23 @@ def verified_image(path, expected_digest):
             "ctime_ns": before.st_ctime_ns, "sha256": actual}
 
 
+def wait_replacement(supervisor, previous, timeout=90):
+    """Do not accept an old ready socket while the supervisor processes a kill."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            current = supervisor.identity()
+            if current["pid"] != previous["pid"] and current["start"] != previous["start"]:
+                return current
+        except (ValueError, FileNotFoundError, ProcessLookupError):
+            # A loaded service may be waiting to restart, or its old process
+            # may disappear between the supervisor query and kernel lookup.
+            pass
+        if time.monotonic() >= deadline:
+            raise RuntimeError("supervisor did not produce a fresh process within the recovery deadline")
+        time.sleep(0.2)
+
+
 class LinuxSupervisor:
     kind = "systemd user service"
 
@@ -141,7 +161,7 @@ class LinuxSupervisor:
         if not self.env.get("XDG_RUNTIME_DIR") or not Path(self.env["XDG_RUNTIME_DIR"]).is_dir():
             raise RuntimeError("real systemd user runtime is unavailable; CI must enable linger and the user bus")
         self.ctl("show", "--property=Version", "--value")
-        self.path.parent.mkdir(parents=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         # Only a discovery link for the existing user manager; `up` overwrites
         # the bootstrap with its actual generated unit before it can run.
         self.path.write_text("[Service]\nExecStart=/usr/bin/false\n[Install]\nWantedBy=default.target\n")
@@ -204,11 +224,35 @@ class LinuxSupervisor:
     def restart(self):
         self.ctl("restart", self.name)
 
+    def crash(self, previous):
+        self.unchanged_process(previous)
+        # Target this isolated unit, never a potentially reused raw PID.
+        self.ctl("kill", "--signal=SIGKILL", self.name)
+
+    def removed(self, previous):
+        if self.path.exists() or self.path.is_symlink():
+            raise ValueError("down left the generated systemd unit installed")
+        self.stopped()
+
+    def stopped(self):
+        values = self.ctl("show", self.name, "--property=MainPID,ActiveState")
+        if set(values.splitlines()) != {"MainPID=0", "ActiveState=inactive"}:
+            raise ValueError("isolated systemd service remains running")
+
     def cleanup(self):
         errors = []
         if not self.linked:
             return errors
-        for arguments in (("stop", self.name), ("disable", self.name), ("disable", "--runtime", self.name)):
+        try:
+            # A faulty down may remove the file while leaving its loaded unit
+            # alive. Always stop by its isolated name, then verify inactivity.
+            # An already unloaded unit can refuse stop; absence is checked below.
+            self.ctl("stop", self.name, check=False)
+            self.stopped()
+        except Exception as exc:
+            errors.append(str(exc))
+        commands = (("disable", self.name), ("disable", "--runtime", self.name)) if self.path.exists() else ()
+        for arguments in commands:
             try:
                 self.ctl(*arguments)
             except Exception as exc:
@@ -356,20 +400,40 @@ class DarwinSupervisor:
         self.stop()
         self.start()
 
+    def crash(self, previous):
+        self.unchanged_process(previous)
+        self.ctl("kill", "SIGKILL", self.target)
+
+    def removed(self, previous):
+        self.wait_stopped(previous)
+        if self.path.exists() or self.path.is_symlink() or self.ctl("print", self.target, check=False):
+            raise ValueError("down left the isolated launchd agent installed or loaded")
+
     def cleanup(self):
         errors = []
-        if not self.prepared or not self.path.exists():
+        if not self.prepared:
             return errors
         # print distinguishes an already stopped service from a failed bootout.
         try:
             loaded = self.run("/bin/launchctl", "print", self.target, env=self.env, check=False)
+            current = self.last_process
             if loaded:
-                self.ctl("bootout", self.target)
-            self.wait_stopped(self.last_process)
+                try:
+                    values = parse_launchctl(loaded, require_running=False)
+                    # Read the current kernel identity even if readiness was
+                    # never reached, or automatic recovery replaced the PID.
+                    # The old upgraded executable may already have been removed.
+                    current = darwin_process(values["pid"], with_path=False) if "pid" in values else None
+                except ProcessLookupError:
+                    current = None
+                finally:
+                    # A malformed/inaccessible process must not skip bootout.
+                    self.ctl("bootout", self.target)
+            self.wait_stopped(current)
             remaining = self.run("/bin/launchctl", "print", self.target, env=self.env, check=False)
             if remaining:
                 raise RuntimeError("launchd agent remains loaded after cleanup")
-            self.path.unlink()
+            self.path.unlink(missing_ok=True)
         except Exception as exc:
             errors.append(str(exc))
         return errors

@@ -3,14 +3,108 @@ import copy
 import ctypes
 import errno
 from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
+import lifecycle_platform
+import lifecycle
 from lifecycle_platform import (DarwinSupervisor, ProcBSDInfo, darwin_process, native_target, parse_launchctl, parse_linux_start,
                                 parse_lsof, validate_fresh_process, validate_mapping)
 
 
 class ProcessEvidenceTests(unittest.TestCase):
+    def test_cleanup_waits_for_current_launchd_process_without_prior_readiness(self):
+        current = {"pid": 4123, "start": [1700000000, 200]}
+        for previous in (None, {"pid": 4111, "start": [1700000000, 100]}):
+            with self.subTest(previous=previous), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                loaded = True
+
+                def command(*args, **kwargs):
+                    nonlocal loaded
+                    if args[1] == "bootout":
+                        loaded = False
+                    if args[1] == "print" and loaded:
+                        return "gui/501/ci-node = {\n    state = running\n    pid = 4123\n}\n"
+                    return ""
+
+                def require_current(identity):
+                    if identity != current:
+                        raise RuntimeError("cleanup did not wait for the current kernel process")
+
+                supervisor = DarwinSupervisor({}, root / "home", root / "node", root / "bin/node", command)
+                supervisor.path.parent.mkdir(parents=True)
+                supervisor.path.touch()
+                supervisor.prepared = True
+                supervisor.last_process = previous
+                with mock.patch("lifecycle_platform.darwin_process", return_value=current), mock.patch.object(
+                        supervisor, "wait_stopped", side_effect=require_current):
+                    self.assertEqual(supervisor.cleanup(), [])
+
+    def test_cleanup_stops_a_linux_service_even_if_down_deleted_its_unit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            active = True
+
+            def command(*args, **kwargs):
+                nonlocal active
+                if "stop" in args:
+                    active = False
+                if "show" in args:
+                    return "MainPID=4123\nActiveState=active" if active else "MainPID=0\nActiveState=inactive"
+                return ""
+
+            supervisor = lifecycle_platform.LinuxSupervisor({"XDG_RUNTIME_DIR": str(root)}, root / "home",
+                                                           root / "node", root / "bin/node", command)
+            supervisor.linked = True
+            self.assertEqual(supervisor.cleanup(), [])
+
+    def test_live_status_rejects_inactive_missing_or_wrong_service(self):
+        root = Path("/tmp/onboarding-status")
+        for cls, label, running in ((lifecycle_platform.LinuxSupervisor, "systemd user unit", "active"),
+                                    (DarwinSupervisor, "launchd agent", "running")):
+            supervisor = cls({}, root / "home", root / "node", root / "bin/node", None)
+            header = "Node: peer-one (qa)\nNetwork: release-ci-network\nMesh: http://127.0.0.1:1234\n"
+            good = f"{label} {supervisor.name}, installed, {running}"
+            for service in (good, "", "installed, inactive", f"{label} {supervisor.name}, installed, not loaded",
+                            f"{label} other-node, installed, {running}"):
+                output = header + f"Service: {service}\nMesh connection: connected\n"
+                with self.subTest(platform=cls.kind, service=service), mock.patch("lifecycle.run", return_value=output):
+                    if service == good:
+                        self.assertEqual(lifecycle.status(root / "bin/node", root / "node", {}, "peer-one",
+                                                        "http://127.0.0.1:1234", True, supervisor), output)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "live connected user service"):
+                            lifecycle.status(root / "bin/node", root / "node", {}, "peer-one",
+                                             "http://127.0.0.1:1234", True, supervisor)
+
+    def test_recovery_wait_ignores_old_process_and_transient_inactive_service(self):
+        previous = {"pid": 4123, "start": 100}
+        replacement = {"pid": 4124, "start": 200}
+        supervisor = mock.Mock()
+        supervisor.identity.side_effect = [previous, ValueError("service is restarting"), replacement]
+        with mock.patch("lifecycle_platform.time.sleep"):
+            observed = lifecycle_platform.wait_replacement(supervisor, previous, timeout=90)
+        self.assertEqual(observed, {"pid": 4124, "start": 200})
+
+    def test_recovery_wait_fails_when_process_never_changes(self):
+        previous = {"pid": 4123, "start": 100}
+        for current in (previous, {"pid": 4123, "start": 200}, {"pid": 4124, "start": 100}):
+            with self.subTest(current=current):
+                supervisor = mock.Mock()
+                supervisor.identity.return_value = current
+                with mock.patch("lifecycle_platform.time.monotonic", side_effect=[0, 0, 91]), mock.patch(
+                        "lifecycle_platform.time.sleep"):
+                    with self.assertRaisesRegex(RuntimeError, "fresh process"):
+                        lifecycle_platform.wait_replacement(supervisor, previous, timeout=90)
+
+    def test_recovery_wait_does_not_hide_unreadable_process_evidence(self):
+        supervisor = mock.Mock()
+        supervisor.identity.side_effect = PermissionError("cannot inspect process")
+        with self.assertRaises(PermissionError):
+            lifecycle_platform.wait_replacement(supervisor, {"pid": 4123, "start": 100})
+
     def test_native_platform_matrix_rejects_unsupported_or_translated_hosts(self):
         for system, machine, expected in (("Linux", "x86_64", ("linux", "amd64")),
                                            ("Linux", "aarch64", ("linux", "arm64")),
@@ -34,6 +128,8 @@ class ProcessEvidenceTests(unittest.TestCase):
 }
 """
         self.assertEqual(parse_launchctl(output)["pid"], 4123)
+        waiting = output.replace("state = running", "state = waiting").replace("    pid = 4123\n", "")
+        self.assertNotIn("pid", parse_launchctl(waiting, require_running=False))
         for invalid in (output.replace("state = running", "state = waiting"),
                         output.replace("pid = 4123", "pid = 0"),
                         output.replace("pid = 4123", "pid = 4123\n    pid = 4124"),

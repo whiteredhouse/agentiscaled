@@ -55,7 +55,7 @@ def phase(script, arguments, directory, report, env):
     details = json.loads(report.read_text())
     summary = {key: details[key] for key in (
         "assets", "homebrew", "packages", "observations", "upgrade_method", "mesh_evidence",
-        "preservation", "cleanup", "homebrew_cleanup") if key in details}
+        "preservation", "crash_recovery", "rerun", "headless", "cleanup", "homebrew_cleanup") if key in details}
     print(f"{script} completed; report={report.relative_to(ROOT)}")
     print(json.dumps(summary, sort_keys=True)[:24000])
 
