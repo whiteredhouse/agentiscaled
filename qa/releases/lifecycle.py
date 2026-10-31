@@ -154,17 +154,21 @@ def recover(supervisor, image, data, release, report, peer):
         "replacement_pid": report["observations"][-1]["pid"], "explicit_start": False})
 
 
-def status(stable, data, env, peer, mesh_url, connected):
+def status(stable, data, env, peer, mesh_url, connected, supervisor):
     output = run(stable, "status", "-data-dir", data, env=env)
     fields = dict(line.split(":", 1) for line in output.splitlines() if ":" in line)
     fields = {key.strip(): value.strip() for key, value in fields.items()}
     if (fields.get("Node", "").split(" ")[0] != peer or fields.get("Network") != "release-ci-network" or
             fields.get("Mesh") != mesh_url):
         raise ValueError("status lost the enrolled node/network identity")
+    linux = isinstance(supervisor, LinuxSupervisor)
+    label = "systemd user unit" if linux else "launchd agent"
+    state = ("installed, active" if linux else "installed, running") if connected else "not installed"
+    expected_service = f"{label} {supervisor.name}, {state}"
     if connected:
-        if fields.get("Mesh connection") != "connected" or "not installed" in fields.get("Service", "not installed"):
+        if fields.get("Mesh connection") != "connected" or fields.get("Service") != expected_service:
             raise ValueError("status did not report the live connected user service")
-    elif fields.get("Mesh connection") != "node not running" or not fields.get("Service", "").endswith("not installed"):
+    elif fields.get("Mesh connection") != "node not running" or fields.get("Service") != expected_service:
         raise ValueError("status did not report the removed service and stopped node")
     return output
 
@@ -204,6 +208,7 @@ def exercise(payloads, root, report, installation):
                 raise RuntimeError("standalone mesh fixture failed to start within 60 seconds")
             time.sleep(0.2)
         fixture = json.loads(descriptor.read_text())
+        auth_flags = ("-auth-issuer", fixture["control"] + "/", "-auth-client-id", "ci-client", "-auth-audience", "ci-control")
         old, new = payloads
         if digest(stable) != old[2]:
             raise ValueError("old stable binary differs from verified release")
@@ -214,8 +219,7 @@ def exercise(payloads, root, report, installation):
         report["stage"] = "old release enrollment and actual service"
         old_image = verified_image(stable, old[2])
         since_us = time.time_ns() // 1000
-        run(stable, "up", "-data-dir", data, "-auth-issuer", fixture["control"] + "/",
-            "-auth-client-id", "ci-client", "-auth-audience", "ci-control", "-control", fixture["control"],
+        run(stable, "up", "-data-dir", data, *auth_flags, "-control", fixture["control"],
             "-clients", "none", "-listen", "/ip4/127.0.0.1/tcp/0", "-bind-addr", "", "-hostname", "qa", "-y", env=env, timeout=150)
         settings = data / "agentiscaled.json"
         preserved = {path: path.read_bytes() for path in (settings, supervisor.path)}
@@ -261,7 +265,11 @@ def exercise(payloads, root, report, installation):
                 raise ValueError(f"upgrade changed persistent settings/service: {path.name}")
         report["stage"] = "rerun up with changed options and retained identity"
         since_us = time.time_ns() // 1000
-        run(stable, "up", "-data-dir", data, "-clients", "none", "-hostname", "qa-updated", "-y", env=env, timeout=150)
+        supervisor.start()
+        if running(supervisor, new_image, data, new[0], report, since_us, report["observations"][-1]) != old_peer:
+            raise ValueError("node identity changed before repeating up on its running service")
+        since_us = time.time_ns() // 1000
+        run(stable, "up", "-data-dir", data, *auth_flags, "-clients", "none", "-hostname", "qa-updated", "-y", env=env, timeout=150)
         if running(supervisor, new_image, data, new[0], report, since_us, report["observations"][-1]) != old_peer:
             raise ValueError("repeat up changed the enrolled peer identity")
         updated = json.loads(settings.read_text())
@@ -269,7 +277,7 @@ def exercise(payloads, root, report, installation):
         if updated != expected_settings:
             raise ValueError("repeat up did not change only the requested hostname option")
         report["rerun"] = {"changed_option": "machine_name", "value": "qa-updated",
-                           "status": status(stable, data, env, old_peer, fixture["mesh_url"], True)}
+                           "status": status(stable, data, env, old_peer, fixture["mesh_url"], True, supervisor)}
         report["stage"] = "second native service through headless join-code up"
         headless.prepare()
         if headless.name == supervisor.name or headless.path == supervisor.path:
@@ -278,14 +286,14 @@ def exercise(payloads, root, report, installation):
         code.write_text("ci-only-join-code\n")
         code.chmod(0o600)
         since_us = time.time_ns() // 1000
-        run(stable, "up", "-data-dir", headless_data, "-control", fixture["control"],
+        run(stable, "up", "-data-dir", headless_data, *auth_flags, "-control", fixture["control"],
             "-join-code-path", code, "-clients", "none", "-listen", "/ip4/127.0.0.1/tcp/0",
             "-bind-addr", "", "-hostname", "qa-headless", "-y", env=env, timeout=150)
         code.unlink()
         headless_peer = running(headless, new_image, headless_data, new[0], headless_report, since_us)
         if headless_peer == old_peer:
             raise ValueError("second node reused the first node's peer identity")
-        headless_report["connected_status"] = status(stable, headless_data, env, headless_peer, fixture["mesh_url"], True)
+        headless_report["connected_status"] = status(stable, headless_data, env, headless_peer, fixture["mesh_url"], True, headless)
         original_process = report["observations"][-1]
         supervisor.unchanged_process(original_process)
         if wait_ready(data)["peer_id"] != old_peer:
@@ -297,9 +305,9 @@ def exercise(payloads, root, report, installation):
         headless_identity = http_json(fixture["control"] + "/inspect?node=headless")
         if headless_identity["peer_id"] != headless_peer or headless_identity["mesh_url"] != fixture["mesh_url"]:
             raise ValueError("down changed headless node enrollment")
-        headless_report["stopped_status"] = status(stable, headless_data, env, headless_peer, fixture["mesh_url"], False)
+        headless_report["stopped_status"] = status(stable, headless_data, env, headless_peer, fixture["mesh_url"], False, headless)
         since_us = time.time_ns() // 1000
-        run(stable, "up", "-data-dir", headless_data, "-clients", "none", "-y", env=env, timeout=150)
+        run(stable, "up", "-data-dir", headless_data, *auth_flags, "-clients", "none", "-y", env=env, timeout=150)
         if running(headless, new_image, headless_data, new[0], headless_report, since_us, headless_report["observations"][-1]) != headless_peer:
             raise ValueError("headless up after down changed peer identity")
         run(stable, "down", "-data-dir", headless_data, env=env)

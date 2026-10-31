@@ -14,6 +14,34 @@ from lifecycle_platform import (DarwinSupervisor, ProcBSDInfo, darwin_process, n
 
 
 class ProcessEvidenceTests(unittest.TestCase):
+    def test_cleanup_waits_for_current_launchd_process_without_prior_readiness(self):
+        current = {"pid": 4123, "start": [1700000000, 200]}
+        for previous in (None, {"pid": 4111, "start": [1700000000, 100]}):
+            with self.subTest(previous=previous), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                loaded = True
+
+                def command(*args, **kwargs):
+                    nonlocal loaded
+                    if args[1] == "bootout":
+                        loaded = False
+                    if args[1] == "print" and loaded:
+                        return "gui/501/ci-node = {\n    state = running\n    pid = 4123\n}\n"
+                    return ""
+
+                def require_current(identity):
+                    if identity != current:
+                        raise RuntimeError("cleanup did not wait for the current kernel process")
+
+                supervisor = DarwinSupervisor({}, root / "home", root / "node", root / "bin/node", command)
+                supervisor.path.parent.mkdir(parents=True)
+                supervisor.path.touch()
+                supervisor.prepared = True
+                supervisor.last_process = previous
+                with mock.patch("lifecycle_platform.darwin_process", return_value=current), mock.patch.object(
+                        supervisor, "wait_stopped", side_effect=require_current):
+                    self.assertEqual(supervisor.cleanup(), [])
+
     def test_cleanup_stops_a_linux_service_even_if_down_deleted_its_unit(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -45,11 +73,11 @@ class ProcessEvidenceTests(unittest.TestCase):
                 with self.subTest(platform=cls.kind, service=service), mock.patch("lifecycle.run", return_value=output):
                     if service == good:
                         self.assertEqual(lifecycle.status(root / "bin/node", root / "node", {}, "peer-one",
-                                                        "http://127.0.0.1:1234", True), output)
+                                                        "http://127.0.0.1:1234", True, supervisor), output)
                     else:
                         with self.assertRaisesRegex(ValueError, "live connected user service"):
                             lifecycle.status(root / "bin/node", root / "node", {}, "peer-one",
-                                             "http://127.0.0.1:1234", True)
+                                             "http://127.0.0.1:1234", True, supervisor)
 
     def test_recovery_wait_ignores_old_process_and_transient_inactive_service(self):
         previous = {"pid": 4123, "start": 100}
