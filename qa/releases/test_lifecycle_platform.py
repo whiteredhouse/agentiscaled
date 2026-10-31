@@ -6,11 +6,38 @@ from pathlib import Path
 import unittest
 from unittest import mock
 
+import lifecycle_platform
 from lifecycle_platform import (DarwinSupervisor, ProcBSDInfo, darwin_process, native_target, parse_launchctl, parse_linux_start,
                                 parse_lsof, validate_fresh_process, validate_mapping)
 
 
 class ProcessEvidenceTests(unittest.TestCase):
+    def test_recovery_wait_ignores_old_process_and_transient_inactive_service(self):
+        previous = {"pid": 4123, "start": 100}
+        replacement = {"pid": 4124, "start": 200}
+        supervisor = mock.Mock()
+        supervisor.identity.side_effect = [previous, ValueError("service is restarting"), replacement]
+        with mock.patch("lifecycle_platform.time.sleep"):
+            observed = lifecycle_platform.wait_replacement(supervisor, previous, timeout=90)
+        self.assertEqual(observed, {"pid": 4124, "start": 200})
+
+    def test_recovery_wait_fails_when_process_never_changes(self):
+        previous = {"pid": 4123, "start": 100}
+        for current in (previous, {"pid": 4123, "start": 200}, {"pid": 4124, "start": 100}):
+            with self.subTest(current=current):
+                supervisor = mock.Mock()
+                supervisor.identity.return_value = current
+                with mock.patch("lifecycle_platform.time.monotonic", side_effect=[0, 0, 91]), mock.patch(
+                        "lifecycle_platform.time.sleep"):
+                    with self.assertRaisesRegex(RuntimeError, "fresh process"):
+                        lifecycle_platform.wait_replacement(supervisor, previous, timeout=90)
+
+    def test_recovery_wait_does_not_hide_unreadable_process_evidence(self):
+        supervisor = mock.Mock()
+        supervisor.identity.side_effect = PermissionError("cannot inspect process")
+        with self.assertRaises(PermissionError):
+            lifecycle_platform.wait_replacement(supervisor, {"pid": 4123, "start": 100})
+
     def test_native_platform_matrix_rejects_unsupported_or_translated_hosts(self):
         for system, machine, expected in (("Linux", "x86_64", ("linux", "amd64")),
                                            ("Linux", "aarch64", ("linux", "arm64")),
