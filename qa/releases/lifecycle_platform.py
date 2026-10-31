@@ -229,20 +229,26 @@ class LinuxSupervisor:
     def removed(self, previous):
         if self.path.exists() or self.path.is_symlink():
             raise ValueError("down left the generated systemd unit installed")
+        self.stopped()
+
+    def stopped(self):
         values = self.ctl("show", self.name, "--property=MainPID,ActiveState")
         if set(values.splitlines()) != {"MainPID=0", "ActiveState=inactive"}:
-            raise ValueError("down left the isolated systemd service running")
+            raise ValueError("isolated systemd service remains running")
 
     def cleanup(self):
         errors = []
         if not self.linked:
             return errors
-        if not self.path.exists():
-            try:
-                self.removed(None)
-            except Exception as exc:
-                errors.append(str(exc))
-        commands = (("stop", self.name), ("disable", self.name), ("disable", "--runtime", self.name)) if self.path.exists() else ()
+        try:
+            # A faulty down may remove the file while leaving its loaded unit
+            # alive. Always stop by its isolated name, then verify inactivity.
+            # An already unloaded unit can refuse stop; absence is checked below.
+            self.ctl("stop", self.name, check=False)
+            self.stopped()
+        except Exception as exc:
+            errors.append(str(exc))
+        commands = (("disable", self.name), ("disable", "--runtime", self.name)) if self.path.exists() else ()
         for arguments in commands:
             try:
                 self.ctl(*arguments)
