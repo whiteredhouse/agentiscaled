@@ -128,6 +128,8 @@ class ProcessEvidenceTests(unittest.TestCase):
 }
 """
         self.assertEqual(parse_launchctl(output)["pid"], 4123)
+        waiting = output.replace("state = running", "state = waiting").replace("    pid = 4123\n", "")
+        self.assertNotIn("pid", parse_launchctl(waiting, require_running=False))
         for invalid in (output.replace("state = running", "state = waiting"),
                         output.replace("pid = 4123", "pid = 0"),
                         output.replace("pid = 4123", "pid = 4123\n    pid = 4124"),

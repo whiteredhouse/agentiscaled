@@ -30,7 +30,7 @@ def native_target(system, machine, apple_arm64=False):
     return targets[(system, machine)]
 
 
-def parse_launchctl(output):
+def parse_launchctl(output, require_running=True):
     # launchctl print contains nested dictionaries with their own state/PIDs.
     # Only direct fields in the service dictionary describe the service.
     depth, values, saw_root = 0, {}, False
@@ -47,11 +47,14 @@ def parse_launchctl(output):
         if depth < 0:
             raise ValueError("malformed launchctl service dictionary")
         saw_root = saw_root or depth > 0
-    if not saw_root or depth != 0 or values.get("state") != "running" or not re.fullmatch(r"[0-9]+", values.get("pid", "")):
+    if not saw_root or depth != 0:
+        raise ValueError("malformed launchctl service dictionary")
+    if require_running and (values.get("state") != "running" or "pid" not in values):
         raise ValueError("launchd did not report a running service PID")
-    values["pid"] = int(values["pid"])
-    if values["pid"] <= 1:
-        raise ValueError("launchd reported an invalid service PID")
+    if "pid" in values:
+        if not re.fullmatch(r"[0-9]+", values["pid"]) or int(values["pid"]) <= 1:
+            raise ValueError("launchd reported an invalid service PID")
+        values["pid"] = int(values["pid"])
     return values
 
 
@@ -413,9 +416,20 @@ class DarwinSupervisor:
         # print distinguishes an already stopped service from a failed bootout.
         try:
             loaded = self.run("/bin/launchctl", "print", self.target, env=self.env, check=False)
+            current = self.last_process
             if loaded:
-                self.ctl("bootout", self.target)
-            self.wait_stopped(self.last_process)
+                try:
+                    values = parse_launchctl(loaded, require_running=False)
+                    # Read the current kernel identity even if readiness was
+                    # never reached, or automatic recovery replaced the PID.
+                    # The old upgraded executable may already have been removed.
+                    current = darwin_process(values["pid"], with_path=False) if "pid" in values else None
+                except ProcessLookupError:
+                    current = None
+                finally:
+                    # A malformed/inaccessible process must not skip bootout.
+                    self.ctl("bootout", self.target)
+            self.wait_stopped(current)
             remaining = self.run("/bin/launchctl", "print", self.target, env=self.env, check=False)
             if remaining:
                 raise RuntimeError("launchd agent remains loaded after cleanup")
