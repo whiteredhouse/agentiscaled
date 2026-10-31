@@ -1,0 +1,32 @@
+{
+  "repository": "whiteredhouse/agentiscaled",
+  "tap_repository": "whiteredhouse/homebrew-tap",
+  "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  "notice_sha256": "56665b5835a3d6bf037c738a8a41497bd13725ff764ddbf5c800b61250304ef2",
+  "environment": {
+    "homebrew": {
+      "version": "7.0.11",
+      "commit": "c6069d2a943b71b0a90d91fc1ac93cb9c1634dcc",
+      "installer_commit": "9a3ae62bfbde3396b41d6476a70ecd343e6506de",
+      "installer_sha256": "5f333bbe53bc490e51e7ccb1df8779b3dd6ee73a1a7379efda216edb08ccb148"
+    },
+    "package_images": {
+      "deb": "ubuntu:24.04@sha256:24737cef17f4e22b1977df7d9a05e77c4e28b7da5b8911f8d8ccda136bf3573c",
+      "rpm": "fedora:43@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42"
+    }
+  },
+  "releases": [
+    {
+      "version": "0.1.10",
+      "commit": "c41a62a120be89fef6417fc67779e759cf672ec2",
+      "manifest_sha256": "12f738776971d674a33e029a92d476c411ee57b20d0da2371f585c2d27cfd7f9",
+      "tap_commit": "b16bcf48f4e4250b5c2e472b61df8f4b735ad30b"
+    },
+    {
+      "version": "0.1.11",
+      "commit": "7465e48c4dc7d1273b70ce30bf7d87d1e8a70ffc",
+      "manifest_sha256": "8e2b2ec578dde3daa79897d65046bc6a7c59580b1ee5dd43148d11d0b57e6161",
+      "tap_commit": "42a20b9884eb594f86fa1113c0fff5283dac6b02"
+    }
+  ]
+}

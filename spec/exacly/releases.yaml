@@ -1,0 +1,130 @@
+exacly: "0.2.0"
+model:
+  namespace: agentiscaled-release
+  product: agentiscaled release acceptance
+  owner: whiteredhouse
+  scope:
+    covers: Native installation and enrolled service upgrades of published releases
+    excludes: [Production account authentication, OS login and reboot recovery, Apple signing and notarization]
+  environment: native-ci
+  review_interval_days: 90
+records:
+  - id: RELEASE-INSTALLABILITY
+    type: Outcome
+    name: Published nodes install and upgrade on supported platforms
+    description: Users consume prebuilt releases while retaining their enrolled node.
+    owner: whiteredhouse
+    lifecycle: proposed
+    evidence: []
+    last_reviewed_at: '2026-10-30'
+    beneficiary: Node owners
+    success_criterion: All supported native targets pass their installation and upgrade gate.
+    evaluation_period: Each observed implementation revision
+  - id: NODE
+    type: Application
+    name: agentiscaled node
+    description: Published node executables under native acceptance.
+    owner: whiteredhouse
+    lifecycle: active
+    evidence: []
+    last_reviewed_at: '2026-10-30'
+    responsibility: Retain enrolled identity and run the new executable after upgrade.
+    interfaces: [CLI, Homebrew, systemd, launchd]
+    implementation_ref: {locator: cmd/agentiscaled}
+  - id: DIST-DARWIN-ARM64
+    type: Requirement
+    name: Published release acceptance on darwin/arm64
+    description: Native published-byte, installation and enrolled-service acceptance.
+    owner: whiteredhouse
+    lifecycle: active
+    evidence: []
+    last_reviewed_at: '2026-10-30'
+    statement: Published releases install and upgrade the enrolled node on darwin/arm64.
+    acceptance_criteria:
+      - Anonymous downloads match checksum manifests and exact source/tag/workflow provenance; archives and installed packages contain source notices.
+      - Published and installed executables identify the expected version, source commit and native target; Linux packages install without Go.
+      - Real Homebrew upgrade retains the running enrolled service, key, credential, peer identity and configuration; restart loads the verified new executable.
+      - Every planned adjacent stable pair, including the reviewed baseline, passes without skipped required checks; service and package cleanup succeeds.
+    verification_method: Actual published executables, package managers and native service managers on disposable CI.
+    observe:
+      tests:
+        workflow: .github/workflows/release-darwin-arm64.yml
+        job: observe
+        cases:
+          - "qa/releases/test_native_acceptance.py::test_native_release_acceptance[[]0.1.10-to-0.1.11]"
+          - "qa/releases/test_native_acceptance.py::test_native_release_acceptance*"
+  - id: DIST-DARWIN-AMD64
+    type: Requirement
+    name: Published release acceptance on darwin/amd64
+    description: Native published-byte, installation and enrolled-service acceptance.
+    owner: whiteredhouse
+    lifecycle: active
+    evidence: []
+    last_reviewed_at: '2026-10-30'
+    statement: Published releases install and upgrade the enrolled node on darwin/amd64.
+    acceptance_criteria:
+      - Anonymous downloads match checksum manifests and exact source/tag/workflow provenance; archives and installed packages contain source notices.
+      - Published and installed executables identify the expected version, source commit and native target; Linux packages install without Go.
+      - Real Homebrew upgrade retains the running enrolled service, key, credential, peer identity and configuration; restart loads the verified new executable.
+      - Every planned adjacent stable pair, including the reviewed baseline, passes without skipped required checks; service and package cleanup succeeds.
+    verification_method: Actual published executables, package managers and native service managers on disposable CI.
+    observe:
+      tests:
+        workflow: .github/workflows/release-darwin-amd64.yml
+        job: observe
+        cases:
+          - "qa/releases/test_native_acceptance.py::test_native_release_acceptance[[]0.1.10-to-0.1.11]"
+          - "qa/releases/test_native_acceptance.py::test_native_release_acceptance*"
+  - id: DIST-LINUX-ARM64
+    type: Requirement
+    name: Published release acceptance on linux/arm64
+    description: Native published-byte, installation and enrolled-service acceptance.
+    owner: whiteredhouse
+    lifecycle: active
+    evidence: []
+    last_reviewed_at: '2026-10-30'
+    statement: Published releases install and upgrade the enrolled node on linux/arm64.
+    acceptance_criteria:
+      - Anonymous downloads match checksum manifests and exact source/tag/workflow provenance; archives and installed packages contain source notices.
+      - Published and installed executables identify the expected version, source commit and native target; Linux packages install without Go.
+      - Real Homebrew upgrade retains the running enrolled service, key, credential, peer identity and configuration; restart loads the verified new executable.
+      - Every planned adjacent stable pair, including the reviewed baseline, passes without skipped required checks; service and package cleanup succeeds.
+    verification_method: Actual published executables, package managers and native service managers on disposable CI.
+    observe:
+      tests:
+        workflow: .github/workflows/release-linux-arm64.yml
+        job: observe
+        cases:
+          - "qa/releases/test_native_acceptance.py::test_native_release_acceptance[[]0.1.10-to-0.1.11]"
+          - "qa/releases/test_native_acceptance.py::test_native_release_acceptance*"
+  - id: DIST-LINUX-AMD64
+    type: Requirement
+    name: Published release acceptance on linux/amd64
+    description: Native published-byte, installation and enrolled-service acceptance.
+    owner: whiteredhouse
+    lifecycle: active
+    evidence: []
+    last_reviewed_at: '2026-10-30'
+    statement: Published releases install and upgrade the enrolled node on linux/amd64.
+    acceptance_criteria:
+      - Anonymous downloads match checksum manifests and exact source/tag/workflow provenance; archives and installed packages contain source notices.
+      - Published and installed executables identify the expected version, source commit and native target; Linux packages install without Go.
+      - Real Homebrew upgrade retains the running enrolled service, key, credential, peer identity and configuration; restart loads the verified new executable.
+      - Every planned adjacent stable pair, including the reviewed baseline, passes without skipped required checks; service and package cleanup succeeds.
+    verification_method: Actual published executables, package managers and native service managers on disposable CI.
+    observe:
+      tests:
+        workflow: .github/workflows/release-linux-amd64.yml
+        job: observe
+        cases:
+          - "qa/releases/test_native_acceptance.py::test_native_release_acceptance[[]0.1.10-to-0.1.11]"
+          - "qa/releases/test_native_acceptance.py::test_native_release_acceptance*"
+relationships:
+  - {source: DIST-DARWIN-ARM64, type: supports, target: RELEASE-INSTALLABILITY}
+  - {source: NODE, type: implements, target: DIST-DARWIN-ARM64}
+  - {source: DIST-DARWIN-AMD64, type: supports, target: RELEASE-INSTALLABILITY}
+  - {source: NODE, type: implements, target: DIST-DARWIN-AMD64}
+  - {source: DIST-LINUX-ARM64, type: supports, target: RELEASE-INSTALLABILITY}
+  - {source: NODE, type: implements, target: DIST-LINUX-ARM64}
+  - {source: DIST-LINUX-AMD64, type: supports, target: RELEASE-INSTALLABILITY}
+  - {source: NODE, type: implements, target: DIST-LINUX-AMD64}
