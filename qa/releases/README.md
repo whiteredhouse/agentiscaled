@@ -8,6 +8,14 @@ Kernel PID/start and loaded-image checks, enrolled identity preservation and
 service/package cleanup are assertions in the tests, not inferred from job status.
 Only the loopback companion mesh is compiled from immutable release source.
 
+After upgrading, the suite sends SIGKILL to the isolated service through its
+native manager and waits for automatic recovery without issuing start/restart.
+It requires a fresh kernel PID/start, the verified release image, ready mesh and
+the same peer identity. Published `status`, `down` and `up` then verify connected
+and stopped status, actual service removal and identity-preserving resumption.
+The original key/credential and saved options must survive, with exactly one
+enrollment across the whole lifecycle. These checks run on all four native targets.
+
 Run the standard suite on a native runner with the declared target:
 
 ```sh
@@ -42,5 +50,5 @@ from an older implementation's report.
 Captured JUnit output includes immutable inputs and concise phase diagnostics.
 Original provenance is verified by the actual artifact checks; public GitHub
 attestations remain its source. This suite does not test production account
-authentication, OS login/reboot/crash recovery, signing/notarization or signed
+authentication, OS login/logout/reboot behavior, signing/notarization or signed
 package repositories. Those are separate capabilities.

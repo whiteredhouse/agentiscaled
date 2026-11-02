@@ -142,6 +142,48 @@ def running(supervisor, image, data, release, report, since_us, previous=None):
     return observation["mesh"]["peer_id"]
 
 
+def wait_recovered(supervisor, previous, timeout=90):
+    # Native managers briefly report a stopped/restarting service after SIGKILL.
+    # Wait for their replacement process, never issue start/restart ourselves.
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            current = supervisor.identity()
+            if current["pid"] != previous["pid"]:
+                return current
+        except (OSError, ValueError, RuntimeError):
+            pass
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"native supervisor did not automatically recover within {timeout} seconds")
+        time.sleep(0.2)
+
+
+def check_status(stable, data, env, supervisor, settings, connected):
+    output = run(stable, "status", "-data-dir", data, env=env)
+    fields = {}
+    for line in output.splitlines():
+        key, separator, value = line.partition(":")
+        if separator:
+            if key in fields:
+                raise ValueError("status returned a duplicate field")
+            fields[key] = value.strip()
+    if supervisor.kind == "systemd user service":
+        prefix, state = "systemd user unit", "installed, active"
+    else:
+        prefix, state = "launchd agent", "installed, running"
+    expected_service = f'{prefix} {supervisor.name}, {state if connected else "not installed"}'
+    expected = {"Node": f'{settings["peer_id"]} ({settings["machine_name"]})',
+                "Network": settings["network_id"], "Mesh": settings["mesh_url"],
+                "Service": expected_service}
+    if any(fields.get(key) != value for key, value in expected.items()):
+        raise ValueError("status differs from the enrolled node's identity or native service state")
+    if connected and fields.get("Mesh connection") != "connected":
+        raise ValueError("status did not report the connected mesh")
+    if not connected and fields.get("Mesh connection") != "node not running":
+        raise ValueError("status did not report the stopped node")
+    return fields
+
+
 def exercise(payloads, root, report, installation):
     env = os.environ.copy()
     home = root / "home"
@@ -215,6 +257,18 @@ def exercise(payloads, root, report, installation):
         supervisor.restart()
         if running(supervisor, new_image, data, new[0], report, since_us, report["observations"][-1]) != old_peer:
             raise ValueError("new release changed the enrolled peer identity")
+        report["stage"] = "automatic native recovery after a supervised node crash"
+        previous = report["observations"][-1]
+        started = time.monotonic()
+        since_us = time.time_ns() // 1000
+        report["crash_recovery"] = dict(supervisor.crash(previous), previous_pid=previous["pid"],
+                                        previous_start=previous["start"], manual_start=False)
+        wait_recovered(supervisor, previous)
+        if running(supervisor, new_image, data, new[0], report, since_us, previous) != old_peer:
+            raise ValueError("automatic crash recovery changed the enrolled peer identity")
+        recovered = report["observations"][-1]
+        report["crash_recovery"].update(recovered_pid=recovered["pid"], recovered_start=recovered["start"],
+                                         readyz=200, elapsed_seconds=round(time.monotonic() - started, 3))
         supervisor.stop()
         identity_after = http_json(fixture["control"] + "/inspect")
         report["identity_after"] = identity_after
@@ -223,10 +277,39 @@ def exercise(payloads, root, report, installation):
         for path, contents in preserved.items():
             if path.read_bytes() != contents:
                 raise ValueError(f"upgrade changed persistent settings/service: {path.name}")
+        report["stage"] = "product status and down/up with the enrolled identity"
+        since_us = time.time_ns() // 1000
+        supervisor.start()
+        if running(supervisor, new_image, data, new[0], report, since_us, recovered) != old_peer:
+            raise ValueError("service restart before down changed the enrolled peer identity")
+        saved_settings = json.loads(settings.read_text())
+        report["product_lifecycle"] = {"running_status": check_status(stable, data, env, supervisor, saved_settings, True)}
+        previous = report["observations"][-1]
+        supervisor.unchanged_process(previous)
+        run(stable, "down", "-data-dir", data, env=env)
+        supervisor.assert_removed(previous)
+        if http_json(fixture["control"] + "/inspect") != identity_before or settings.read_bytes() != preserved[settings]:
+            raise ValueError("product down changed the enrolled identity or settings")
+        report["product_lifecycle"]["stopped_status"] = check_status(stable, data, env, supervisor, saved_settings, False)
+        # Linux's real user manager belongs to the CI account, while this node's
+        # config lives in an isolated HOME. Restore only its discovery link;
+        # the published up command must generate/start the actual service again.
+        supervisor.prepare()
+        since_us = time.time_ns() // 1000
+        run(stable, "up", "-data-dir", data, "-clients", "none", "-y", env=env, timeout=150)
+        if running(supervisor, new_image, data, new[0], report, since_us, previous) != old_peer:
+            raise ValueError("product up after down changed the enrolled peer identity")
+        if json.loads(settings.read_text()) != saved_settings:
+            raise ValueError("product up after down changed the saved options")
+        report["product_lifecycle"]["resumed_status"] = check_status(stable, data, env, supervisor, saved_settings, True)
+        supervisor.stop()
+        if http_json(fixture["control"] + "/inspect") != identity_before:
+            raise ValueError("product down/up changed the persisted key or credential")
+        report["product_lifecycle"].update(identity_preserved=True, settings_preserved=True, service_removed=True)
         evidence = http_json(fixture["control"] + "/evidence")
         report["mesh_evidence"] = evidence
         if evidence["enrollments"] != [old_peer]:
-            raise ValueError("restart/upgrade unexpectedly enrolled a fresh node")
+            raise ValueError("restart/upgrade/crash/down/up unexpectedly enrolled a fresh node")
         if any(evidence["router_peer_id"] not in item["mesh"]["attached_routers"] for item in report["observations"]):
             raise ValueError("node was not attached to the real fixture router on every start")
         report["service_unit"] = supervisor.name
