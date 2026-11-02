@@ -137,16 +137,23 @@ class LinuxSupervisor:
     def ctl(self, *args, **kwargs):
         return self.run("systemctl", "--user", *args, env=self.env, **kwargs)
 
+    def runtime_link(self):
+        return Path(self.env["XDG_RUNTIME_DIR"]) / "systemd/user" / self.name
+
     def prepare(self):
         if not self.env.get("XDG_RUNTIME_DIR") or not Path(self.env["XDG_RUNTIME_DIR"]).is_dir():
             raise RuntimeError("real systemd user runtime is unavailable; CI must enable linger and the user bus")
+        if os.path.lexists(self.path) or os.path.lexists(self.runtime_link()):
+            raise ValueError("isolated systemd unit or runtime discovery link already exists")
         self.ctl("show", "--property=Version", "--value")
-        self.path.parent.mkdir(parents=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         # Only a discovery link for the existing user manager; `up` overwrites
         # the bootstrap with its actual generated unit before it can run.
-        self.path.write_text("[Service]\nExecStart=/usr/bin/false\n[Install]\nWantedBy=default.target\n")
-        self.ctl("link", "--runtime", self.path)
+        with self.path.open("x") as stream:
+            stream.write("[Service]\nExecStart=/usr/bin/false\n[Install]\nWantedBy=default.target\n")
+        # Also clean up if systemctl fails after partially creating the link.
         self.linked = True
+        self.ctl("link", "--runtime", self.path)
 
     def validate_generated(self):
         values = self.properties()
@@ -204,6 +211,48 @@ class LinuxSupervisor:
     def restart(self):
         self.ctl("restart", self.name)
 
+    def crash(self, previous):
+        self.unchanged_process(previous)
+        self.ctl("kill", "--kill-whom=main", "--signal=SIGKILL", self.name)
+        return {"signal": "SIGKILL", "method": "systemctl --user kill --kill-whom=main --signal=SIGKILL"}
+
+    def wait_stopped(self, identity):
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                start = parse_linux_start((Path("/proc") / str(identity["pid"]) / "stat").read_text())
+            except (FileNotFoundError, ProcessLookupError):
+                return
+            if start != identity["start"]:
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError("systemd process remains alive after removal")
+            time.sleep(0.1)
+
+    def assert_removed(self, previous):
+        self.wait_stopped(previous)
+        if os.path.lexists(self.path):
+            raise ValueError("release down left its generated systemd unit installed")
+        runtime_link = self.runtime_link()
+        if os.path.lexists(runtime_link):
+            # This link only makes the fake HOME discoverable by the real user
+            # manager. Removing its now dangling link is fixture cleanup, not
+            # a substitute for the product removing its own generated unit.
+            if not runtime_link.is_symlink() or runtime_link.resolve() != self.path:
+                raise ValueError("systemd runtime discovery link no longer belongs to this fixture")
+            runtime_link.unlink()
+            self.ctl("daemon-reload")
+        values = {}
+        for line in self.ctl("show", self.name,
+                             "--property=MainPID,ActiveState,LoadState,FragmentPath", check=False).splitlines():
+            key, value = line.split("=", 1)
+            if key in values:
+                raise ValueError("duplicate systemd property")
+            values[key] = value
+        if (values.get("MainPID") != "0" or values.get("ActiveState") != "inactive" or
+                values.get("LoadState") != "not-found" or values.get("FragmentPath") != ""):
+            raise ValueError("systemd unit remains loaded or active after release down")
+
     def cleanup(self):
         errors = []
         if not self.linked:
@@ -213,7 +262,7 @@ class LinuxSupervisor:
                 self.ctl(*arguments)
             except Exception as exc:
                 errors.append(str(exc))
-        runtime_link = Path(self.env["XDG_RUNTIME_DIR"]) / "systemd/user" / self.name
+        runtime_link = self.runtime_link()
         if runtime_link.is_symlink() and runtime_link.resolve() == self.path:
             runtime_link.unlink()
         try:
@@ -356,20 +405,46 @@ class DarwinSupervisor:
         self.stop()
         self.start()
 
+    def crash(self, previous):
+        self.unchanged_process(previous)
+        self.ctl("kill", "SIGKILL", self.target)
+        return {"signal": "SIGKILL", "method": "launchctl kill SIGKILL"}
+
+    def assert_removed(self, previous):
+        self.wait_stopped(previous)
+        if os.path.lexists(self.path):
+            raise ValueError("release down left its generated launchd agent installed")
+        if self.ctl("print", self.target, check=False):
+            raise ValueError("launchd agent remains loaded after release down")
+
     def cleanup(self):
         errors = []
-        if not self.prepared or not self.path.exists():
+        if not self.prepared:
             return errors
         # print distinguishes an already stopped service from a failed bootout.
         try:
             loaded = self.run("/bin/launchctl", "print", self.target, env=self.env, check=False)
+            processes = [self.last_process] if self.last_process is not None else []
             if loaded:
+                try:
+                    values = parse_launchctl(loaded)
+                    # A failed observation during automatic recovery can leave
+                    # last_process pointing at the process before the crash.
+                    # The prior executable may also have been removed by brew.
+                    current = darwin_process(values["pid"], with_path=False)
+                    processes.append(current)
+                    self.last_process = current
+                except Exception as exc:
+                    # Failure to read native evidence must not prevent bootout
+                    # of this prepared, isolated target (including idle jobs).
+                    errors.append("cannot capture launchd cleanup process: " + str(exc))
                 self.ctl("bootout", self.target)
-            self.wait_stopped(self.last_process)
+            for process in processes:
+                self.wait_stopped(process)
             remaining = self.run("/bin/launchctl", "print", self.target, env=self.env, check=False)
             if remaining:
                 raise RuntimeError("launchd agent remains loaded after cleanup")
-            self.path.unlink()
+            self.path.unlink(missing_ok=True)
         except Exception as exc:
             errors.append(str(exc))
         return errors
