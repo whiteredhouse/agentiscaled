@@ -252,6 +252,9 @@ class LinuxSupervisor:
         if (values.get("MainPID") != "0" or values.get("ActiveState") != "inactive" or
                 values.get("LoadState") != "not-found" or values.get("FragmentPath") != ""):
             raise ValueError("systemd unit remains loaded or active after release down")
+        # Every removal proof passed. A later finally cleanup must not try to
+        # stop/disable this now absent unit; prepare restores ownership on up.
+        self.linked = False
 
     def cleanup(self):
         errors = []

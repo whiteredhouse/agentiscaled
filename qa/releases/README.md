@@ -14,7 +14,24 @@ It requires a fresh kernel PID/start, the verified release image, ready mesh and
 the same peer identity. Published `status`, `down` and `up` then verify connected
 and stopped status, actual service removal and identity-preserving resumption.
 The original key/credential and saved options must survive, with exactly one
-enrollment across the whole lifecycle. These checks run on all four native targets.
+sign-in enrollment across the primary lifecycle. These checks run on all four native targets.
+
+The same case reuses those verified downloads, upgraded installation and companion
+mesh for a second node joined by code. Sign-in is locked before that node starts;
+all enrollment is locked after its one accepted code request. The suite removes
+the input code, resumes the real service, updates its log level through a running
+`up`, and requires a fresh verified process with unchanged key/credential/peer and
+all other options preserved. After the initial join and negative controls, counters
+must show no further authentication or enrollment requests.
+The primary service's PID/start, readiness, settings and unit must remain intact
+through every secondary action. Both services are cleaned independently on failure.
+
+The loopback control fixture rejects invalid/reused codes and mints one-use
+peer-bound tokens through the real mesh admin API. Companion protocol tests run
+before its build. This exercises the public mesh contract; it does not establish
+production account ownership or deployed join-code policy. Raw codes must be absent
+from both command output streams and node/HOME files; the caller-owned input and
+private fixture descriptor stay outside those scanned directories.
 
 Run the standard suite on a native runner with the declared target:
 
