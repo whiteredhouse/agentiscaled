@@ -121,7 +121,7 @@ class NativeServiceControlTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        self.root = Path(directory.name)
+        self.root = Path(directory.name).resolve()
 
     def supervisor(self, supervisor_type, root, run):
         return supervisor_type({"XDG_RUNTIME_DIR": str(root / "runtime")}, root / "home",
@@ -158,7 +158,7 @@ class NativeServiceControlTests(unittest.TestCase):
 
     def test_linux_prepare_can_recreate_discovery_after_removal(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             (root / "runtime").mkdir()
             run = mock.Mock(return_value="")
             supervisor = self.supervisor(LinuxSupervisor, root, run)
@@ -172,7 +172,7 @@ class NativeServiceControlTests(unittest.TestCase):
     def test_linux_prepare_refuses_existing_unit_or_runtime_link(self):
         for existing in ("unit", "unit-symlink", "runtime-link"):
             with self.subTest(existing=existing), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
+                root = Path(directory).resolve()
                 (root / "runtime").mkdir()
                 run = mock.Mock()
                 supervisor = self.supervisor(LinuxSupervisor, root, run)
@@ -208,9 +208,10 @@ class NativeServiceControlTests(unittest.TestCase):
         for supervisor_type in (LinuxSupervisor, DarwinSupervisor):
             with self.subTest(supervisor=supervisor_type.kind), tempfile.TemporaryDirectory() as directory:
                 run = mock.Mock(return_value="")
-                supervisor = self.supervisor(supervisor_type, Path(directory), run)
+                root = Path(directory).resolve()
+                supervisor = self.supervisor(supervisor_type, root, run)
                 supervisor.path.parent.mkdir(parents=True)
-                supervisor.path.symlink_to(Path(directory) / "missing")
+                supervisor.path.symlink_to(root / "missing")
                 with mock.patch.object(supervisor, "wait_stopped"), self.assertRaisesRegex(
                         ValueError, "left its generated"):
                     supervisor.assert_removed({"pid": 4123, "start": 90421})
@@ -219,7 +220,7 @@ class NativeServiceControlTests(unittest.TestCase):
     def test_linux_removal_cleans_only_its_own_dangling_discovery_link(self):
         for own_link in (True, False):
             with self.subTest(own_link=own_link), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
+                root = Path(directory).resolve()
                 run = mock.Mock(return_value="MainPID=0\nActiveState=inactive\nLoadState=not-found\nFragmentPath=\n")
                 supervisor = self.supervisor(LinuxSupervisor, root, run)
                 link = supervisor.runtime_link()
