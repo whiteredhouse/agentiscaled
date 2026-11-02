@@ -18,6 +18,7 @@ import tarfile
 import tempfile
 import time
 import urllib.request
+import urllib.error
 
 from verify import PINS, download, native_payloads
 from lifecycle_platform import (DarwinSupervisor, LinuxSupervisor, native_target, verified_image)
@@ -29,10 +30,12 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def run(*command, env=None, cwd=None, timeout=90, check=True):
+def run(*command, env=None, cwd=None, timeout=90, check=True, captured=None):
     print("+", " ".join(map(str, command)), flush=True)
     result = subprocess.run(list(map(str, command)), env=env, cwd=cwd,
                             capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    if captured is not None:
+        captured.extend((result.stdout, result.stderr))
     if result.stdout:
         print(result.stdout, flush=True)
     if result.stderr:
@@ -46,6 +49,21 @@ def http_json(url):
     # Loopback fixture only: no proxy, credentials, or external control service.
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(url, timeout=8) as response:
         return json.load(response)
+
+
+def fixture_post(base, path, value=None, expected=200):
+    request = urllib.request.Request(base + path, data=json.dumps(value or {}).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=8) as response:
+            if response.status != expected:
+                raise ValueError(f"fixture POST {path} returned unexpected status")
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        if exc.code != expected:
+            raise ValueError(f"fixture POST {path}: HTTP {exc.code}") from exc
+        return None
 
 
 class UnixHTTP(http.client.HTTPConnection):
@@ -117,14 +135,17 @@ def compile_companion(root, report):
     command = mesh_source / "cmd" / "qa-lifecycle"
     command.mkdir()
     shutil.copyfile(fixtures / "lifecycle_mesh.go", command / "main.go")
+    shutil.copyfile(fixtures / "lifecycle_mesh_test.go", command / "main_test.go")
     alias = mesh_source / "export/standalone"
     alias.mkdir()
     shutil.copyfile(fixtures / "standalone_alias.go", alias / "standalone.go")
     output = root / "mesh-companion"
+    run("go", "test", "-mod=readonly", "./cmd/qa-lifecycle", cwd=mesh_source, timeout=600)
     # Build exactly one companion command, never ./cmd/agentiscaled or ./....
     run("go", "build", "-mod=readonly", "-o", output, "./cmd/qa-lifecycle", cwd=mesh_source, timeout=600)
     report["companion"] = {"source_commit": commit, "source_archive_sha256": digest(archive),
                            "command": "go build -mod=readonly -o mesh-companion ./cmd/qa-lifecycle",
+                           "protocol_tests": "go test -mod=readonly ./cmd/qa-lifecycle",
                            "release_rebuilt": False}
     return output
 
@@ -158,8 +179,9 @@ def wait_recovered(supervisor, previous, timeout=90):
         time.sleep(0.2)
 
 
-def check_status(stable, data, env, supervisor, settings, connected):
-    output = run(stable, "status", "-data-dir", data, env=env)
+def check_status(stable, data, env, supervisor, settings, connected, captured=None):
+    capture = {} if captured is None else {"captured": captured}
+    output = run(stable, "status", "-data-dir", data, env=env, **capture)
     fields = {}
     for line in output.splitlines():
         key, separator, value = line.partition(":")
@@ -184,6 +206,128 @@ def check_status(stable, data, env, supervisor, settings, connected):
     return fields
 
 
+def primary_unchanged(supervisor, previous, data, peer, preserved):
+    supervisor.unchanged_process(previous)
+    mesh = wait_ready(data)
+    supervisor.unchanged_process(previous)
+    if mesh["peer_id"] != peer:
+        raise ValueError("secondary lifecycle changed the primary node's peer identity")
+    if any(path.read_bytes() != contents for path, contents in preserved.items()):
+        raise ValueError("secondary lifecycle changed the primary settings or service")
+    return {"pid": previous["pid"], "start": previous["start"], "peer_id": peer, "readyz": 200}
+
+
+def check_headless_evidence(evidence, baseline, primary_peer, secondary_peer):
+    if evidence["signin_locked"] is not True or evidence["enrollment_locked"] is not True:
+        raise ValueError("headless authentication/enrollment controls were not locked")
+    if evidence["enrollments"] != [primary_peer] or evidence["join_code_peers"] != [secondary_peer]:
+        raise ValueError("headless lifecycle signed in or enrolled an unexpected node")
+    for key in ("oauth_device_requests", "oauth_token_requests", "signin_enrollment_requests"):
+        if baseline[key] != 1 or evidence[key] != baseline[key]:
+            raise ValueError("headless lifecycle attempted OAuth or signed-in enrollment")
+    for key in ("denied_auth_requests", "denied_join_requests", "unexpected_requests"):
+        if evidence[key] != 0:
+            raise ValueError("headless lifecycle made an unexpected authentication/join request")
+    if evidence["rejected_join_requests"] != 2:
+        raise ValueError("invalid and reused code controls did not both run")
+    if evidence["join_requests"] != [{"peer_id": secondary_peer, "machine_name": "qa-headless"}]:
+        raise ValueError("headless join request differs from the running node")
+
+
+def secret_absent(secret, roots, outputs):
+    token = secret.encode()
+    if any(secret in output for output in outputs):
+        raise ValueError("join code leaked into product output")
+    for root in roots:
+        for path in root.rglob("*"):
+            if path.is_file() and token in path.read_bytes():
+                raise ValueError("join code persisted in node data or fixture HOME")
+
+
+def exercise_headless(fixture, root, home, env, primary, primary_peer, primary_identity,
+                      preserved, secondary, image, release, report):
+    data, stable, control = secondary.data, secondary.stable, fixture["control"]
+    details = {"observations": [], "primary_isolation": []}
+    report["headless"] = details
+    previous_primary = report["observations"][-1]
+
+    def isolated(stage):
+        proof = primary_unchanged(primary, previous_primary, primary.data, primary_peer, preserved)
+        details["primary_isolation"].append(dict(proof, stage=stage))
+
+    baseline = http_json(control + "/evidence")
+    fixture_post(control, "/lock-signin")
+    request = {"code": "invalid-fixture-code", "peer_id": primary_peer, "machine_name": "qa-headless"}
+    fixture_post(control, "/v1/join", request, expected=403)
+    # The caller-owned input and private fixture descriptor live outside HOME
+    # and both node data directories; neither is node persistence.
+    code_file = root / "headless-code"
+    with os.fdopen(os.open(code_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
+        stream.write(fixture["join_code"] + "\n")
+    outputs = []
+    # Every up uses the local forbidden-auth fixture even when joined, so an
+    # identity regression cannot fall back to production Auth0 unnoticed.
+    args = ["up", "-data-dir", data, "-clients", "none", "-y", "-control", control,
+            "-auth-issuer", control + "/", "-auth-client-id", "ci-client", "-auth-audience", "ci-control"]
+    secondary.prepare()
+    since_us = time.time_ns() // 1000
+    run(stable, *args, "-join-code-path", code_file, "-hostname", "qa-headless", env=env, timeout=150, captured=outputs)
+    peer = running(secondary, image, data, release, details, since_us)
+    if peer == primary_peer or secondary.name == primary.name or secondary.path == primary.path:
+        raise ValueError("headless node did not get an independent identity/service")
+    settings_path = data / "agentiscaled.json"
+    settings = json.loads(settings_path.read_text())
+    if settings["bind_addr"] != "" or settings["listen"] != "/ip4/0.0.0.0/udp/0/quic-v1,/ip4/0.0.0.0/tcp/0":
+        raise ValueError("secondary up did not choose socket-only/free-port defaults")
+    details["joined_status"] = check_status(stable, data, env, secondary, settings, True, captured=outputs)
+    isolated("join-code up")
+    request.update(code=fixture["join_code"], peer_id=peer)
+    fixture_post(control, "/v1/join", request, expected=403)
+    fixture_post(control, "/lock-enrollment")
+    previous = details["observations"][-1]
+    run(stable, "down", "-data-dir", data, env=env, captured=outputs)
+    secondary.assert_removed(previous)
+    identity = http_json(control + "/inspect-secondary")
+    if (identity["peer_id"] != peer or identity["mesh_url"] != fixture["mesh_url"] or
+            identity["key_sha256"] == primary_identity["key_sha256"]):
+        raise ValueError("headless persisted identity differs from its independent running node")
+    details["identity_before"] = identity
+    details["stopped_status"] = check_status(stable, data, env, secondary, settings, False, captured=outputs)
+    isolated("headless down")
+    code_file.unlink()
+    secondary.prepare()
+    since_us = time.time_ns() // 1000
+    run(stable, *args, env=env, timeout=150, captured=outputs)
+    if running(secondary, image, data, release, details, since_us, previous) != peer:
+        raise ValueError("headless up after deleting code changed peer identity")
+    if json.loads(settings_path.read_text()) != settings:
+        raise ValueError("headless resumed up changed saved settings")
+    details["resumed_status"] = check_status(stable, data, env, secondary, settings, True, captured=outputs)
+    isolated("headless resume without code")
+    previous = details["observations"][-1]
+    since_us = time.time_ns() // 1000
+    run(stable, *args, "-log-level", "debug", env=env, timeout=150, captured=outputs)
+    if running(secondary, image, data, release, details, since_us, previous) != peer:
+        raise ValueError("running up option update changed headless peer identity")
+    updated = dict(settings, log_level="debug")
+    if json.loads(settings_path.read_text()) != updated:
+        raise ValueError("running up changed settings beyond the requested log level")
+    details["updated_status"] = check_status(stable, data, env, secondary, updated, True, captured=outputs)
+    isolated("running headless up option update")
+    run(stable, "down", "-data-dir", data, env=env, captured=outputs)
+    secondary.assert_removed(details["observations"][-1])
+    if http_json(control + "/inspect-secondary") != identity or json.loads(settings_path.read_text()) != updated:
+        raise ValueError("headless resume/update/down changed key, credential or saved options")
+    isolated("final headless down")
+    evidence = http_json(control + "/evidence")
+    check_headless_evidence(evidence, baseline, primary_peer, peer)
+    if any(evidence["router_peer_id"] not in item["mesh"]["attached_routers"] for item in details["observations"]):
+        raise ValueError("headless node was not attached to the real router on every start")
+    secret_absent(fixture["join_code"], (home, primary.data, data), outputs)
+    details.update(identity_preserved=True, options_updated=True, code_removed=True,
+                   service_removed=True, independent_services=True, authentication_evidence=evidence)
+
+
 def exercise(payloads, root, report, installation):
     env = os.environ.copy()
     home = root / "home"
@@ -194,9 +338,12 @@ def exercise(payloads, root, report, installation):
                AGENTISCALE_NO_BROWSER="1")
     data = root / "node"
     data.mkdir(mode=0o700)
+    secondary_data = root / "headless"
+    secondary_data.mkdir(mode=0o700)
     stable = installation.stable
     supervisor_type = LinuxSupervisor if report["system"] == "linux" else DarwinSupervisor
     supervisor = supervisor_type(env, home, data, stable, run)
+    secondary = supervisor_type(env, home, secondary_data, stable, run)
     process = None
     logs = root / "mesh.log"
     descriptor = root / "mesh-ready.json"
@@ -207,6 +354,7 @@ def exercise(payloads, root, report, installation):
         report["stage"] = "standalone mesh fixture"
         with logs.open("w") as output:
             process = subprocess.Popen([str(companion), "--data", str(root / "mesh"), "--node-data", str(data),
+                                        "--secondary-node-data", str(secondary_data),
                                         "--ready", str(descriptor)], stdout=output, stderr=subprocess.STDOUT, env=env)
         deadline = time.monotonic() + 60
         while not descriptor.exists():
@@ -296,12 +444,18 @@ def exercise(payloads, root, report, installation):
         # the published up command must generate/start the actual service again.
         supervisor.prepare()
         since_us = time.time_ns() // 1000
-        run(stable, "up", "-data-dir", data, "-clients", "none", "-y", env=env, timeout=150)
+        run(stable, "up", "-data-dir", data, "-clients", "none", "-y",
+            "-auth-issuer", fixture["control"] + "/", "-auth-client-id", "ci-client",
+            "-auth-audience", "ci-control", env=env, timeout=150)
         if running(supervisor, new_image, data, new[0], report, since_us, previous) != old_peer:
             raise ValueError("product up after down changed the enrolled peer identity")
         if json.loads(settings.read_text()) != saved_settings:
             raise ValueError("product up after down changed the saved options")
         report["product_lifecycle"]["resumed_status"] = check_status(stable, data, env, supervisor, saved_settings, True)
+        report["stage"] = "native headless join-code, running option update and independent services"
+        primary_preserved = {path: path.read_bytes() for path in preserved}
+        exercise_headless(fixture, root, home, env, supervisor, old_peer, identity_before,
+                          primary_preserved, secondary, new_image, new[0], report)
         supervisor.stop()
         if http_json(fixture["control"] + "/inspect") != identity_before:
             raise ValueError("product down/up changed the persisted key or credential")
@@ -318,7 +472,15 @@ def exercise(payloads, root, report, installation):
     finally:
         # Always stop the actual service before deleting its private database.
         # Cleanup errors fail the run: a claimed success cannot leave a node up.
-        cleanup_errors = supervisor.cleanup()
+        cleanup_errors = []
+        report["service_cleanup"] = {}
+        for name, service in (("headless", secondary), ("primary", supervisor)):
+            try:
+                errors = service.cleanup()
+            except Exception as exc:
+                errors = [str(exc)]
+            report["service_cleanup"][name] = "passed" if not errors else errors
+            cleanup_errors.extend(f"{name}: {error}" for error in errors)
         if process is not None:
             process.terminate()
             try:
@@ -329,6 +491,9 @@ def exercise(payloads, root, report, installation):
         node_log = data / "agentiscaled.log"
         if node_log.exists():
             report["node_log_tail"] = node_log.read_text(errors="replace")[-16000:]
+        secondary_log = secondary_data / "agentiscaled.log"
+        if secondary_log.exists():
+            report["headless_log_tail"] = secondary_log.read_text(errors="replace")[-16000:]
         if logs.exists():
             report["fixture_log_tail"] = logs.read_text(errors="replace")[-16000:]
         report["cleanup"] = "passed" if not cleanup_errors else cleanup_errors
@@ -348,7 +513,7 @@ def main():
     args.directory.mkdir(parents=True, exist_ok=True)
     supervisor_kind = "systemd user service" if system == "linux" else "launchd GUI LaunchAgent"
     report = {"success": False, "system": system, "arch": arch, "runner": platform.platform(),
-              "observations": [], "scope": f"native {system}/{arch} real {supervisor_kind}; enrolled release upgrade"}
+              "observations": [], "scope": f"native {system}/{arch} real {supervisor_kind}; enrolled upgrade and headless services"}
     try:
         report["stage"] = "verified release bytes"
         payloads = list(native_payloads(args.directory, system, arch))

@@ -55,9 +55,13 @@ def phase(script, arguments, directory, report, env):
     details = json.loads(report.read_text())
     summary = {key: details[key] for key in (
         "assets", "homebrew", "packages", "observations", "upgrade_method", "mesh_evidence",
-        "crash_recovery", "product_lifecycle", "preservation", "cleanup", "homebrew_cleanup") if key in details}
+        "crash_recovery", "product_lifecycle", "preservation", "cleanup", "service_cleanup", "homebrew_cleanup") if key in details}
     print(f"{script} completed; report={report.relative_to(ROOT)}")
     print(json.dumps(summary, sort_keys=True)[:24000])
+    if "headless" in details:
+        # Preserve the additional process/auth/isolation proof independently of
+        # the existing primary/upgrade diagnostic size limit.
+        print(json.dumps({"headless": details["headless"]}, sort_keys=True))
 
 
 @pytest.mark.parametrize("entry", release_pairs(), ids=pair_id)

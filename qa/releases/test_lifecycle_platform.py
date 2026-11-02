@@ -204,6 +204,31 @@ class NativeServiceControlTests(unittest.TestCase):
                         supervisor.assert_removed(previous)
                 stopped.assert_called_once_with(previous)
 
+    def test_linux_cleanup_skips_only_a_fully_verified_removal(self):
+        removed = "MainPID=0\nActiveState=inactive\nLoadState=not-found\nFragmentPath=\n"
+        for response in (removed, removed.replace("LoadState=not-found", "LoadState=loaded")):
+            run = mock.Mock(return_value=response)
+            supervisor = self.supervisor(LinuxSupervisor, self.root, run)
+            supervisor.linked = True
+            with self.subTest(response=response), mock.patch.object(supervisor, "wait_stopped"):
+                if response == removed:
+                    supervisor.assert_removed({"pid": 4123, "start": 90421})
+                    self.assertFalse(supervisor.linked)
+                else:
+                    with self.assertRaisesRegex(ValueError, "remains loaded or active"):
+                        supervisor.assert_removed({"pid": 4123, "start": 90421})
+                    self.assertTrue(supervisor.linked)
+                run.reset_mock()
+                self.assertEqual(supervisor.cleanup(), [])
+                if response == removed:
+                    run.assert_not_called()
+                else:
+                    self.assertEqual(run.call_args_list, [
+                        mock.call("systemctl", "--user", "stop", supervisor.name, env=supervisor.env),
+                        mock.call("systemctl", "--user", "disable", supervisor.name, env=supervisor.env),
+                        mock.call("systemctl", "--user", "disable", "--runtime", supervisor.name, env=supervisor.env),
+                        mock.call("systemctl", "--user", "daemon-reload", env=supervisor.env)])
+
     def test_removal_rejects_leftover_generated_paths(self):
         for supervisor_type in (LinuxSupervisor, DarwinSupervisor):
             with self.subTest(supervisor=supervisor_type.kind), tempfile.TemporaryDirectory() as directory:
