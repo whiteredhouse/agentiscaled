@@ -263,7 +263,13 @@ func (r *Router) requirePublish(provider peer.ID, svcType api.ServiceType, svcNa
 		return &directoryDeniedError{service: typeStr + "://" + svcName, err: errors.New("no credential held for the member")}
 	}
 	cred := v.(memberCredential)
-	if err := identity.RequirePublish(cred.biscuit, cred.key, typeStr, svcName, r.meshPolicyRules(), r.config.BiscuitTimeout); err != nil {
+	// The admitted bytes are immutable. Never share a parsed Biscuit between
+	// calls, or with the handshake's subsequent RequireRole authorization.
+	b, _, err := identity.UnmarshalInbound(cred.serialized)
+	if err != nil {
+		return &directoryDeniedError{service: typeStr + "://" + svcName, err: err}
+	}
+	if err := identity.RequirePublish(b, cred.key, typeStr, svcName, r.meshPolicyRules(), r.config.BiscuitTimeout); err != nil {
 		return &directoryDeniedError{service: typeStr + "://" + svcName, err: err}
 	}
 	return nil

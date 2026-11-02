@@ -21,7 +21,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/golang-jwt/jwt/v5"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	kb "github.com/libp2p/go-libp2p-kbucket"
@@ -88,11 +87,7 @@ func attach(t *testing.T, r *Router, publish ...string) host.Host {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := biscuit.Unmarshal(tok)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.credentials.Store(m.ID(), memberCredential{biscuit: b, key: pub})
+	r.credentials.Store(m.ID(), newMemberCredential(tok, pub))
 	return m
 }
 

@@ -17,7 +17,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Format
-        run: test -z "$(gofmt -l cmd third_party/agentmesh/export third_party/agentmesh/internal/controlplane/bound_peer*.go)"
+        run: test -z "$(gofmt -l cmd third_party/agentmesh/export third_party/agentmesh/internal/router third_party/agentmesh/internal/controlplane/bound_peer*.go)"
       - name: Vet
         run: go vet ./...
       - name: Prepare real Codex sandbox tests
@@ -50,6 +50,9 @@ jobs:
       - name: Test the fork's patch
         working-directory: third_party/agentmesh
         run: go test -race -run TestBootstrapTokenBoundToOnePeer ./internal/controlplane/
+      - name: Test router and identity authorization
+        working-directory: third_party/agentmesh
+        run: go test -race ./internal/router ./internal/identity
 
   release-check:
     runs-on: ubuntu-latest
