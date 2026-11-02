@@ -61,6 +61,7 @@ def fixture_post(base, path, value=None, expected=200):
                 raise ValueError(f"fixture POST {path} returned unexpected status")
             return json.load(response)
     except urllib.error.HTTPError as exc:
+        exc.close()
         if exc.code != expected:
             raise ValueError(f"fixture POST {path}: HTTP {exc.code}") from exc
         return None
@@ -306,10 +307,11 @@ def exercise_headless(fixture, root, home, env, primary, primary_peer, primary_i
     isolated("headless resume without code")
     previous = details["observations"][-1]
     since_us = time.time_ns() // 1000
-    run(stable, *args, "-log-level", "debug", env=env, timeout=150, captured=outputs)
+    updated_level = "debug" if settings["log_level"] != "debug" else "info"
+    run(stable, *args, "-log-level", updated_level, env=env, timeout=150, captured=outputs)
     if running(secondary, image, data, release, details, since_us, previous) != peer:
         raise ValueError("running up option update changed headless peer identity")
-    updated = dict(settings, log_level="debug")
+    updated = dict(settings, log_level=updated_level)
     if json.loads(settings_path.read_text()) != updated:
         raise ValueError("running up changed settings beyond the requested log level")
     details["updated_status"] = check_status(stable, data, env, secondary, updated, True, captured=outputs)
