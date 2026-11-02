@@ -36,7 +36,7 @@ Open Settings, Developer, Edit Config, which opens
 Quit and reopen Claude Desktop. The `agentiscale` server's tools
 (`get_mesh_info`, `discover_remote_services`, `find_remote_tools`,
 `describe_remote_tool`, `call_remote_tool`, `list_local_services`, and the A2A
-task tools `send_task`, `get_task` and `cancel_task`) then appear in a new chat. Ask it to "show my agentiscale mesh info" to check the connection.
+agent tools `get_agent_card`, `send_task`, `get_task` and `cancel_task`) then appear in a new chat. Ask it to "show my agentiscale mesh info" to check the connection.
 
 ## Codex CLI
 
@@ -157,13 +157,16 @@ history before restarting; deleting it removes duplicate protection.
 
 **In Claude Desktop**, ask for example "Use agentiscale to ask codex to
 review the last commit", or "… to explain how requests are authenticated".
-The `agentiscale` server also has `send_task`, `get_task` and `cancel_task`: Claude finds the agent with
-`discover_remote_services` (type `a2a`), sends the task and follows it to one
+The `agentiscale` server also has `get_agent_card`, `send_task`, `get_task` and `cancel_task`: Claude finds the agent with
+`discover_remote_services` (type `a2a`), reads its current card with `get_agent_card`
+(using the discovered `peer_id` and `srv_name` as `service`), sends the task and follows it to one
 of `completed`, `rejected`, `cancelled`, `timeout` or `failed`. A review of one
 commit takes about a minute. The agent always works in node B's `-agent-dir`,
 never on files on the sender's machine; with both nodes on one Mac, that is
 your checkout as it is on disk. If node B is offline the call fails at once;
-the mesh keeps no mailbox.
+the mesh keeps no mailbox. A stopped, refused or offline service also makes
+`get_agent_card` return a visible error; an earlier card is never reused as a
+current availability result.
 
 Claude Desktop starts `agentiscaled mcp` when it opens and keeps that process,
 so after rebuilding `agentiscaled`, quit Claude Desktop (Cmd+Q) and open it
