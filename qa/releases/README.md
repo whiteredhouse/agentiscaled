@@ -48,6 +48,22 @@ and package installation, including on failure. Python/Go, package images and
 operational Homebrew are pinned. Python tool distributions use a reviewed wheel
 hash lock. The runner OS and vendor Homebrew bootstrap are not fully hermetic.
 
+`pins.json` keeps the reviewed upgrade baseline and test environment unchanged.
+The separately versioned `catalog.json` lists audited published releases; its
+first two entries must exactly preserve that baseline. Both ordinary PR plans
+and main discovery require every adjacent catalog pair with its exact reviewed
+metadata. Discovery still includes later stable releases, but cannot omit an
+audited intermediate release or silently promote a pending catalog declaration.
+Each catalog pair also needs its explicit native case binding on all four
+platform requirements, alongside the existing wildcard for discovered releases.
+
+Add a catalog release only after checking its actual published source, checksum
+manifest, provenance and Homebrew revision. Pending declarations contain only a
+version and immutable source, and cannot be selected or tested as audited inputs.
+The checked-in catalog contains audited v0.1.10, v0.1.11 and v0.1.12 releases.
+Its ordinary plans retain both 0.1.10-to-0.1.11 and 0.1.11-to-0.1.12 upgrades.
+Synthetic future-release unit fixtures remain separate from those published inputs.
+
 Four push-only, single-job workflows produce Exacly0.6 evidence, one per native
 platform. Their shared setup is .github/actions/release-setup. Each runs these
 same tests and packages exactly manifest.json and junit.xml using the installed

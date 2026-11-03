@@ -13,6 +13,16 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class IsolatedToolEntrypoints(unittest.TestCase):
+    def test_discovery_cli_loads_its_reviewed_sibling_in_isolated_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, 'inventory.py').write_text('raise SystemExit("UNAPPROVED_CATALOG_MODULE")\n')
+            result = subprocess.run([sys.executable, '-I', str(ROOT / 'qa/releases/discover.py'), '--help'],
+                                    cwd=directory, env={**os.environ, 'PYTHONPATH': directory, 'PATH': directory},
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('--automatic', result.stdout)
+            self.assertNotIn('UNAPPROVED_CATALOG_MODULE', result.stdout + result.stderr)
+
     def test_actual_workflow_entrypoints_ignore_checkout_modules(self):
         prefixes = set()
         for path in (ROOT / '.github/workflows').glob('release-*.yml'):
