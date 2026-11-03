@@ -2,7 +2,7 @@
 import copy
 import unittest
 
-from discover import BASE
+from discover import BASE, plan
 from test_native_acceptance import validated_pairs
 
 
@@ -29,5 +29,6 @@ class AcceptancePlan(unittest.TestCase):
             validated_pairs({"include": [{"pins": pins}]})
 
     def test_baseline_pair_is_preserved(self):
-        entry = {"pins": BASE}
-        self.assertEqual(validated_pairs({"include": [entry]}), [entry])
+        current = plan(False, False)
+        self.assertEqual(current["include"][0]["pins"]["releases"], BASE["releases"])
+        self.assertEqual(validated_pairs(current), current["include"])

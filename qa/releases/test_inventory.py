@@ -12,6 +12,8 @@ from test_native_acceptance import validated_pairs
 
 def future_catalog():
     catalog = copy.deepcopy(discover.CATALOG)
+    # Future controls stay synthetic even after the real catalog grows.
+    catalog["releases"] = catalog["releases"][:2]
     catalog["releases"].append({"version": "0.1.12", "commit": "1" * 40,
                                  "manifest_sha256": "2" * 64, "tap_commit": "3" * 40,
                                  "status": "audited"})
@@ -21,7 +23,7 @@ def future_catalog():
 class ReleaseCatalog(unittest.TestCase):
     def test_complete_existing_baseline_is_preserved(self):
         catalog = load_catalog()
-        self.assertEqual(required_pairs(catalog), [tuple(discover.BASE["releases"])])
+        self.assertEqual(required_pairs(catalog)[0], tuple(discover.BASE["releases"]))
         self.assertEqual(select_release(catalog, "0.1.11"), discover.BASE["releases"][1])
         self.assertEqual(catalog["baseline_pair"], ["0.1.10", "0.1.11"])
         with self.assertRaisesRegex(ValueError, "baseline"):

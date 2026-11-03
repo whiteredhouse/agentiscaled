@@ -16,6 +16,15 @@
       "manifest_sha256": "8e2b2ec578dde3daa79897d65046bc6a7c59580b1ee5dd43148d11d0b57e6161",
       "tap_commit": "42a20b9884eb594f86fa1113c0fff5283dac6b02",
       "status": "audited"
+    },
+    {
+      "version": "0.1.12",
+      "commit": "6133232aab294cd474b94d08773eeff7b2063fba",
+      "manifest_sha256": "c4ebb8e6d67ecb6a3aa26d9585c6c7a4d7495c09d0eee114c4e25d491a69a0fe",
+      "tap_commit": "955c620b8d5d6fb042c28e50f5e81ca70ddf5ee0",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "notice_sha256": "56665b5835a3d6bf037c738a8a41497bd13725ff764ddbf5c800b61250304ef2",
+      "status": "audited"
     }
   ]
 }

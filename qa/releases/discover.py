@@ -7,9 +7,13 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 import urllib.request
 from pathlib import Path
 
+# Isolated Python excludes the script directory. Load only reviewed siblings,
+# never a checkout-root or PYTHONPATH replacement for the catalog validator.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from inventory import catalog_releases, load_catalog, required_pairs
 
 BASE = json.loads(Path(__file__).with_name('pins.json').read_text())

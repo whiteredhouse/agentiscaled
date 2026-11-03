@@ -60,8 +60,9 @@ platform requirements, alongside the existing wildcard for discovered releases.
 Add a catalog release only after checking its actual published source, checksum
 manifest, provenance and Homebrew revision. Pending declarations contain only a
 version and immutable source, and cannot be selected or tested as audited inputs.
-The checked-in catalog currently contains only the two existing audited releases;
-future-release unit fixtures are synthetic and make no publication claim.
+The checked-in catalog contains audited v0.1.10, v0.1.11 and v0.1.12 releases.
+Its ordinary plans retain both 0.1.10-to-0.1.11 and 0.1.11-to-0.1.12 upgrades.
+Synthetic future-release unit fixtures remain separate from those published inputs.
 
 Four push-only, single-job workflows produce Exacly0.6 evidence, one per native
 platform. Their shared setup is .github/actions/release-setup. Each runs these
