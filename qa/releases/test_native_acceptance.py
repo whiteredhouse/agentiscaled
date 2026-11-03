@@ -9,6 +9,7 @@ import sys
 import pytest
 
 import discover
+from inventory import required_pairs
 from lifecycle_platform import native_target
 
 
@@ -27,6 +28,9 @@ def validated_pairs(plan):
         raise ValueError("release acceptance plan omits the exact reviewed baseline pair")
     if len(set(selected)) != len(selected):
         raise ValueError("duplicate release acceptance pair")
+    for before, after in required_pairs(discover.CATALOG):
+        if not any(entry["pins"]["releases"] == [before, after] for entry in entries):
+            raise ValueError("release acceptance plan omits an exact audited catalog pair")
     return entries
 
 

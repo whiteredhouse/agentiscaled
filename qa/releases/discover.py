@@ -10,7 +10,10 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
+from inventory import catalog_releases, load_catalog, required_pairs
+
 BASE = json.loads(Path(__file__).with_name('pins.json').read_text())
+CATALOG = load_catalog(baseline=BASE)
 REPO = BASE['repository']
 TAP = BASE['tap_repository']
 
@@ -30,7 +33,15 @@ def pairs(releases):
     stable = sorted({r['tag_name'] for r in releases if not r['draft'] and not r['prerelease']
                      and re.fullmatch(r'v\d+\.\d+\.\d+', r['tag_name'])}, key=version)
     minimum = version('v' + BASE['releases'][-1]['version'])
-    result = [(stable[i-1], tag) for i, tag in enumerate(stable) if i and version(tag) >= minimum]
+    required = {'v' + release['version'] for release in catalog_releases(CATALOG)}
+    if not required <= set(stable):
+        raise ValueError('release discovery omits required audited catalog releases')
+    selected = {(stable[i-1], tag) for i, tag in enumerate(stable) if i and version(tag) >= minimum}
+    # Audited catalog releases need their exact reviewed upgrade pair even
+    # when discovery additionally finds an intermediate, not-yet-audited tag.
+    selected.update(('v' + before['version'], 'v' + after['version'])
+                    for before, after in required_pairs(CATALOG))
+    result = sorted(selected, key=lambda pair: (version(pair[1]), version(pair[0])))
     if not result:
         raise ValueError('no upgrade pair found at/after the audited baseline')
     if len(result) > 200:
@@ -45,7 +56,7 @@ def source_file(repo, commit, path):
 
 
 def resolve(tag, tap_commits):
-    known = next((r for r in BASE['releases'] if 'v' + r['version'] == tag), None)
+    known = next((r for r in catalog_releases(CATALOG) if 'v' + r['version'] == tag), None)
     if known:
         return copy.deepcopy(known)
     obj = api(f'repos/{REPO}/git/ref/tags/{tag}')['object']
@@ -93,7 +104,7 @@ def plan(automatic, compatibility):
             raise ValueError('release pagination limit exceeded; refusing incomplete coverage')
         selected = pairs(releases)
         needed = {tag for pair in selected for tag in pair}
-        unknown = needed - {'v' + r['version'] for r in BASE['releases']}
+        unknown = needed - {'v' + r['version'] for r in catalog_releases(CATALOG)}
         commits = []
         if unknown:
             for page in range(1, 11):
@@ -116,7 +127,11 @@ def plan(automatic, compatibility):
                     sort_keys=True).encode()).hexdigest() for tag in (before, after)}
             configurations.append(pins)
     else:
-        configurations = [copy.deepcopy(BASE)]
+        configurations = []
+        for before, after in required_pairs(CATALOG):
+            pins = copy.deepcopy(BASE)
+            pins['releases'] = [before, after]
+            configurations.append(pins)
     entries = []
     for pins in configurations:
         digest = hashlib.sha256(json.dumps(pins, sort_keys=True).encode()).hexdigest()
