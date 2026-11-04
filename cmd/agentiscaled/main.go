@@ -60,7 +60,7 @@ type config struct {
 	// service about when it cannot reach it.
 	networkID string
 
-	// signInToken is the owner's Auth0 access token during `agentiscaled up`.
+	// signInToken is the owner's access token during `agentiscaled up`.
 	// It lives in memory for enrollment only and is never stored.
 	signInToken string
 }
@@ -567,7 +567,7 @@ func postJoin(ctx context.Context, url, bearer string, body map[string]string) (
 	return answer, resp.StatusCode, nil
 }
 
-// httpClient bounds every call to the control service and Auth0.
+// httpClient bounds every call to the control service and the identity provider.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 // apiTokenFor returns the TCP API token from --api-token-path, or from

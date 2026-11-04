@@ -205,7 +205,7 @@ func TestJoinCodeProtocolAndBoundBootstrap(t *testing.T) {
 func TestEnrollmentLocksKeepDiagnosticsAndJoinStageAvailable(t *testing.T) {
 	_, control := protocolFixture(t)
 	_, primaryID := protocolKey(t)
-	for _, path := range []string{"/oauth/device/code", "/oauth/token"} {
+	for _, path := range []string{"/oauth2/device/auth", "/oauth2/token"} {
 		if status, _ := protocolRequest(t, control.URL, http.MethodPost, path, "", nil); status != http.StatusOK {
 			t.Fatalf("initial OAuth fixture %s: HTTP %d", path, status)
 		}
@@ -216,7 +216,7 @@ func TestEnrollmentLocksKeepDiagnosticsAndJoinStageAvailable(t *testing.T) {
 	if status, _ := protocolRequest(t, control.URL, http.MethodPost, "/lock-signin", "", nil); status != http.StatusOK && status != http.StatusNoContent {
 		t.Fatalf("lock sign-in: HTTP %d", status)
 	}
-	for _, path := range []string{"/oauth/device/code", "/oauth/token", "/v1/enroll"} {
+	for _, path := range []string{"/oauth2/device/auth", "/oauth2/token", "/v1/enroll"} {
 		if status, _ := protocolRequest(t, control.URL, http.MethodPost, path, "Bearer ci-access", map[string]string{"peer_id": primaryID}); status != http.StatusForbidden {
 			t.Fatalf("locked sign-in endpoint %s: HTTP %d", path, status)
 		}
