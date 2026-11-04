@@ -189,7 +189,9 @@ func (f *fixtureControl) handler() http.Handler {
 		case "POST /lock-enrollment":
 			f.evidence.SignInLocked, f.evidence.EnrollmentLocked = true, true
 			respond(w, map[string]bool{"locked": true})
-		case "POST /oauth2/device/auth":
+		// Earlier released binaries in upgrade pairs still use the previous
+		// provider's device paths; both answer the same way.
+		case "POST /oauth2/device/auth", "POST /oauth/device/code":
 			f.evidence.OAuthDeviceRequests++
 			if f.evidence.SignInLocked {
 				f.evidence.DeniedAuthRequests++
@@ -198,7 +200,7 @@ func (f *fixtureControl) handler() http.Handler {
 			}
 			activate := "http://" + r.Host + "/activate"
 			respond(w, map[string]any{"device_code": "ci-device", "user_code": "CI-ONLY", "verification_uri": activate, "verification_uri_complete": activate, "expires_in": 60, "interval": 0})
-		case "POST /oauth2/token":
+		case "POST /oauth2/token", "POST /oauth/token":
 			f.evidence.OAuthTokenRequests++
 			if f.evidence.SignInLocked {
 				f.evidence.DeniedAuthRequests++
