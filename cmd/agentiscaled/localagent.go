@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -17,6 +19,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/eclipse-biscuit/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
 	"github.com/google/agentmesh/api"
 	meshnode "github.com/google/agentmesh/export/node"
 )
@@ -42,6 +46,10 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 		return nil, fmt.Errorf("local agent backend has no credential")
 	}
 	backend.User = nil
+	authorization := socketClient(filepath.Join(dataDir, meshnode.DefaultSocketName))
+	authorization.Timeout = 5 * time.Second
+	authorization.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	go func() { <-ctx.Done(); authorization.CloseIdleConnections() }()
 	proxy := &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) {
 		pr.SetURL(backend)
 		pr.Out.Header.Set("Authorization", "Bearer "+token)
@@ -72,7 +80,7 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if err := authorizeLocalAgent(node, cfg, name, r.Method, backendPath); err != nil {
+		if err := authorizeLocalAgent(r.Context(), node, cfg, name, r.Method, backendPath, authorization); err != nil {
 			log.Printf("local agent %s refused: %v", name, err)
 			http.Error(w, "local agent authorization failed", http.StatusForbidden)
 			return
@@ -107,9 +115,10 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 	return server, nil
 }
 
-// authorizeLocalAgent reuses the embedded node's existing authorization
-// methods. The embedding package exports aliases only; no mesh behavior changes.
-func authorizeLocalAgent(node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, name, method, path string) error {
+// authorizeLocalAgent checks the provider with public policy primitives, then
+// asks the existing Mesh sidecar to evaluate invocation policy. No self-dial or
+// internal Mesh types are needed. The request is built from trusted inputs only.
+func authorizeLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, name, method, path string, authorization *http.Client) error {
 	token := node.GetIdentity()
 	claims, err := node.VerifyLocalBiscuit(token)
 	if err != nil {
@@ -118,28 +127,67 @@ func authorizeLocalAgent(node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigC
 	if claims.NodePeerID != node.Host.ID().String() || !slices.Contains(claims.Roles, api.RoleNode) {
 		return fmt.Errorf("local credential is not this node's identity")
 	}
-	node.MeshPolicyMu.RLock()
-	rules := node.MeshPolicyRules
-	node.MeshPolicyMu.RUnlock()
-	if err := meshnode.RequirePublish(claims.Biscuit, claims.VerifyingKey, api.ServiceTypeStringA2A, name, rules, node.BiscuitTimeout); err != nil {
+	// Bound this adapter's evaluation as well as the sidecar request. Mesh's
+	// verifier above validates the credential and its attenuation blocks first.
+	timeout := node.BiscuitTimeout
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	newAuthorizer := func() (biscuit.Authorizer, error) {
+		return claims.Biscuit.Authorizer(claims.VerifyingKey, biscuit.WithWorldOptions(
+			datalog.WithMaxDuration(timeout), datalog.WithMaxFacts(1000), datalog.WithMaxIterations(100),
+		))
+	}
+	auth, err := newAuthorizer()
+	if err != nil {
 		return err
+	}
+	auth.AddFact(api.PublishFact(api.ServiceTypeStringA2A, name))
+	node.MeshPolicyMu.RLock()
+	for _, rule := range node.MeshPolicyRules {
+		auth.AddRule(rule)
+	}
+	node.MeshPolicyMu.RUnlock()
+	for _, policy := range api.PublishPolicies {
+		auth.AddPolicy(policy)
+	}
+	if err := auth.Authorize(); err != nil {
+		return fmt.Errorf("local provider lacks publish permission: %w", err)
 	}
 	if cfg != nil && len(cfg.EgressRequireLabels) > 0 {
 		check, err := api.LabelCheck(cfg.EgressRequireLabels)
 		if err != nil {
 			return err
 		}
-		auth, err := claims.Biscuit.Authorizer(claims.VerifyingKey, meshnode.AuthorizerOptions(node.BiscuitTimeout)...)
+		// The floor checks credential-attested labels, separately from rules
+		// that the current mesh policy may derive for publish permission.
+		labels, err := newAuthorizer()
 		if err != nil {
 			return err
 		}
-		auth.AddCheck(check)
-		auth.AddPolicy(api.AllowIfTruePolicy)
-		if err := auth.Authorize(); err != nil {
+		labels.AddCheck(check)
+		labels.AddPolicy(api.AllowIfTruePolicy)
+		if err := labels.Authorize(); err != nil {
 			return fmt.Errorf("local provider does not meet the configured label floor: %w", err)
 		}
 	}
-	return node.VerifyBiscuitToken(token, meshnode.RequestContext{PeerID: node.Host.ID(), Local: true, Protocol: "agentiscale-local-a2a", Target: "a2a://" + name, HTTP: &meshnode.HTTPRequestFacts{Method: method, Path: path}})
+
+	req, err := http.NewRequestWithContext(ctx, method, "http://agentmesh/ext_authz"+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set(api.HeaderMeshBiscuit, base64.StdEncoding.EncodeToString(token))
+	req.Header.Set(api.HeaderMeshTargetService, "a2a://"+name)
+	response, err := authorization.Do(req)
+	if err != nil {
+		return fmt.Errorf("local invocation authorization unavailable: %w", err)
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("local invocation authorization refused: HTTP %d", response.StatusCode)
+	}
+	return nil
 }
 
 func listenAgentSocket(path string) (net.Listener, error) {

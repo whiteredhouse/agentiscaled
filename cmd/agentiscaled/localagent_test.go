@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/hex"
 	"io"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,6 +51,11 @@ func localAgentFixture(t *testing.T, role *api.PolicyRole, expiry time.Time, cfg
 	if err := n.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
+	sidecar, err := meshnode.StartSidecarServer(n, "", filepath.Join(dir, meshnode.DefaultSocketName), "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { sidecar.Close() })
 	fix := newFixture()
 	agent, err := newAgentService(t.TempDir(), fix, dir)
 	if err != nil {
@@ -196,6 +203,8 @@ func (s spoofLocalIdentity) RoundTrip(r *http.Request) (*http.Response, error) {
 	r.Header.Set(api.HeaderPeerID, testSender)
 	r.Header.Set(api.HeaderMeshBiscuit, "forged")
 	r.Header.Set("Authorization", "forged")
+	r.Header.Set("X-Original-Method", "DELETE")
+	r.Header.Set("X-Original-Path", "/forged")
 	return s.next.RoundTrip(r)
 }
 
@@ -251,7 +260,7 @@ func TestLocalAgentSocketReplacesOnlyStaleSocket(t *testing.T) {
 }
 
 func TestLocalAgentTransportStreamsAndRejectsTCP(t *testing.T) {
-	n, _, _, _ := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
+	n, _, _, authDir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	stopped := make(chan struct{})
@@ -271,6 +280,9 @@ func TestLocalAgentTransportStreamsAndRejectsTCP(t *testing.T) {
 	defer backend.Close()
 	target := strings.Replace(backend.URL, "http://", "http://:backend-secret@", 1)
 	dir := shortTempDir(t)
+	if err := os.Symlink(filepath.Join(authDir, meshnode.DefaultSocketName), filepath.Join(dir, meshnode.DefaultSocketName)); err != nil {
+		t.Fatal(err)
+	}
 	server, err := serveLocalAgent(ctx, n, &meshnode.NodeConfigComplete{}, "helper", target, dir)
 	if err != nil {
 		t.Fatal(err)
@@ -381,5 +393,94 @@ func TestLocalAgentCardHonorsHTTPMethodAndPathGrant(t *testing.T) {
 	case <-fix.prompts:
 		t.Fatal("forbidden POST ran the agent")
 	default:
+	}
+}
+
+func TestLocalAgentRequiresMeshAuthorization(t *testing.T) {
+	for _, mode := range []string{"allow", "deny", "unavailable", "redirect"} {
+		t.Run(mode, func(t *testing.T) {
+			n, _, tasks, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
+			path := filepath.Join(dir, meshnode.DefaultSocketName)
+			// Move any real fixture listener out of the way before the first call.
+			if err := os.Rename(path, path+".real"); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			var calls atomic.Int32
+			if mode != "unavailable" {
+				listener, err := net.Listen("unix", path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls.Add(1)
+					if r.Method != "GET" || r.URL.Path != "/ext_authz/.well-known/agent-card.json" || r.Header.Get(api.HeaderMeshTargetService) != "a2a://helper" || r.Header.Get(api.HeaderMeshBiscuit) != base64.StdEncoding.EncodeToString(n.GetIdentity()) {
+						t.Error("authorization did not receive trusted identity, target and backend method/path")
+					}
+					for _, header := range []string{"Cookie", "Authorization", api.HeaderPeerID, "X-Original-Method", "X-Original-Path"} {
+						if r.Header.Get(header) != "" {
+							t.Errorf("caller header reached authorization: %s", header)
+						}
+					}
+					switch mode {
+					case "allow":
+						w.WriteHeader(http.StatusOK)
+					case "deny":
+						http.Error(w, "refused", http.StatusForbidden)
+					case "redirect":
+						http.Redirect(w, r, "/unexpected", http.StatusTemporaryRedirect)
+					}
+				})}
+				go server.Serve(listener)
+				t.Cleanup(func() { server.Close() })
+			}
+			tasks.local.Transport = spoofLocalIdentity{next: tasks.local.Transport}
+			_, _, err := tasks.card(context.Background(), nil, taskTarget{Service: "helper"})
+			if mode == "allow" {
+				if err != nil || calls.Load() != 1 {
+					t.Fatalf("authorization was not consulted: calls=%d err=%v", calls.Load(), err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "HTTP 403") {
+				t.Fatalf("authorization %s did not fail closed: %v", mode, err)
+			}
+			if mode == "redirect" && calls.Load() != 1 {
+				t.Fatalf("followed authorization redirect: %d requests", calls.Load())
+			}
+		})
+	}
+}
+
+func TestLocalProviderLabelFloorRequiresAttestedLabels(t *testing.T) {
+	n, _, tasks, _ := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{EgressRequireLabels: map[string]string{"region": "uk"}})
+	rules, err := api.ParseDatalogRules([]string{`label("region", "uk") <- role("mesh:role:node")`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.MeshPolicyMu.Lock()
+	n.MeshPolicyRules = rules
+	n.MeshPolicyMu.Unlock()
+	if _, _, err := tasks.card(context.Background(), nil, taskTarget{Service: "helper"}); err == nil || !strings.Contains(err.Error(), "HTTP 403") {
+		t.Fatalf("derived label satisfied the attested label floor: %v", err)
+	}
+}
+
+func TestLocalProviderUsesCurrentPublishPolicy(t *testing.T) {
+	role := localAgentRole()
+	role.AllowedPublish = nil
+	n, _, tasks, _ := localAgentFixture(t, role, time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
+	rules, err := api.ParseDatalogRules([]string{`granted_publish_exact("a2a", "helper") <- role("mesh:role:node")`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.MeshPolicyMu.Lock()
+	n.MeshPolicyRules = rules
+	n.MeshPolicyMu.Unlock()
+	if _, _, err := tasks.card(context.Background(), nil, taskTarget{Service: "helper"}); err != nil {
+		t.Fatalf("current publish policy was ignored: %v", err)
+	}
+	n.MeshPolicyMu.Lock()
+	n.MeshPolicyRules = nil
+	n.MeshPolicyMu.Unlock()
+	if _, _, err := tasks.card(context.Background(), nil, taskTarget{Service: "helper"}); err == nil || !strings.Contains(err.Error(), "HTTP 403") {
+		t.Fatalf("removed publish policy still authorized the provider: %v", err)
 	}
 }
