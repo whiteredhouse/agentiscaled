@@ -21,7 +21,9 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 
 	"io"
 	"os"
@@ -1251,5 +1253,71 @@ func TestTARConformanceVectors(t *testing.T) {
 				t.Fatalf("expected allow=false, got nil")
 			}
 		})
+	}
+}
+
+func TestVerifyBiscuitPreservesPolicyDenialAcrossMultipleTrustedKeys(t *testing.T) {
+	pub1, priv1, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub2, _, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	callerPeer := peer.ID("caller-peer")
+	builder := biscuit.NewBuilder(priv1)
+	if err := builder.AddAuthorityFact(api.MarkerFact(api.FactTargetUnrestricted)); err != nil {
+		t.Fatal(err)
+	}
+	for _, pred := range []string{"node", "client_peer_id"} {
+		if err := builder.AddAuthorityFact(biscuit.Fact{Predicate: biscuit.Predicate{
+			Name: pred,
+			IDs:  []biscuit.Term{biscuit.String(callerPeer.String())},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Grant only /allowed/proto so /denied/proto fails Datalog authorization.
+	if err := builder.AddAuthorityFact(biscuit.Fact{Predicate: biscuit.Predicate{
+		Name: api.FactGrantedServiceExact,
+		IDs:  []biscuit.Term{biscuit.String(api.SystemNamespace), biscuit.String("/allowed/proto")},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddAuthorityFact(biscuit.Fact{Predicate: biscuit.Predicate{
+		Name: api.FactExpiration,
+		IDs:  []biscuit.Term{biscuit.Date(time.Now().Add(time.Hour))},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenBytes, err := b.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node := &AgentMeshNode{
+		// Place the signing key (pub1) before another trusted key (pub2).
+		trustedKeys: []TrustedKey{
+			{Key: pub1, ReceivedAt: time.Now()},
+			{Key: pub2, ReceivedAt: time.Now()},
+		},
+		BiscuitTimeout: 500 * time.Millisecond,
+	}
+
+	_, err = node.verifyBiscuitTokenWithRules(tokenBytes, RequestContext{
+		PeerID:   callerPeer,
+		Protocol: "/denied/proto",
+	})
+	if err == nil {
+		t.Fatal("verifyBiscuitTokenWithRules succeeded for denied protocol, want policy denial error")
+	}
+	if errors.Is(err, biscuit.ErrInvalidSignature) || strings.Contains(err.Error(), "invalid signature") {
+		t.Fatalf("verifyBiscuitTokenWithRules overwrote policy denial with signature error from second key: %v", err)
 	}
 }

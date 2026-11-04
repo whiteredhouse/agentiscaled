@@ -224,11 +224,11 @@ func main() {
 
 	// Embedded control plane tunables.
 	rootCmd.Flags().DurationVar(&cpTunables.LeaseDuration, "control-plane-lease-duration", 0, "Router lease validity (0 keeps the component default)")
-	rootCmd.Flags().IntVar(&cpTunables.DHTReplication, "dht-replication", 0, "How many routers hold each service a member publishes and answer each lookup (0 keeps the component default of 3); published on /info for the whole mesh")
+	rootCmd.Flags().IntVar(&cpTunables.DHTReplication, "dht-replication", 0, "How many routers closest to the key get a copy of each record a member announces, besides the router that keeps it (0 keeps the component default of 3); published on /info for the whole mesh")
 	rootCmd.Flags().DurationVar(&cpTunables.DHTReprovideInterval, "dht-reprovide-interval", 0, "How often a member re-announces each service it publishes (0 keeps the component default of 5m); a stopped provider stays listed for three intervals; published on /info for the whole mesh")
 	rootCmd.Flags().DurationVar(&cpTunables.KeyRotationInterval, "control-plane-key-rotation-interval", 0, "Biscuit signing key rotation interval (0 keeps the component default)")
 	rootCmd.Flags().DurationVar(&cpTunables.KeyGracePeriod, "control-plane-key-grace-period", 0, "How long rotated-out keys stay valid for verification (0 keeps the component default)")
-	rootCmd.Flags().StringVar(&cpTunables.SigningKeyPath, "signing-key-path", "", "PEM file with the control plane's private signing keys (PKCS#8 or SEC 1): Ed25519 for Biscuits, P-256 for the ES256 JWTs; the first key of each kind signs, later ones only verify. Turns automatic key rotation off: rotate by publishing a new first key and keeping the previous one for the grace period")
+	rootCmd.Flags().StringVar(&cpTunables.SigningKeyPath, "signing-key-path", "", "PEM file with the control plane's private signing keys (PKCS#8 or SEC 1): Ed25519 for Biscuits, P-256 for the ES256 JWTs; the first key of each kind signs, later ones only verify. Turns automatic key rotation off: rotate by publishing a new first key and keeping the previous one until every credential it signed has expired")
 	rootCmd.Flags().DurationVar(&cpTunables.BiscuitTTL, "control-plane-biscuit-ttl", 0, "Lifespan minted into issued biscuits (0 keeps the component default)")
 	rootCmd.Flags().DurationVar(&cpTunables.WorkloadSessionTTL, "control-plane-workload-session-ttl", 0, "How long a workload-issuer enrollment stays refreshable without presenting a fresh platform JWT on /refresh (0 keeps the component default)")
 	rootCmd.Flags().DurationVar(&cpTunables.NodeRetention, "control-plane-node-retention", 0, "How long a node record is kept after its session expired, or after its last refresh for a bootstrap enrollment, before it is deleted (0 keeps the component default)")
@@ -279,6 +279,7 @@ func printBanner(srv *standalone.Server, tun tunnel.Tunnel, secrets bannerSecret
 		fmt.Printf("Tunnel:       %s -> http://%s\n", tun.URL(), srv.Addr())
 	}
 	fmt.Printf("Web Console:  %s/console\n", base)
+	fmt.Printf("Ingress URL:  %s\n", srv.IngressURL())
 	fmt.Printf("Router Peer:  %s\n", srv.PeerID())
 	fmt.Printf("Admin Token:  %s\n", adminShown)
 	switch {

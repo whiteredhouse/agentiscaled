@@ -30,6 +30,10 @@ import (
 // never authenticated while the stream waited.
 const streamScopeUnauthenticated = "unauthenticated"
 
+// streamScopeNotRouter labels a stream the gate refused on a router-only
+// protocol: its peer authenticated, but not as mesh:role:router.
+const streamScopeNotRouter = "not_router"
+
 // authWait bounds how long a stream waits for its peer's handshake: a
 // router's auth deadline for the connection, so a peer that never
 // authenticates is cut off with it.
@@ -66,23 +70,52 @@ func (h *meshHost) NewStream(ctx context.Context, p peer.ID, pids ...protocol.ID
 	return h.Host.NewStream(ctx, p, pids...)
 }
 
+// routerHost is meshHost for a protocol only routers speak to a member, such
+// as external HTTP ingress forwarding. A handler installed through it is
+// served only to a peer that authenticated as mesh:role:router: a router this
+// node attached to, or one that completed the handshake with this node and
+// carried the role in its credential. Any other authenticated peer is refused
+// before the handler reads a byte, so a member cannot reach the handler's
+// parser at all; the handler's own credential check then only confirms what
+// the gate decided.
+type routerHost struct {
+	meshHost
+}
+
+func (h *routerHost) SetStreamHandler(pid protocol.ID, handler network.StreamHandler) {
+	h.Host.SetStreamHandler(pid, h.n.requireRouter(handler))
+}
+
+func (h *routerHost) SetStreamHandlerMatch(pid protocol.ID, match func(protocol.ID) bool, handler network.StreamHandler) {
+	h.Host.SetStreamHandlerMatch(pid, match, h.n.requireRouter(handler))
+}
+
 // isPeerAuthenticated reports whether p is a router this node authenticated
 // with on an open session, or a peer whose handshake with this node holds.
 func (n *AgentMeshNode) isPeerAuthenticated(p peer.ID) bool {
 	return n.isAuthenticatedAndConnected(p) || n.isAdmitted(p)
 }
 
-// ensurePeerAuthenticated returns once p is authenticated: for a router the
-// control plane lists, by running the handshake (one at a time per router,
-// shared with the one the connection notifee started). Any other peer
-// authenticates with this node when it calls it; until it has, nothing is
-// sent to it, and a lookup is not held waiting for a peer it cannot vouch
-// for.
+// isAuthenticatedRouter reports whether p authenticated as a router: on a
+// session this node opened to it after verifying role("mesh:role:router"),
+// or by completing the handshake with this node with a credential that
+// carried the role.
+func (n *AgentMeshNode) isAuthenticatedRouter(p peer.ID) bool {
+	return n.isAuthenticatedAndConnected(p) || n.isAdmittedRouter(p)
+}
+
+// ensurePeerAuthenticated returns once p is authenticated: for an unattached
+// router the control plane lists, by running the handshake (one at a time per
+// router). A router this node is already attached to whose session dropped is
+// left to redialRouter and the connection monitor rather than re-dialled by an
+// in-flight directory or gossip stream. Any other peer authenticates with this
+// node when it calls it; until it has, nothing is sent to it, and a lookup is
+// not held waiting for a peer it cannot vouch for.
 func (n *AgentMeshNode) ensurePeerAuthenticated(ctx context.Context, p peer.ID) error {
 	if n.isPeerAuthenticated(p) {
 		return nil
 	}
-	if !n.isCatalogRouter(p) {
+	if !n.isCatalogRouter(p) || n.isAttached(p) {
 		return fmt.Errorf("%s: %w", p, errNotAuthenticated)
 	}
 	biscuitBytes, err := n.loadIdentityForAuth()
@@ -99,12 +132,35 @@ func (n *AgentMeshNode) requireAuthenticated(next network.StreamHandler) network
 		p := s.Conn().RemotePeer()
 		if err := n.awaitPeerAuthenticated(context.Background(), p); err != nil {
 			streamsRefusedTotal.WithLabelValues(streamScopeUnauthenticated, string(s.Protocol())).Inc()
+			if n.config.OnStreamRefused != nil {
+				n.config.OnStreamRefused(streamScopeUnauthenticated, string(s.Protocol()))
+			}
 			logger.Debugf("[AuthZ] Refusing %s stream from %s: %v", s.Protocol(), p, err)
 			_ = s.Reset()
 			return
 		}
 		next(s)
 	}
+}
+
+// requireRouter wraps a stream handler so it runs only for a peer that
+// authenticated as a router. The peer gets the same wait for its handshake
+// as requireAuthenticated; a peer that then holds any other role is refused
+// at once, logged, and counted under streamScopeNotRouter.
+func (n *AgentMeshNode) requireRouter(next network.StreamHandler) network.StreamHandler {
+	return n.requireAuthenticated(func(s network.Stream) {
+		p := s.Conn().RemotePeer()
+		if !n.isAuthenticatedRouter(p) {
+			streamsRefusedTotal.WithLabelValues(streamScopeNotRouter, string(s.Protocol())).Inc()
+			if n.config.OnStreamRefused != nil {
+				n.config.OnStreamRefused(streamScopeNotRouter, string(s.Protocol()))
+			}
+			logger.Warnf("[AuthZ] Refusing %s stream from %s: peer is authenticated but not a router", s.Protocol(), p)
+			_ = s.Reset()
+			return
+		}
+		next(s)
+	})
 }
 
 // isCatalogRouter reports whether p is a router the control plane lists.

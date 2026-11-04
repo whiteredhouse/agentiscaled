@@ -42,17 +42,17 @@ func controlPlaneClient(controlPlaneURL string) *cpclient.Client {
 // controlPlane returns a control plane client configured with this node's
 // peer ID and private key so authenticated requests carry a signed challenge.
 func (n *AgentMeshNode) controlPlane(controlPlaneURL string) *cpclient.Client {
-	c := controlPlaneClient(controlPlaneURL)
 	if n == nil {
-		return c
+		return controlPlaneClient(controlPlaneURL)
 	}
+	c := cpclient.New(controlPlaneURL, n.cpHTTPClient(10*time.Second))
 	priv := n.config.PrivKey
 	if priv == nil && n.Store != nil {
 		if kb, err := n.Store.LoadKey(); err == nil {
 			if len(kb) > 0 {
 				priv, _ = crypto.UnmarshalPrivateKey(kb)
 			} else {
-				priv = GetOrGenerateKey(n.Store)
+				priv, _ = LoadOrGenerateKey(n.Store)
 			}
 		}
 	}
@@ -68,18 +68,22 @@ func (n *AgentMeshNode) controlPlane(controlPlaneURL string) *cpclient.Client {
 	return c
 }
 
-// FetchControlPlaneInfo retrieves the latest configuration from the control plane's /info endpoint.
-func FetchControlPlaneInfo(ctx context.Context, controlPlaneURL string) (*api.ControlPlaneInfoResponse, error) {
-	return controlPlaneClient(controlPlaneURL).FetchInfo(ctx)
+func (n *AgentMeshNode) fetchControlPlaneInfo(ctx context.Context, controlPlaneURL string) (*api.ControlPlaneInfoResponse, error) {
+	return n.controlPlane(controlPlaneURL).FetchInfo(ctx)
 }
 
-// FetchControlPlaneKeys retrieves the full set of currently valid control
+// fetchControlPlaneKeys retrieves the full set of currently valid control
 // plane public keys from /keys, the same catch-up path routers use.
 // Enrollment only hands out the newest key, so this is how a node learns
 // keys still in their rotation grace period, or rotations it missed while
 // offline. The set is accepted only if signed by a key in trusted.
-func FetchControlPlaneKeys(ctx context.Context, controlPlaneURL string, trusted []ed25519.PublicKey) ([]ed25519.PublicKey, error) {
-	return controlPlaneClient(controlPlaneURL).FetchKeys(ctx, trusted)
+func (n *AgentMeshNode) fetchControlPlaneKeys(ctx context.Context, controlPlaneURL string, trusted []ed25519.PublicKey) ([]ed25519.PublicKey, error) {
+	return n.controlPlane(controlPlaneURL).FetchKeys(ctx, trusted)
+}
+
+// FetchControlPlaneInfo retrieves the latest configuration from the control plane's /info endpoint.
+func FetchControlPlaneInfo(ctx context.Context, controlPlaneURL string) (*api.ControlPlaneInfoResponse, error) {
+	return controlPlaneClient(controlPlaneURL).FetchInfo(ctx)
 }
 
 // mergeTrustedKeys replaces the stored trust set with the authoritative set

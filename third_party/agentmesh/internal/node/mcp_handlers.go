@@ -189,7 +189,7 @@ type FindRemoteToolsParams struct {
 	Intent      string `json:"intent,omitempty" jsonschema:"Natural-language description of what the caller is looking for. Reserved for future semantic ranking; currently accepted but ignored."`
 	PeerID      string `json:"peer_id,omitempty" jsonschema:"Restrict the search to a single peer. Empty means search the whole mesh."`
 	ServiceName string `json:"service_name,omitempty" jsonschema:"Restrict results to tools whose name starts with this service prefix (e.g. 'code-reviewer'). Empty means no service filter."`
-	ToolName    string `json:"tool_name,omitempty" jsonschema:"Exact (non-namespaced) tool name to locate across the mesh, e.g. 'review_pr'. Served from gossip announcements when fresh; falls back to a mesh-wide fetch. Empty means list all tools."`
+	ToolName    string `json:"tool_name,omitempty" jsonschema:"Exact (non-namespaced) tool name to locate across the mesh, e.g. 'review_pr'. Empty means list all tools."`
 }
 
 // remoteToolRow is one entry in the find_remote_tools response.
@@ -220,11 +220,6 @@ func (n *AgentMeshNode) handleFindRemoteTools(ctx context.Context, req *mcp.Call
 		logger.Debugf("[find_remote_tools] intent (ignored): %q", params.Intent)
 	}
 
-	selfID := n.Host.ID().String()
-	if params.PeerID != "" && params.PeerID == selfID {
-		return nil, nil, fmt.Errorf("peer_id %q is this node; cross-mesh discovery cannot target self", params.PeerID)
-	}
-
 	serviceFilter, err := normalizeServiceFilter(params.ServiceName)
 	if err != nil {
 		return nil, nil, err
@@ -237,6 +232,9 @@ func (n *AgentMeshNode) handleFindRemoteTools(ctx context.Context, req *mcp.Call
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid peer_id %q: %w", params.PeerID, err)
 		}
+		if pid == n.Host.ID() {
+			return nil, nil, fmt.Errorf("peer_id %q is this node; cross-mesh discovery cannot target self", params.PeerID)
+		}
 		peerRows, err := n.fetchRemoteToolCatalogue(ctx, pid, serviceFilter)
 		if err != nil {
 			return nil, nil, err
@@ -247,17 +245,17 @@ func (n *AgentMeshNode) handleFindRemoteTools(ctx context.Context, req *mcp.Call
 		if err != nil {
 			return nil, nil, fmt.Errorf("discover providers: %w", err)
 		}
-		seen := map[string]bool{}
+		seen := map[peer.ID]bool{}
 		var peerIDs []peer.ID
 		for _, p := range providers {
-			if p.PeerId == selfID || seen[p.PeerId] {
-				continue
-			}
-			seen[p.PeerId] = true
 			pid, err := peer.Decode(p.PeerId)
 			if err != nil {
 				continue
 			}
+			if pid == n.Host.ID() || seen[pid] {
+				continue
+			}
+			seen[pid] = true
 			peerIDs = append(peerIDs, pid)
 		}
 

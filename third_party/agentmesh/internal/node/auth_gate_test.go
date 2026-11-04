@@ -48,10 +48,13 @@ func TestNodeStreamsToARouterFollowItsHandshake(t *testing.T) {
 
 	r1 := newFakeRouter(t, "/ip4/127.0.0.1/tcp/0")
 	r2 := newFakeRouterWithKey(t, r1.cpPub, r1.cpPriv, "/ip4/127.0.0.1/tcp/0")
-	node := r1.startNode(t, ctx, append(r1.routerAddrs, r2.routerAddrs...), func(o *Options) { o.Routers = 1 })
-	other := r2
+	node := r1.startNode(t, ctx, append(r1.routerAddrs, r2.routerAddrs...), func(o *Options) {
+		o.Routers = 1
+		o.RouterRedialDelay = -1
+	})
+	attached, other := r1, r2
 	if node.attachedRouters()[0] == r2.h.ID() {
-		other = r1
+		attached, other = r2, r1
 	}
 	other.h.SetStreamHandler(echoProtocol, echo)
 	gated := &meshHost{Host: node.Host, n: node}
@@ -66,6 +69,17 @@ func TestNodeStreamsToARouterFollowItsHandshake(t *testing.T) {
 	}
 	if got := other.handshakes.Load(); got != 1 {
 		t.Errorf("the router saw %d handshakes, want 1", got)
+	}
+
+	// An attached router whose session dropped is left to redialRouter and
+	// the connection monitor; an in-flight stream on gated must not
+	// re-handshake it on its own.
+	dropFromRouter(t, attached.h, node)
+	if _, err := gated.NewStream(ctx, attached.h.ID(), echoProtocol); !errors.Is(err, errNotAuthenticated) {
+		t.Fatalf("NewStream to a dropped attached router: err = %v, want %v", err, errNotAuthenticated)
+	}
+	if got := attached.handshakes.Load(); got != 1 {
+		t.Fatalf("dropped attached router saw %d handshakes, want 1", got)
 	}
 
 	stranger, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))

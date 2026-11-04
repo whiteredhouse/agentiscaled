@@ -328,14 +328,19 @@ func isValidHostHeader(host string) bool {
 	return true
 }
 
-// oidcIssuerURL returns the canonical OIDC issuer URL for this control plane.
+// oidcIssuerURL returns the canonical OIDC issuer URL for this control plane:
+// STSIssuerURL when the operator stated it, else this listener as the
+// request reached it. Nothing is read from X-Forwarded-* headers: behind a
+// TLS-terminating proxy the operator states the public URL (--sts-issuer-url,
+// or --external-url on agentmesh-one), so that the issuer is one value for
+// every client and not whatever a request claimed.
 func (s *Server) oidcIssuerURL(r *http.Request) string {
 	if iss := strings.TrimRight(strings.TrimSpace(s.config.STSIssuerURL), "/"); iss != "" {
 		return iss
 	}
 	scheme := "http"
 	if r != nil {
-		if r.TLS != nil || (s.config.TrustForwardedHeaders && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")) {
+		if r.TLS != nil {
 			scheme = "https"
 		}
 		if host := strings.TrimSpace(r.Host); isValidHostHeader(host) {
@@ -1034,11 +1039,16 @@ func (s *Server) HandleSTSToken(w http.ResponseWriter, r *http.Request) {
 
 	claims, status, err := s.authorizeBiscuitForEgress(r.Context(), req.Biscuit, req.Destination)
 	if err != nil {
+		clientPeerID := ""
+		if claims != nil {
+			clientPeerID = claims.ClientPeerID
+		}
 		logger.Infow("Border Crossing",
 			"direction", "outbound",
 			"endpoint", "/sts/token",
 			"decision", "deny",
 			"actor_node", nodeRecord.PeerID,
+			"client_peer_id", clientPeerID,
 			"audience", audience,
 			"destination", req.Destination,
 			"reason", err.Error(),
@@ -1093,6 +1103,7 @@ func (s *Server) HandleSTSToken(w http.ResponseWriter, r *http.Request) {
 		"endpoint", "/sts/token",
 		"decision", "allow",
 		"actor_node", nodeRecord.PeerID,
+		"client_peer_id", claims.ClientPeerID,
 		"subject", subject,
 		"audience", audience,
 		"destination", req.Destination,
@@ -1164,6 +1175,10 @@ func mustParseSTSRule(s string) biscuit.Rule {
 	return r
 }
 
+// authorizeBiscuitForEgress verifies the caller's Biscuit and its tar_block chain
+// against egress://<destination>. Once the Biscuit has verified, it returns the
+// claims even when it refuses the request, so the caller's Border Crossing line
+// can name the origin peer the Biscuit is bound to.
 func (s *Server) authorizeBiscuitForEgress(ctx context.Context, rawBiscuit []byte, destination string) (*identity.VerifiedBiscuitClaims, int, error) {
 	trustedKeys, err := s.store.GetAllValidPublicKeys(ctx)
 	if err != nil {
@@ -1174,76 +1189,59 @@ func (s *Server) authorizeBiscuitForEgress(ctx context.Context, rawBiscuit []byt
 		return nil, http.StatusForbidden, fmt.Errorf("invalid caller biscuit: %w", err)
 	}
 	if status, revErr := s.checkBiscuitRevocationAndBans(ctx, claims); revErr != nil {
-		return nil, status, revErr
+		return claims, status, revErr
 	}
 	if claims.ClientPeerID == "" {
-		return nil, http.StatusForbidden, errors.New("caller biscuit lacks client_peer_id")
+		return claims, http.StatusForbidden, errors.New("caller biscuit lacks client_peer_id")
 	}
 	clientPeer, err := peer.Decode(claims.ClientPeerID)
 	if err != nil {
-		return nil, http.StatusForbidden, fmt.Errorf("invalid client_peer_id in biscuit: %w", err)
+		return claims, http.StatusForbidden, fmt.Errorf("invalid client_peer_id in biscuit: %w", err)
 	}
 	if err := identity.RequireAuthorityRequestBinding(claims.Biscuit, clientPeer); err != nil {
-		return nil, http.StatusForbidden, err
+		return claims, http.StatusForbidden, err
 	}
 
 	authorizer, err := claims.Biscuit.Authorizer(claims.VerifyingKey, identity.AuthorizerOptions(s.config.BiscuitTimeout)...)
 	if err != nil {
-		return nil, http.StatusForbidden, err
+		return claims, http.StatusForbidden, err
 	}
-	authorizer.AddFact(biscuit.Fact{
-		Predicate: biscuit.Predicate{
-			Name: api.FactService,
-			IDs:  []biscuit.Term{biscuit.String("egress"), biscuit.String(destination)},
-		},
-	})
-	authorizer.AddFact(biscuit.Fact{
-		Predicate: biscuit.Predicate{
-			Name: api.FactConnectionPeerID,
-			IDs:  []biscuit.Term{biscuit.String(clientPeer.String())},
-		},
-	})
-	authorizer.AddCheck(api.BaselineReplayCheck)
-	authorizer.AddFact(api.MarkerFact(api.FactTargetUnrestricted))
-	authorizer.AddCheck(api.BaselineTargetCheck)
-	identity.EnforceExpiration(authorizer)
-
-	for _, p := range api.BaselinePolicies {
-		authorizer.AddPolicy(p)
-	}
-	for _, r := range api.BaselineRules {
-		authorizer.AddRule(r)
-	}
-	for _, r := range api.BaselineHTTPRules {
-		authorizer.AddRule(r)
-	}
-	// Destination-level STS minting checks whether the role grants egress://<destination>
-	// at all (plain or HTTP-narrowed); per-request method/path restrictions are
-	// enforced by the egress agentmesh-node PEP on the wire HTTP request.
-	for _, r := range stsDestinationRules {
-		authorizer.AddRule(r)
-	}
-
 	roles, bindings, err := s.store.GetMeshPolicy(ctx)
 	if err != nil && err != storage.ErrNotFound {
-		return nil, http.StatusInternalServerError, fmt.Errorf("failed to load mesh policy: %w", err)
+		return claims, http.StatusInternalServerError, fmt.Errorf("failed to load mesh policy: %w", err)
 	}
 	egressDests, err := s.store.GetEgressDestinations(ctx)
 	if err != nil && err != storage.ErrNotFound {
-		return nil, http.StatusInternalServerError, fmt.Errorf("failed to load egress destinations: %w", err)
+		return claims, http.StatusInternalServerError, fmt.Errorf("failed to load egress destinations: %w", err)
 	}
 	policyRules, _ := api.BuildPolicyRules(roles, bindings)
 	policyRules = append(policyRules, api.BuildEgressServingRules(egressDests)...)
+	meshRules := make([]biscuit.Rule, 0, len(policyRules))
 	for _, pr := range policyRules {
-		authorizer.AddRule(pr.Rule)
+		meshRules = append(meshRules, pr.Rule)
 	}
 
-	if err := authorizer.Authorize(); err != nil {
-		return nil, http.StatusForbidden, fmt.Errorf("standing policy denied egress://%s: %w", destination, err)
+	// The same assembly every node PEP runs. The control plane has no
+	// provider credential of its own to match target grants against, so the
+	// request is unrestricted on targets; it is bound to the client peer the
+	// Biscuit names, as a stream to that node would be. Destination-level
+	// minting asks whether the role grants egress://<destination> at all
+	// (plain or HTTP-narrowed, stsDestinationRules); per-request method and
+	// path restrictions are enforced by the egress agentmesh-node on the
+	// wire HTTP request.
+	meshReq := identity.MeshRequest{
+		ServiceType:    api.ServiceTypeStringEgress,
+		ServiceName:    destination,
+		Unrestricted:   true,
+		ConnectionPeer: clientPeer,
+	}
+	pol := identity.MeshPolicy{LocalRules: stsDestinationRules, MeshRules: meshRules}
+	if err := identity.AuthorizeMeshRequest(authorizer, meshReq, pol); err != nil {
+		return claims, http.StatusForbidden, fmt.Errorf("standing policy denied egress://%s: %w", destination, err)
 	}
 
 	if err := api.EvaluateTaskRulesForDestination(claims.TaskRules, "egress", destination, time.Now()); err != nil {
-		return nil, http.StatusForbidden, err
+		return claims, http.StatusForbidden, err
 	}
 
 	// Collect any roles derived via Datalog policy bindings so mesh_roles is complete.

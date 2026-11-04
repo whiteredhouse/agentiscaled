@@ -15,15 +15,22 @@
 package standalone
 
 import (
-	"crypto/tls"
+	"context"
+	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/google/agentmesh/api"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	dto "github.com/prometheus/client_model/go"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -137,136 +144,208 @@ func TestEnsureRouterKeyDeterministic(t *testing.T) {
 	}
 }
 
-func TestInferredRequestMultiaddr(t *testing.T) {
-	const testPeerID = "12D3KooWBzUDQCkZhz2rWrYBhpjcCH8VnrRNcwCW6DoF36iADYrY"
-
-	reqCloudRun, _ := http.NewRequest(http.MethodGet, "http://0.0.0.0:8080/info", nil)
-	reqCloudRun.Host = "agentmesh-one-xyz-uc.a.run.app"
-	reqCloudRun.Header.Set("X-Forwarded-Proto", "https")
-	got, ok := inferredRequestMultiaddr(reqCloudRun, testPeerID)
-	want := "/dns4/agentmesh-one-xyz-uc.a.run.app/tcp/443/wss/p2p/" + testPeerID
-	if !ok || got != want {
-		t.Fatalf("CloudRun inferredRequestMultiaddr = (%q, %v), want (%q, true)", got, ok, want)
+// A hub behind a reverse proxy that did not state --external-url advertises
+// its own listener, which members behind the proxy cannot reach. The first
+// proxied request says so, every proxied request is counted, and the
+// request itself is served unchanged. With --external-url, or without
+// forwarded headers, nothing is counted.
+func TestWrapPublicHTTPHandlerCountsProxiedRequestsWithoutExternalURL(t *testing.T) {
+	served := 0
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served++
+		w.WriteHeader(http.StatusNoContent)
+	})
+	counter := func(t *testing.T) float64 {
+		t.Helper()
+		var m dto.Metric
+		if err := proxiedWithoutExternalURL.Write(&m); err != nil {
+			t.Fatal(err)
+		}
+		return m.GetCounter().GetValue()
+	}
+	serve := func(h http.Handler, forwardedProto, forwardedHost string) int {
+		req := httptest.NewRequest(http.MethodGet, "http://0.0.0.0:8080/info", nil)
+		if forwardedProto != "" {
+			req.Header.Set("X-Forwarded-Proto", forwardedProto)
+		}
+		if forwardedHost != "" {
+			req.Header.Set("X-Forwarded-Host", forwardedHost)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
 	}
 
-	reqTLS, _ := http.NewRequest(http.MethodGet, "https://mesh.example.com:8443/info", nil)
-	reqTLS.Host = "mesh.example.com:8443"
-	reqTLS.TLS = &tls.ConnectionState{}
-	got, ok = inferredRequestMultiaddr(reqTLS, testPeerID)
-	want = "/dns4/mesh.example.com/tcp/8443/wss/p2p/" + testPeerID
-	if !ok || got != want {
-		t.Fatalf("TLS inferredRequestMultiaddr = (%q, %v), want (%q, true)", got, ok, want)
+	inferring := (&Server{opts: Options{}}).wrapPublicHTTPHandler(next)
+	before := counter(t)
+	if code := serve(inferring, "", ""); code != http.StatusNoContent {
+		t.Fatalf("plain request: status %d, want 204", code)
+	}
+	if got := counter(t); got != before {
+		t.Errorf("plain request counted: %v, want %v", got, before)
+	}
+	if code := serve(inferring, "https", "agentmesh-one-xyz-uc.a.run.app"); code != http.StatusNoContent {
+		t.Fatalf("proxied request: status %d, want 204 (served unchanged)", code)
+	}
+	if code := serve(inferring, "", "agentmesh-one-xyz-uc.a.run.app"); code != http.StatusNoContent {
+		t.Fatalf("proxied request (host only): status %d, want 204", code)
+	}
+	if got := counter(t); got != before+2 {
+		t.Errorf("two proxied requests counted as %v, want %v", got-before, 2)
 	}
 
-	reqLoopback, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:8080/info", nil)
-	reqLoopback.Host = "127.0.0.1:8080"
-	if got, ok := inferredRequestMultiaddr(reqLoopback, testPeerID); ok {
-		t.Fatalf("Loopback HTTP should not infer external multiaddr, got %q", got)
+	explicit := (&Server{opts: Options{ExternalURL: "https://mesh.example.com"}}).wrapPublicHTTPHandler(next)
+	before = counter(t)
+	if code := serve(explicit, "https", "agentmesh-one-xyz-uc.a.run.app"); code != http.StatusNoContent {
+		t.Fatalf("with --external-url: status %d, want 204", code)
+	}
+	if got := counter(t); got != before {
+		t.Errorf("with --external-url a proxied request was counted: %v, want %v", got, before)
+	}
+	if served != 4 {
+		t.Errorf("next handler served %d requests, want 4", served)
 	}
 }
 
-func TestPrependInferredRouterAddr(t *testing.T) {
-	const inferred = "/dns4/agentmesh-one-xyz.a.run.app/tcp/443/wss/p2p/12D3KooWBzUDQCkZhz2rWrYBhpjcCH8VnrRNcwCW6DoF36iADYrY"
-	const local = "/ip4/127.0.0.1/tcp/8080/ws/p2p/12D3KooWBzUDQCkZhz2rWrYBhpjcCH8VnrRNcwCW6DoF36iADYrY"
+func roleGrantsIngressMode(r *api.PolicyRole, mode api.IngressAuthMode) bool {
+	for _, g := range r.GetAllowedIngress() {
+		modes := g.GetAllowedAuthModes()
+		if len(modes) == 0 {
+			if mode == api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE {
+				return true
+			}
+			continue
+		}
+		if slices.Contains(modes, mode) {
+			return true
+		}
+	}
+	return false
+}
 
-	enrollIn, err := proto.Marshal(&api.BootstrapEnrollResponse{
-		RouterAddresses: []string{local},
-	})
-	if err != nil {
-		t.Fatalf("Marshal BootstrapEnrollResponse: %v", err)
+func TestDefaultDevPolicyRolesSafeIngressCeiling(t *testing.T) {
+	roles := defaultDevPolicyRoles()
+	var nodeRole *api.PolicyRole
+	for _, r := range roles {
+		if r.GetName() == api.RoleNode {
+			nodeRole = r
+			break
+		}
 	}
-	enrollOutBytes, ok := prependInferredRouterAddr("/enroll", enrollIn, inferred)
-	if !ok {
-		t.Fatal("prependInferredRouterAddr(/enroll) returned false")
+	if nodeRole == nil {
+		t.Fatalf("defaultDevPolicyRoles missing %s", api.RoleNode)
 	}
-	var enrollOut api.BootstrapEnrollResponse
-	if err := proto.Unmarshal(enrollOutBytes, &enrollOut); err != nil {
-		t.Fatalf("Unmarshal BootstrapEnrollResponse: %v", err)
+	if !roleGrantsIngressMode(nodeRole, api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE) {
+		t.Errorf("default %s role denied INGRESS_AUTH_MODE_EDGE, want allowed", api.RoleNode)
 	}
-	if len(enrollOut.RouterAddresses) != 2 || enrollOut.RouterAddresses[0] != inferred || enrollOut.RouterAddresses[1] != local {
-		t.Fatalf("BootstrapEnrollResponse.RouterAddresses = %v, want [%s %s]", enrollOut.RouterAddresses, inferred, local)
-	}
-
-	regIn, err := proto.Marshal(&api.EnrollResponse{
-		BiscuitToken:    []byte("tok"),
-		RouterAddresses: []string{local},
-	})
-	if err != nil {
-		t.Fatalf("Marshal EnrollResponse: %v", err)
-	}
-	regOutBytes, ok := prependInferredRouterAddr("/register", regIn, inferred)
-	if !ok {
-		t.Fatal("prependInferredRouterAddr(/register) returned false")
-	}
-	var regOut api.EnrollResponse
-	if err := proto.Unmarshal(regOutBytes, &regOut); err != nil {
-		t.Fatalf("Unmarshal EnrollResponse: %v", err)
-	}
-	if len(regOut.RouterAddresses) != 2 || regOut.RouterAddresses[0] != inferred || regOut.RouterAddresses[1] != local {
-		t.Fatalf("EnrollResponse.RouterAddresses = %v, want [%s %s]", regOut.RouterAddresses, inferred, local)
-	}
-
-	// /info carries the per-router list a member prefers; the entry for this
-	// router gets the inferred address, another router's entry is untouched.
-	const otherPeer = "12D3KooWDk5pWkyxVERi6kt3TyRZCaXWqg441QEQxaGkn5rWHB21"
-	const otherAddr = "/dns4/router-b.example.com/tcp/443/wss/p2p/" + otherPeer
-	infoIn, err := proto.Marshal(&api.ControlPlaneInfoResponse{
-		RouterAddresses: []string{local},
-		Routers: []*api.RouterInfo{
-			{PeerId: "12D3KooWBzUDQCkZhz2rWrYBhpjcCH8VnrRNcwCW6DoF36iADYrY", Addresses: []string{local}},
-			{PeerId: otherPeer, Addresses: []string{otherAddr}},
-			{PeerId: "not-a-peer-id", Addresses: []string{"/ip4/10.0.0.1/tcp/1/ws"}},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Marshal ControlPlaneInfoResponse: %v", err)
-	}
-	infoOutBytes, ok := prependInferredRouterAddr("/info", infoIn, inferred)
-	if !ok {
-		t.Fatal("prependInferredRouterAddr(/info) returned false")
-	}
-	var infoOut api.ControlPlaneInfoResponse
-	if err := proto.Unmarshal(infoOutBytes, &infoOut); err != nil {
-		t.Fatalf("Unmarshal ControlPlaneInfoResponse: %v", err)
-	}
-	if len(infoOut.RouterAddresses) != 2 || infoOut.RouterAddresses[0] != inferred || infoOut.RouterAddresses[1] != local {
-		t.Fatalf("ControlPlaneInfoResponse.RouterAddresses = %v, want [%s %s]", infoOut.RouterAddresses, inferred, local)
-	}
-	if len(infoOut.Routers) != 3 {
-		t.Fatalf("ControlPlaneInfoResponse.Routers has %d entries, want 3", len(infoOut.Routers))
-	}
-	if got := infoOut.Routers[0].Addresses; len(got) != 2 || got[0] != inferred || got[1] != local {
-		t.Fatalf("Routers[0].Addresses = %v, want [%s %s]", got, inferred, local)
-	}
-	if got := infoOut.Routers[1].Addresses; len(got) != 1 || got[0] != otherAddr {
-		t.Fatalf("Routers[1].Addresses = %v, want [%s] (another router's entry must not change)", got, otherAddr)
-	}
-	if got := infoOut.Routers[2].Addresses; len(got) != 1 || got[0] != "/ip4/10.0.0.1/tcp/1/ws" {
-		t.Fatalf("Routers[2].Addresses = %v, want the entry with an undecodable peer id untouched", got)
-	}
-
-	if returnsRouterAddresses("/refresh") {
-		t.Fatal("returnsRouterAddresses(/refresh) = true, want false")
-	}
-	if !returnsRouterAddresses("/register") {
-		t.Fatal("returnsRouterAddresses(/register) = false, want true")
+	if roleGrantsIngressMode(nodeRole, api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH) {
+		t.Errorf("default %s role allowed INGRESS_AUTH_MODE_PASSTHROUGH, want denied by safe default", api.RoleNode)
 	}
 }
 
-func TestResponseRecorder(t *testing.T) {
-	rec := newResponseRecorder()
-	rec.Header().Set("Content-Length", "12")
-	rec.WriteHeader(http.StatusCreated)
-	if _, err := rec.Write([]byte("hello world!")); err != nil {
-		t.Fatalf("rec.Write: %v", err)
+func TestStandaloneSinglePortIngressAndSeededPolicy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	srv, err := New(Options{
+		BindAddress: "127.0.0.1:0",
+		DataDir:     t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
-	if rec.code != http.StatusCreated {
-		t.Fatalf("rec.code = %d, want %d", rec.code, http.StatusCreated)
+	if err := srv.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
-	if got := rec.body.String(); got != "hello world!" {
-		t.Fatalf("rec.body = %q, want %q", got, "hello world!")
+	t.Cleanup(func() { _ = srv.Close() })
+
+	wantIngressURL := srv.PublicURL() + "/ingress"
+	if got := srv.IngressURL(); got != wantIngressURL {
+		t.Fatalf("srv.IngressURL() = %q, want %q", got, wantIngressURL)
 	}
-	if got := rec.Header().Get("Content-Length"); got != "12" {
-		t.Fatalf("rec.Header(Content-Length) = %q, want 12", got)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// Wait briefly for the embedded router's initial lease to be visible on /info.
+	var leasedIngressURL string
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		infoReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.PublicURL()+"/info", nil)
+		infoReq.Header.Set("Accept", "application/x-protobuf")
+		resp, err := client.Do(infoReq)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			var info api.ControlPlaneInfoResponse
+			if proto.Unmarshal(body, &info) == nil && len(info.GetRouters()) == 1 {
+				leasedIngressURL = info.GetRouters()[0].GetIngressUrl()
+				if leasedIngressURL != "" {
+					break
+				}
+			}
+		} else if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("router lease on /info never advertised ingress_url (got %q)", leasedIngressURL)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if leasedIngressURL != wantIngressURL {
+		t.Fatalf("/info router ingress_url = %q, want %q", leasedIngressURL, wantIngressURL)
+	}
+
+	// RFC 9728 metadata on /ingress/.well-known/oauth-protected-resource must
+	// advertise the public single-port URL, not the internal loopback CP port.
+	metaResp, err := client.Get(srv.IngressURL() + "/.well-known/oauth-protected-resource")
+	if err != nil {
+		t.Fatalf("GET oauth-protected-resource: %v", err)
+	}
+	defer func() { _ = metaResp.Body.Close() }()
+	if metaResp.StatusCode != http.StatusOK {
+		t.Fatalf("oauth-protected-resource status = %d, want 200", metaResp.StatusCode)
+	}
+	var meta api.OAuthProtectedResourceMetadata
+	if err := json.NewDecoder(metaResp.Body).Decode(&meta); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if meta.Resource != wantIngressURL {
+		t.Fatalf("meta.Resource = %q, want %q", meta.Resource, wantIngressURL)
+	}
+	if len(meta.AuthorizationServers) != 1 || meta.AuthorizationServers[0] != srv.PublicURL() {
+		t.Fatalf("meta.AuthorizationServers = %v, want [%s]", meta.AuthorizationServers, srv.PublicURL())
+	}
+
+	// Seeded dev policy includes allowed_ingress on mesh:role:node.
+	polReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.PublicURL()+"/admin/policy", nil)
+	polReq.Header.Set("Authorization", "Bearer "+srv.AdminToken())
+	polResp, err := client.Do(polReq)
+	if err != nil {
+		t.Fatalf("GET /admin/policy: %v", err)
+	}
+	polBody, _ := io.ReadAll(polResp.Body)
+	_ = polResp.Body.Close()
+	if polResp.StatusCode != http.StatusOK {
+		t.Fatalf("/admin/policy status = %d: %s", polResp.StatusCode, string(polBody))
+	}
+	var pol api.PolicyConfig
+	if err := protojson.Unmarshal(polBody, &pol); err != nil {
+		t.Fatalf("unmarshal PolicyConfig: %v", err)
+	}
+	var nodeRole *api.PolicyRole
+	for _, role := range pol.GetRoles() {
+		if role.GetName() == api.RoleNode {
+			nodeRole = role
+			break
+		}
+	}
+	if nodeRole == nil || len(nodeRole.GetAllowedIngress()) == 0 {
+		t.Fatalf("seeded PolicyConfig for %s lacks allowed_ingress: %+v", api.RoleNode, pol.GetRoles())
+	}
+	if !roleGrantsIngressMode(nodeRole, api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE) {
+		t.Errorf("seeded %s role denied INGRESS_AUTH_MODE_EDGE, want allowed", api.RoleNode)
+	}
+	if roleGrantsIngressMode(nodeRole, api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH) {
+		t.Errorf("seeded %s role allowed INGRESS_AUTH_MODE_PASSTHROUGH, want denied without explicit --policy-file", api.RoleNode)
 	}
 }

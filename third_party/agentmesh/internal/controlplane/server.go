@@ -85,6 +85,7 @@ func (s *Server) routerInfos(ctx context.Context, routers []storage.RouterLease)
 			Addresses:       r.Addresses,
 			Connections:     int32(r.Connections),
 			ConnectionLimit: int32(r.ConnectionLimit),
+			IngressUrl:      r.IngressURL,
 		}
 		if record, err := s.store.GetNode(ctx, r.PeerID); err == nil && record != nil {
 			info.Labels = record.Labels
@@ -322,7 +323,7 @@ func (s *Server) Init() error {
 			"ed25519_keys", len(s.operatorKeys.ed25519),
 			"es256_keys", len(s.operatorKeys.es256),
 			"reload_interval", operatorSigningKeysReloadInterval.String(),
-			"rotation", "put the new key first in the file and keep the previous one for the grace period")
+			"rotation", "put the new key first in the file and keep the previous one until every credential it signed has expired")
 		s.wg.Add(1)
 		go s.watchOperatorSigningKeys()
 	}
@@ -1039,6 +1040,7 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	// mesh:role:node — a mesh that wants open enrollment says so by binding it
 	// to mesh:system:authenticated, instead of getting it by omission.
 	if !resolvedMap[req.RequestedRole] {
+		logger.Warnw("Rejected enrollment for a role not bound to the identity", "peer_id", canonical, "requested_role", req.RequestedRole, "identity", oidcIdentityKey(claims), "resolved_roles", resolvedRoles)
 		http.Error(w, fmt.Sprintf("requested role %q is not bound to this identity; bind it in mesh policy (to mesh:system:authenticated to open enrollment to every authenticated identity)", req.RequestedRole), http.StatusForbidden)
 		return
 	}
@@ -1634,6 +1636,11 @@ func (s *Server) HandleRouterLease(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid load: connections and connection_limit must not be negative", http.StatusBadRequest)
 		return
 	}
+	ingressURL, err := api.ValidateIngressURL(req.IngressUrl)
+	if err != nil {
+		http.Error(w, "Invalid ingress_url: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	if len(req.Addresses) == 0 {
 		logger.Warnw("Router leased without addresses: it is listed but members cannot reach it", "peer_id", canonical)
 	}
@@ -1668,6 +1675,7 @@ func (s *Server) HandleRouterLease(w http.ResponseWriter, r *http.Request) {
 		DHTSize:         int(req.DhtSize),
 		Connections:     int(req.Connections),
 		ConnectionLimit: int(req.ConnectionLimit),
+		IngressURL:      ingressURL,
 	}
 
 	if err := s.store.UpsertRouterLease(r.Context(), lease); err != nil {
@@ -3864,6 +3872,9 @@ func validatePolicyConfig(req *api.PolicyConfig) error {
 		if err := api.ValidateHTTPGrants(r.Http, r.AllowedServices); err != nil {
 			return fmt.Errorf("in role %s: %w", r.Name, err)
 		}
+		if err := api.ValidateIngressGrants(r.AllowedIngress, r.Name); err != nil {
+			return err
+		}
 		for _, dl := range r.CustomDatalog {
 			trimmed := strings.TrimRight(strings.TrimSpace(dl), ";")
 			if trimmed == "" {
@@ -3882,6 +3893,7 @@ func validatePolicyConfig(req *api.PolicyConfig) error {
 		// which roles are mutually exclusive for a given identity.
 		factBudget += len(api.BuildServiceDatalogFacts(r.AllowedServices))
 		factBudget += len(api.BuildPublishDatalogFacts(r.AllowedPublish))
+		factBudget += len(api.BuildIngressDatalogFacts(r.AllowedIngress))
 		factBudget += len(api.BuildTargetDatalogFacts(r.AllowedTargets))
 		factBudget += len(r.CustomDatalog)
 		for _, g := range r.Http {
