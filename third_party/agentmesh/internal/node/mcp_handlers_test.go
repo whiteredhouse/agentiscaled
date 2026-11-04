@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -143,11 +144,29 @@ func TestHandleFindRemoteTools_SelfPeerRejected(t *testing.T) {
 	node, cleanup := startBareNode(t, ctx)
 	defer cleanup()
 
-	_, _, err := node.handleFindRemoteTools(ctx, &mcp.CallToolRequest{}, FindRemoteToolsParams{
-		PeerID: node.Host.ID().String(),
-	})
-	if err == nil {
-		t.Fatal("expected error when peer_id equals self peer ID")
+	cidv1Self := peer.ToCid(node.Host.ID()).String()
+	if cidv1Self == node.Host.ID().String() {
+		t.Fatalf("expected CIDv1 encoding %q to differ from canonical PeerID %q", cidv1Self, node.Host.ID().String())
+	}
+
+	for _, tc := range []struct {
+		name   string
+		peerID string
+	}{
+		{name: "canonical base58 self peer_id", peerID: node.Host.ID().String()},
+		{name: "CIDv1 multibase self peer_id", peerID: cidv1Self},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := node.handleFindRemoteTools(ctx, &mcp.CallToolRequest{}, FindRemoteToolsParams{
+				PeerID: tc.peerID,
+			})
+			if err == nil {
+				t.Fatalf("expected error when peer_id=%q equals self peer ID, got nil", tc.peerID)
+			}
+			if !strings.Contains(err.Error(), "is this node; cross-mesh discovery cannot target self") {
+				t.Errorf("error = %v, want self-peer rejection message", err)
+			}
+		})
 	}
 }
 
@@ -651,6 +670,20 @@ func TestCallMCPTool_ProviderNotGrantedIsNotRetried(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "retries") {
 		t.Fatalf("CallMCPTool to an ungranted provider = %v, want one refusal with no retry", err)
+	}
+
+	// A publish check that stops at the facts limit is no verdict on the
+	// grant, and it is not retried either: the same credential and policy
+	// reach the limit again.
+	nodeA.MeshPolicyMu.Lock()
+	nodeA.MeshPolicyRules = authorizerFactLimitRules()
+	nodeA.MeshPolicyMu.Unlock()
+	_, err = nodeA.CallMCPTool(ctx, nodeB.Host.ID(), "mcp://code-reviewer/review_pr", map[string]any{}, nil)
+	if !errors.Is(err, datalog.ErrWorldRunLimitMaxFacts) || errors.Is(err, ErrProviderNotGranted) {
+		t.Fatalf("CallMCPTool over the facts limit = %v, want an error wrapping %v and not %v", err, datalog.ErrWorldRunLimitMaxFacts, ErrProviderNotGranted)
+	}
+	if strings.Contains(err.Error(), "retries") {
+		t.Fatalf("CallMCPTool over the facts limit = %v, want one refusal with no retry", err)
 	}
 }
 

@@ -29,6 +29,7 @@ import (
 	"github.com/google/agentmesh/api"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // testTimeout bounds datalog evaluation in these tests. It is deliberately
@@ -115,7 +116,7 @@ func TestMintBiscuitToken_ClaimsTranslation(t *testing.T) {
 
 	claims := jwt.MapClaims{
 		"sub":    "user-12345",
-		"email":  "agent@google.com",
+		"email":  "agent@example.com",
 		"groups": []any{"beta-testers", "engineering"},
 	}
 
@@ -144,11 +145,11 @@ func TestMintBiscuitToken_ClaimsTranslation(t *testing.T) {
 	}}
 	authorizer.AddCheck(checkUser)
 
-	// Verify email("agent@google.com") fact is present
+	// Verify email("agent@example.com") fact is present
 	checkEmail := biscuit.Check{Queries: []biscuit.Rule{
 		{
 			Body: []biscuit.Predicate{
-				{Name: "email", IDs: []biscuit.Term{biscuit.String("agent@google.com")}},
+				{Name: "email", IDs: []biscuit.Term{biscuit.String("agent@example.com")}},
 			},
 		},
 	}}
@@ -655,6 +656,13 @@ func TestVerifyBiscuitRole_TimeoutIsHonored(t *testing.T) {
 	if !errors.Is(err, datalog.ErrWorldRunLimitTimeout) {
 		t.Errorf("expected datalog timeout error, got %v", err)
 	}
+
+	// Verification keeps the reason too, so a caller can tell a world that
+	// ran out of time from a credential no trusted key signed.
+	_, _, err = VerifyBiscuitAndGetKey(biscuitData, dummyPeer, []ed25519.PublicKey{pub}, time.Nanosecond)
+	if !errors.Is(err, datalog.ErrWorldRunLimitTimeout) {
+		t.Errorf("VerifyBiscuitAndGetKey with a 1ns timeout = %v, want an error wrapping %v", err, datalog.ErrWorldRunLimitTimeout)
+	}
 }
 
 // TestRequireRole covers the role gate every router-only path shares. The
@@ -804,6 +812,15 @@ func TestMintBiscuitToken_PublishFacts(t *testing.T) {
 		}
 	}
 
+	// A refusal keeps the authorizer's reason: no policy matched is not the
+	// same as a Datalog world that ran out of time on a granted service.
+	if err := RequirePublish(b, pub, "mcp", "clock", nil, testTimeout); !errors.Is(err, biscuit.ErrNoMatchingPolicy) {
+		t.Errorf("RequirePublish(mcp://clock) = %v, want an error wrapping %v", err, biscuit.ErrNoMatchingPolicy)
+	}
+	if err := RequirePublish(b, pub, "mcp", "calc", nil, time.Nanosecond); !errors.Is(err, datalog.ErrWorldRunLimitTimeout) {
+		t.Errorf("RequirePublish(mcp://calc) with a 1ns timeout = %v, want an error wrapping %v", err, datalog.ErrWorldRunLimitTimeout)
+	}
+
 	none, err := MintBootstrapBiscuitToken(priv, p, "publisher", time.Now().Add(time.Hour), nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -839,4 +856,104 @@ func TestMintBiscuitToken_PublishFacts(t *testing.T) {
 	if err := RequirePublish(db, pub, "mcp", "calc", nil, testTimeout); err == nil {
 		t.Error("a delegated credential grants publishing nothing")
 	}
+}
+
+func TestInspectVerifiedBiscuit_ExtractsAuthorityLabels(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privNode, _, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerID, err := peer.IDFromPrivateKey(privNode)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	roles := []*api.PolicyRole{{Name: api.RoleNode, AllowedPublish: []string{"*"}}}
+	wantLabels := map[string]string{"env": "prod", "jurisdiction": "eu"}
+
+	t.Run("authority labels extracted on base and TAR-attenuated tokens", func(t *testing.T) {
+		raw, err := MintBootstrapBiscuitToken(priv, peerID, api.RoleNode, time.Now().Add(time.Hour), roles, wantLabels)
+		if err != nil {
+			t.Fatalf("MintBootstrapBiscuitToken: %v", err)
+		}
+		claims, err := InspectVerifiedBiscuit(raw, []ed25519.PublicKey{pub}, testTimeout)
+		if err != nil {
+			t.Fatalf("InspectVerifiedBiscuit(base): %v", err)
+		}
+		if len(claims.Labels) != len(wantLabels) {
+			t.Fatalf("Labels len = %d (%v), want %v", len(claims.Labels), claims.Labels, wantLabels)
+		}
+		for k, want := range wantLabels {
+			if got := claims.Labels[k]; got != want {
+				t.Errorf("Labels[%q] = %q, want %q", k, got, want)
+			}
+		}
+
+		attenuated, err := AttenuateBiscuit(raw, &api.TaskAuthorizationRule{
+			Name:       "triage-1",
+			ExpireTime: timestamppb.New(time.Now().Add(10 * time.Minute)),
+			Rules: []*api.TaskRule{
+				{AllowedServices: []string{"a2a://assistant"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("AttenuateBiscuit: %v", err)
+		}
+		attClaims, err := InspectVerifiedBiscuit(attenuated, []ed25519.PublicKey{pub}, testTimeout)
+		if err != nil {
+			t.Fatalf("InspectVerifiedBiscuit(attenuated): %v", err)
+		}
+		for k, want := range wantLabels {
+			if got := attClaims.Labels[k]; got != want {
+				t.Errorf("attenuated Labels[%q] = %q, want %q", k, got, want)
+			}
+		}
+	})
+
+	t.Run("unlabeled token leaves Labels empty", func(t *testing.T) {
+		raw, err := MintBootstrapBiscuitToken(priv, peerID, api.RoleNode, time.Now().Add(time.Hour), roles, nil)
+		if err != nil {
+			t.Fatalf("MintBootstrapBiscuitToken: %v", err)
+		}
+		claims, err := InspectVerifiedBiscuit(raw, []ed25519.PublicKey{pub}, testTimeout)
+		if err != nil {
+			t.Fatalf("InspectVerifiedBiscuit: %v", err)
+		}
+		if len(claims.Labels) != 0 {
+			t.Errorf("Labels = %v, want empty", claims.Labels)
+		}
+	})
+
+	t.Run("forged label fact in appended block rejected", func(t *testing.T) {
+		raw, err := MintBootstrapBiscuitToken(priv, peerID, api.RoleNode, time.Now().Add(time.Hour), roles, nil)
+		if err != nil {
+			t.Fatalf("MintBootstrapBiscuitToken: %v", err)
+		}
+		parsed, err := biscuit.Unmarshal(raw)
+		if err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		blk := parsed.CreateBlock()
+		if err := blk.AddFact(biscuit.Fact{Predicate: biscuit.Predicate{
+			Name: api.FactLabel,
+			IDs:  []biscuit.Term{biscuit.String("env"), biscuit.String("forged")},
+		}}); err != nil {
+			t.Fatalf("AddFact: %v", err)
+		}
+		forged, err := parsed.Append(rand.Reader, blk.Build())
+		if err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+		forgedBytes, err := forged.Serialize()
+		if err != nil {
+			t.Fatalf("Serialize: %v", err)
+		}
+		if _, err := InspectVerifiedBiscuit(forgedBytes, []ed25519.PublicKey{pub}, testTimeout); !errors.Is(err, ErrAppendedBlocks) {
+			t.Fatalf("InspectVerifiedBiscuit(forged label block) err = %v, want wrapping %v", err, ErrAppendedBlocks)
+		}
+	})
 }

@@ -33,6 +33,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/agentmesh/api"
@@ -42,10 +44,10 @@ import (
 	"github.com/google/agentmesh/internal/storage"
 	golog "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p/core/crypto"
-	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 )
 
 var logger = golog.Logger("agentmesh-one")
@@ -362,17 +364,42 @@ func (s *Server) Start(ctx context.Context) (retErr error) {
 	}
 	mux.Handle(consoleBasePath+"/", consoleSrv.Handler())
 
+	// Mount external HTTP ingress directly onto the embedded router's ingress
+	// handler so /ingress/* never flows through the control plane.
+	var ingressHandler atomic.Pointer[http.Handler]
+	mux.Handle("/ingress/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := ingressHandler.Load()
+		if h == nil {
+			http.Error(w, "Router ingress is not ready", http.StatusServiceUnavailable)
+			return
+		}
+		(*h).ServeHTTP(w, r)
+	}))
+
 	wsAddr, err := wsListenMultiaddr(s.opts.BindAddress)
 	if err != nil {
 		return err
 	}
+	bindHost, _, err := net.SplitHostPort(s.opts.BindAddress)
+	if err != nil {
+		return err
+	}
+	if bindHost == "" {
+		bindHost = "0.0.0.0"
+	}
 	var externalAddrs []string
+	var ingressURL string
+	var publicControlPlaneURL string
+	allowInsecureIngress := true
 	if s.opts.ExternalURL != "" {
 		ext, err := externalMultiaddr(s.opts.ExternalURL)
 		if err != nil {
 			return err
 		}
 		externalAddrs = []string{ext}
+		publicControlPlaneURL = strings.TrimRight(s.opts.ExternalURL, "/")
+		ingressURL = publicControlPlaneURL + "/ingress"
+		allowInsecureIngress = strings.HasPrefix(s.opts.ExternalURL, "http://")
 	}
 
 	routerKeyPath := filepath.Join(s.opts.DataDir, routerKeyFile)
@@ -382,6 +409,7 @@ func (s *Server) Start(ctx context.Context) (retErr error) {
 
 	rtr, err := router.NewRouter(ctx, router.Options{
 		ControlPlaneURL:          "http://" + cp.Addr(),
+		PublicControlPlaneURL:    publicControlPlaneURL,
 		ListenAddrs:              append([]string{wsAddr}, s.opts.P2PListen...),
 		ExternalAddrs:            externalAddrs,
 		AllowLoopback:            !s.opts.Router.DisallowLoopback,
@@ -398,12 +426,18 @@ func (s *Server) Start(ctx context.Context) (retErr error) {
 		// proxy (Cloud Run, L7 LBs) or NAT where every peer shares a few
 		// source IPs; libp2p's default 8-conns-per-IP cap would throttle
 		// the whole listener.
-		ConnsPerSourceIP:    s.opts.Router.ConnsPerSourceIP,
-		HTTPFallbackHandler: s.wrapPublicHTTPHandler(mux),
+		ConnsPerSourceIP:           s.opts.Router.ConnsPerSourceIP,
+		HTTPFallbackHandler:        s.wrapPublicHTTPHandler(mux),
+		IngressURL:                 ingressURL,
+		AllowInsecureIngressHTTP:   allowInsecureIngress,
+		AdvertiseSinglePortIngress: true,
+		SinglePortBindHost:         bindHost,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create router: %w", err)
 	}
+	ingH := rtr.IngressHandler()
+	ingressHandler.Store(&ingH)
 	if err := rtr.Start(); err != nil {
 		_ = rtr.Close()
 		return fmt.Errorf("failed to start router: %w", err)
@@ -466,6 +500,12 @@ func (s *Server) PublicURL() string {
 		return strings.TrimRight(s.opts.ExternalURL, "/")
 	}
 	return "http://" + s.publicAddr
+}
+
+// IngressURL is the public base URL under which the embedded router serves
+// external HTTP ingress on the single port.
+func (s *Server) IngressURL() string {
+	return s.PublicURL() + "/ingress"
 }
 
 // AdminToken returns the resolved admin API token.
@@ -548,12 +588,21 @@ func (s *Server) seedPolicyOnFirstBoot(ctx context.Context) error {
 }
 
 // defaultDevPolicyRoles mirrors the Helm bootstrap job's role set with the
-// node role opened up for zero-config development use.
+// node role opened up for zero-config development use while keeping external
+// HTTP ingress restricted to zero-trust INGRESS_AUTH_MODE_EDGE unless an
+// operator explicitly grants INGRESS_AUTH_MODE_PASSTHROUGH via --policy-file
+// or POST /policies.
 func defaultDevPolicyRoles() []*api.PolicyRole {
+	devIngress := []*api.IngressGrant{{
+		Services: []string{"*"},
+		AllowedAuthModes: []api.IngressAuthMode{
+			api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE,
+		},
+	}}
 	return []*api.PolicyRole{
-		{Name: "mesh-admin", AllowedServices: []string{"*"}, AllowedTargets: []string{"*"}},
+		{Name: "mesh-admin", AllowedServices: []string{"*"}, AllowedTargets: []string{"*"}, AllowedIngress: devIngress},
 		{Name: api.RoleRouter, AllowedServices: []string{"*"}, AllowedTargets: []string{"*"}},
-		{Name: api.RoleNode, AllowedServices: []string{"*"}, AllowedPublish: []string{"*"}, AllowedTargets: []string{"*"}, AllowedLabels: []string{"*"}},
+		{Name: api.RoleNode, AllowedServices: []string{"*"}, AllowedTargets: []string{"*"}, AllowedPublish: []string{"*"}, AllowedLabels: []string{"*"}, AllowedIngress: devIngress},
 	}
 }
 
@@ -731,187 +780,38 @@ func ensureRouterKey(keyPath, adminToken string) error {
 	return os.WriteFile(keyPath, data, 0o600)
 }
 
-type responseRecorder struct {
-	header http.Header
-	body   bytes.Buffer
-	code   int
-}
+// proxiedWithoutExternalURL counts requests that arrived through a reverse
+// proxy (X-Forwarded-Proto or X-Forwarded-Host present) while no
+// --external-url is configured. The router address and the OIDC issuer this
+// instance advertises are then its own listener, which a member behind that
+// proxy cannot reach.
+var proxiedWithoutExternalURL = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "agentmesh_one_proxied_requests_without_external_url_total",
+	Help: "Requests that arrived with X-Forwarded-* headers while --external-url is not set; the advertised router address and OIDC issuer are not reachable through that proxy",
+})
 
-func newResponseRecorder() *responseRecorder {
-	return &responseRecorder{
-		header: make(http.Header),
-		code:   http.StatusOK,
-	}
-}
-
-func (r *responseRecorder) Header() http.Header {
-	return r.header
-}
-
-func (r *responseRecorder) Write(b []byte) (int, error) {
-	return r.body.Write(b)
-}
-
-func (r *responseRecorder) WriteHeader(statusCode int) {
-	r.code = statusCode
-}
-
-// wrapPublicHTTPHandler augments control-plane endpoints that return
-// RouterAddresses (/info, /enroll, /enroll/status, /register) on
-// the public listener when no explicit --external-url was configured: it
-// derives the router's public ws/wss multiaddr from the incoming request's
-// Host / X-Forwarded-Host and X-Forwarded-Proto headers so single-step PaaS
-// deployments (Cloud Run, Fly.io, Render) advertise a dialable wss multiaddr
-// without a second deploy pass.
+// wrapPublicHTTPHandler makes a misconfiguration visible: what this instance
+// advertises (the router multiaddr on /info and /enroll, the OIDC issuer in
+// discovery and in the JWTs it signs) comes from --external-url, or from its
+// own listener when the flag is absent. Nothing is derived from request
+// headers; an address a member learns is a reachability hint, and the
+// member verifies the peer's key and the router's control-plane-signed
+// credential on connection. So a hub behind a TLS-terminating proxy that
+// did not state its public URL is not unsafe, it is unreachable: the first
+// proxied request logs that, and every one is counted.
 func (s *Server) wrapPublicHTTPHandler(next http.Handler) http.Handler {
+	if s.opts.ExternalURL != "" {
+		return next
+	}
+	var once sync.Once
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.opts.ExternalURL != "" || s.router == nil || !returnsRouterAddresses(r.URL.Path) {
-			next.ServeHTTP(w, r)
-			return
+		if r.Header.Get("X-Forwarded-Proto") != "" || r.Header.Get("X-Forwarded-Host") != "" {
+			proxiedWithoutExternalURL.Inc()
+			once.Do(func() {
+				logger.Warnw("Requests arrive through a reverse proxy but --external-url is not set; the router address and the OIDC issuer this instance advertises are its own listener, which members behind the proxy cannot reach. Set --external-url to the public https URL",
+					"forwarded_proto", r.Header.Get("X-Forwarded-Proto"), "forwarded_host", r.Header.Get("X-Forwarded-Host"), "host", r.Host)
+			})
 		}
-		inferredAddr, ok := inferredRequestMultiaddr(r, s.PeerID())
-		if !ok {
-			next.ServeHTTP(w, r)
-			return
-		}
-		rec := newResponseRecorder()
-		next.ServeHTTP(rec, r)
-		for k, vals := range rec.Header() {
-			for _, v := range vals {
-				w.Header().Add(k, v)
-			}
-		}
-		if rec.code != http.StatusOK {
-			w.WriteHeader(rec.code)
-			_, _ = w.Write(rec.body.Bytes())
-			return
-		}
-		out, ok := prependInferredRouterAddr(r.URL.Path, rec.body.Bytes(), inferredAddr)
-		if !ok {
-			w.WriteHeader(rec.code)
-			_, _ = w.Write(rec.body.Bytes())
-			return
-		}
-		w.Header().Set("Content-Type", "application/x-protobuf")
-		w.Header().Del("Content-Length")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(out)
+		next.ServeHTTP(w, r)
 	})
-}
-
-func returnsRouterAddresses(path string) bool {
-	switch path {
-	case "/info", "/enroll", "/enroll/status", "/register":
-		return true
-	default:
-		return false
-	}
-}
-
-func prependInferredRouterAddr(path string, body []byte, inferredAddr string) ([]byte, bool) {
-	prepend := func(existing []string) []string {
-		out := make([]string, 0, len(existing)+1)
-		out = append(out, inferredAddr)
-		for _, a := range existing {
-			if a != inferredAddr {
-				out = append(out, a)
-			}
-		}
-		return out
-	}
-	switch path {
-	case "/info":
-		var msg api.ControlPlaneInfoResponse
-		if err := proto.Unmarshal(body, &msg); err != nil {
-			return nil, false
-		}
-		msg.RouterAddresses = prepend(msg.RouterAddresses)
-		// A member that reads /info prefers the per-router entries over the
-		// flat list (candidatesFromInfo), so the entry for this router must
-		// carry the inferred address too or the member dials only what the
-		// router could announce itself, which behind a PaaS front end is its
-		// loopback listener. Peer IDs are compared as decoded values, never
-		// as strings: a peer ID has several valid string encodings.
-		if info, err := peer.AddrInfoFromString(inferredAddr); err == nil {
-			for _, r := range msg.Routers {
-				if id, err := peer.Decode(r.GetPeerId()); err == nil && id == info.ID {
-					r.Addresses = prepend(r.Addresses)
-				}
-			}
-		}
-		b, err := proto.Marshal(&msg)
-		return b, err == nil
-	case "/enroll", "/enroll/status":
-		var msg api.BootstrapEnrollResponse
-		if err := proto.Unmarshal(body, &msg); err != nil {
-			return nil, false
-		}
-		msg.RouterAddresses = prepend(msg.RouterAddresses)
-		b, err := proto.Marshal(&msg)
-		return b, err == nil
-	case "/register":
-		var msg api.EnrollResponse
-		if err := proto.Unmarshal(body, &msg); err != nil {
-			return nil, false
-		}
-		msg.RouterAddresses = prepend(msg.RouterAddresses)
-		b, err := proto.Marshal(&msg)
-		return b, err == nil
-	default:
-		return nil, false
-	}
-}
-
-// inferredRequestMultiaddr derives `/dns4/<host>/tcp/<port>/ws(s)/p2p/<peerID>`
-// from an HTTP request when the request either arrived over HTTPS (TLS or
-// X-Forwarded-Proto: https) or names a non-loopback host.
-func inferredRequestMultiaddr(r *http.Request, peerID string) (string, bool) {
-	if peerID == "" {
-		return "", false
-	}
-	host := firstForwardedValue(r.Header.Get("X-Forwarded-Host"))
-	if host == "" {
-		host = strings.TrimSpace(r.Host)
-	}
-	if host == "" {
-		return "", false
-	}
-	scheme := "http"
-	if r.TLS != nil || strings.EqualFold(firstForwardedValue(r.Header.Get("X-Forwarded-Proto")), "https") {
-		scheme = "https"
-	}
-	if scheme == "http" && isLoopbackOrUnspecifiedHostPort(host) {
-		return "", false
-	}
-	base, err := externalMultiaddr(scheme + "://" + host)
-	if err != nil {
-		return "", false
-	}
-	full := base + "/p2p/" + peerID
-	if _, err := multiaddr.NewMultiaddr(full); err != nil {
-		return "", false
-	}
-	return full, true
-}
-
-func firstForwardedValue(v string) string {
-	if i := strings.IndexByte(v, ','); i >= 0 {
-		v = v[:i]
-	}
-	return strings.TrimSpace(v)
-}
-
-func isLoopbackOrUnspecifiedHostPort(hostport string) bool {
-	h := hostport
-	if splitHost, _, err := net.SplitHostPort(hostport); err == nil {
-		h = splitHost
-	}
-	h = strings.Trim(h, "[]")
-	if strings.EqualFold(h, "localhost") || h == "" {
-		return true
-	}
-	if ip := net.ParseIP(h); ip != nil {
-		return ip.IsLoopback() || ip.IsUnspecified()
-	}
-	return false
 }

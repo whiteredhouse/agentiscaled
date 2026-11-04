@@ -112,6 +112,12 @@ func (n *AgentMeshNode) syncRevocations(ctx context.Context, controlPlaneURL str
 	return nil
 }
 
+// SyncTrustedKeys fetches and verifies the control plane's current /keys set
+// against the node's trusted keys and persists the merged set.
+func (n *AgentMeshNode) SyncTrustedKeys(ctx context.Context, controlPlaneURL string) error {
+	return n.syncTrustedKeys(ctx, controlPlaneURL)
+}
+
 // syncTrustedKeys replaces the trust set with the control plane's current
 // /keys answer and persists it. Enrollment hands out only the newest key, so
 // this is how a node learns the key still in its rotation grace period (which
@@ -126,7 +132,7 @@ func (n *AgentMeshNode) syncTrustedKeys(ctx context.Context, controlPlaneURL str
 	if len(existing) == 0 {
 		return errors.New("no trusted control plane keys to verify /keys against")
 	}
-	keys, err := FetchControlPlaneKeys(ctx, controlPlaneURL, publicKeysOf(existing))
+	keys, err := n.fetchControlPlaneKeys(ctx, controlPlaneURL, publicKeysOf(existing))
 	if err != nil {
 		return err
 	}
@@ -207,7 +213,7 @@ func (n *AgentMeshNode) syncMeshInfo(ctx context.Context, controlPlaneURL string
 	// Taken before the request: a ban recorded after this instant cannot be
 	// in the answer, so its absence must not be read as an unban.
 	fetchedAt := time.Now()
-	info, err := FetchControlPlaneInfo(ctx, controlPlaneURL)
+	info, err := n.fetchControlPlaneInfo(ctx, controlPlaneURL)
 	if err != nil {
 		return err
 	}
@@ -293,7 +299,7 @@ func (n *AgentMeshNode) banPeer(p peer.ID, bannedAtMs int64) {
 	if n.revokedPeers != nil {
 		n.revokedPeers.Add(p.String(), bannedAtMs)
 	}
-	n.authPeers.Delete(p)
+	n.forgetAdmission(p)
 	if n.Host != nil {
 		_ = n.Host.Network().ClosePeer(p)
 	}
@@ -385,9 +391,8 @@ func (n *AgentMeshNode) controlPlaneForgotUs(err error) bool {
 
 // reenrollCooldown bounds how often a node spends its bootstrap token on a
 // re-enrollment: a 401 is a claim by whoever answered the control plane
-// URL, and one attempt per cooldown is all it can cause. A package variable
-// so a test can shorten it.
-var reenrollCooldown = time.Minute
+// URL, and one attempt per cooldown is all it can cause.
+const reenrollCooldown = time.Minute
 
 // recoverEnrollment enrolls again with the bootstrap token at
 // Options.BootstrapTokenPath and reports whether it did. The answer must

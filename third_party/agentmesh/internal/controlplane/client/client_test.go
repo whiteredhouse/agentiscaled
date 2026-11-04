@@ -200,11 +200,19 @@ func TestErrors(t *testing.T) {
 		for len(big.BannedPeerIds) < 200_000 {
 			big.BannedPeerIds = append(big.BannedPeerIds, "12D3KooWL7xNnc7bdzPGobhPxvunLC1uNhHfSCK8ZTXjR1YSTG9T")
 		}
-		if n := proto.Size(big); n <= MaxBodyBytes {
-			t.Fatalf("test answer is %d bytes, need more than %d", n, MaxBodyBytes)
+		data, err := proto.Marshal(big)
+		if err != nil {
+			t.Fatalf("proto.Marshal: %v", err)
+		}
+		if len(data) <= MaxBodyBytes {
+			t.Fatalf("test answer is %d bytes, need more than %d", len(data), MaxBodyBytes)
 		}
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			writeProto(t, w, big)
+			w.Header().Set("Content-Type", "application/x-protobuf")
+			// The client stops reading at MaxBodyBytes+1 and closes the
+			// body, which resets the connection before the tail of data is
+			// written.
+			_, _ = w.Write(data)
 		}))
 		defer srv.Close()
 		c := New(srv.URL, NewHTTPClient(5*time.Second, nil, "agentmesh-node"))

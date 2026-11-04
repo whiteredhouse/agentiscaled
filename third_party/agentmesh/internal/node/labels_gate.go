@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -104,19 +105,31 @@ var ErrProviderUnreachable = errors.New("provider unreachable")
 // not who the policy says serves that name.
 var ErrProviderNotGranted = errors.New("provider not granted the service")
 
+// ErrHandshakeRateLimited marks a provider that refused the credential
+// handshake at its per-peer handshake rate limit: it is up, and answered
+// by resetting the stream with network.StreamRateLimited. A caller that
+// sees this sent more handshakes than the provider's budget, which the
+// in-flight sharing in fetchPeerBiscuit is there to prevent.
+var ErrHandshakeRateLimited = errors.New("provider refused the handshake at its rate limit")
+
 // How reaching a provider for its credential went; the label values of
 // providerReachTotal. The caller sees one 502 for all of the failures, so
 // the counter tells them apart: the relay refusing the circuit, the dial
 // timing out (a relay's connection to the provider at its stream limit,
 // or a provider gone), no address to dial, the provider closing the
-// stream before answering.
+// stream before answering, the provider refusing the handshake at its
+// rate limit. A call that found a handshake already in flight to the
+// provider and waited for its verdict instead of opening its own is
+// counted as shared.
 const (
 	reachOK            = "ok"
+	reachShared        = "shared"
 	reachRelayRefused  = "relay_refused"
 	reachDialTimeout   = "dial_timeout"
 	reachNoAddress     = "no_address"
 	reachDialFailed    = "dial_failed"
 	reachNoAnswer      = "no_answer"
+	reachRateLimited   = "rate_limited"
 	reachAuthRejected  = "auth_rejected"
 	reachOtherFailure  = "other"
 	relayRefusedMarker = "error opening relay circuit"
@@ -126,6 +139,8 @@ const (
 func reachFailure(err error) string {
 	var dialErr *swarm.DialError
 	switch {
+	case errors.Is(err, ErrHandshakeRateLimited):
+		return reachRateLimited
 	case errors.As(err, &dialErr):
 		switch {
 		case dialErr.Timeout(), errors.Is(err, context.DeadlineExceeded):
@@ -149,12 +164,34 @@ func reachFailure(err error) string {
 // labelGateStatus is the HTTP answer for a label-gate failure, in the
 // order http.Error takes it: 502 when the provider was never heard from, so
 // a caller does not read a dead or busy destination as a denial of its
-// request, 403 with the given text for a verdict.
+// request, 504 or 500 when the authorizer stopped at a run limit before it
+// reached a verdict on the provider's credential, 403 with the given text
+// for a verdict.
 func labelGateStatus(err error, denied string) (string, int) {
 	if errors.Is(err, ErrProviderUnreachable) {
 		return "Bad Gateway: destination did not answer", http.StatusBadGateway
 	}
+	if stopped, transient := authorizerLimit(err); stopped {
+		if transient {
+			return "Gateway Timeout: the provider's credential was not checked in time", http.StatusGatewayTimeout
+		}
+		return "Internal Server Error: the provider's credential exceeds the authorizer's limits", http.StatusInternalServerError
+	}
 	return denied, http.StatusForbidden
+}
+
+// authorizerLimit reports whether err is an authorizer that stopped at one
+// of its run limits before it reached a verdict, and whether that limit is
+// time, the only one that depends on load: the facts and iterations limits
+// are reached again with the same credential and policy.
+func authorizerLimit(err error) (stopped, transient bool) {
+	switch {
+	case errors.Is(err, datalog.ErrWorldRunLimitTimeout):
+		return true, true
+	case errors.Is(err, datalog.ErrWorldRunLimitMaxFacts), errors.Is(err, datalog.ErrWorldRunLimitMaxIterations):
+		return true, false
+	}
+	return false, false
 }
 
 // labelGateKey builds a deterministic cache key from a required label set and
@@ -232,10 +269,8 @@ func (n *AgentMeshNode) VerifyProvider(ctx context.Context, peerID peer.ID, requ
 
 	providerBiscuit, err := n.fetchPeerBiscuit(ctx, peerID)
 	if err != nil {
-		providerReachTotal.WithLabelValues(reachFailure(err)).Inc()
 		return fmt.Errorf("provider %s labels unverifiable: %w: %w", peerID, ErrProviderUnreachable, err)
 	}
-	providerReachTotal.WithLabelValues(reachOK).Inc()
 	if err := n.checkProvider(providerBiscuit, peerID, required, service); err != nil {
 		return err
 	}
@@ -317,20 +352,72 @@ func (n *AgentMeshNode) checkProvider(providerBiscuit []byte, peerID peer.ID, re
 		meshRules := n.MeshPolicyRules
 		n.MeshPolicyMu.RUnlock()
 		if err := identity.RequirePublish(b, key, svcType, svcName, meshRules, n.BiscuitTimeout); err != nil {
+			if stopped, _ := authorizerLimit(err); stopped {
+				return fmt.Errorf("provider %s grant for %s undecided: %w", peerID, service, err)
+			}
 			return fmt.Errorf("%w: %w", ErrProviderNotGranted, err)
 		}
 	}
 	return nil
 }
 
+// peerBiscuitFetch is one credential handshake in flight to a peer. Every
+// call that needs that peer's credential while it runs waits on done and
+// reads the same outcome.
+type peerBiscuitFetch struct {
+	done    chan struct{}
+	biscuit []byte
+	err     error
+}
+
 // fetchPeerBiscuit obtains the peer's control-plane-minted identity via the
 // mutual auth handshake on AuthProtocolID, authenticating with our own.
+//
+// Concurrent calls for one peer share one handshake. The gate caches only a
+// positive verdict, so until the first verdict is in every call would
+// otherwise open its own /mesh/auth stream, and a burst of first calls to a
+// provider would exceed the provider's per-peer handshake budget
+// (ratelimit.PeerBurst) and be refused by it. The shared handshake runs on
+// its own goroutine, detached from the context of the call that started it
+// and bounded by labelGateDialTimeout, so that one caller leaving does not
+// fail the others; each waiter still answers to its own context.
 func (n *AgentMeshNode) fetchPeerBiscuit(ctx context.Context, peerID peer.ID) ([]byte, error) {
-	observation, err := n.fetchPeerBiscuitEvidence(ctx, peerID)
-	if err != nil {
-		return nil, err
+	n.peerBiscuitMu.Lock()
+	if n.peerBiscuitInFlight == nil {
+		n.peerBiscuitInFlight = make(map[peer.ID]*peerBiscuitFetch)
 	}
-	return observation.Biscuit, nil
+	fetch, shared := n.peerBiscuitInFlight[peerID]
+	if !shared {
+		fetch = &peerBiscuitFetch{done: make(chan struct{})}
+		n.peerBiscuitInFlight[peerID] = fetch
+	}
+	n.peerBiscuitMu.Unlock()
+
+	if shared {
+		providerReachTotal.WithLabelValues(reachShared).Inc()
+		logger.Debugf("[Egress] Waiting for the credential handshake already in flight to %s", peerID)
+	} else {
+		go func() {
+			observation, err := n.fetchPeerBiscuitEvidence(context.WithoutCancel(ctx), peerID)
+			if err != nil {
+				providerReachTotal.WithLabelValues(reachFailure(err)).Inc()
+			} else {
+				providerReachTotal.WithLabelValues(reachOK).Inc()
+			}
+			fetch.biscuit, fetch.err = observation.Biscuit, err
+			n.peerBiscuitMu.Lock()
+			delete(n.peerBiscuitInFlight, peerID)
+			n.peerBiscuitMu.Unlock()
+			close(fetch.done)
+		}()
+	}
+
+	select {
+	case <-fetch.done:
+		return fetch.biscuit, fetch.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("waiting for the credential handshake to %s: %w", peerID, ctx.Err())
+	}
 }
 
 type peerBiscuitObservation struct {
@@ -383,7 +470,7 @@ func (n *AgentMeshNode) fetchPeerBiscuitEvidence(ctx context.Context, peerID pee
 	reader := msgio.NewVarintReaderSize(s, 1024*64)
 	msg, err := reader.ReadMsg()
 	if err != nil {
-		return peerBiscuitObservation{}, fmt.Errorf("read auth response (peer may predate mutual auth): %w", err)
+		return peerBiscuitObservation{}, authResponseError(err)
 	}
 	defer reader.ReleaseMsg(msg)
 
@@ -398,4 +485,21 @@ func (n *AgentMeshNode) fetchPeerBiscuitEvidence(ctx context.Context, peerID pee
 		Biscuit:        resp.Biscuit,
 		ConnectionPeer: connectionPeer,
 	}, nil
+}
+
+// authResponseError names what a failed read of the handshake answer says
+// about the peer. A remote reset with network.StreamRateLimited is the
+// peer refusing at its per-peer handshake budget (HandleAuthHandshake); any
+// other remote reset is the peer cutting the stream without a reason; a
+// clean close before an answer is the peer declining our credential, or a
+// peer that predates the mutual handshake.
+func authResponseError(err error) error {
+	var reset *network.StreamError
+	if errors.As(err, &reset) && reset.Remote {
+		if reset.ErrorCode == network.StreamRateLimited {
+			return fmt.Errorf("%w: %w", ErrHandshakeRateLimited, err)
+		}
+		return fmt.Errorf("read auth response (peer reset the stream): %w", err)
+	}
+	return fmt.Errorf("read auth response (peer closed without answering: it declined our credential, or predates mutual auth): %w", err)
 }

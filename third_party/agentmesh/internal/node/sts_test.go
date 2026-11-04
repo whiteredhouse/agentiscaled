@@ -304,7 +304,11 @@ func TestNodeOAuthRevokeAndSyncRevocations(t *testing.T) {
 	}
 	revIDHex := hex.EncodeToString(parsedThird.RevocationIds()[0])
 
-	cpServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// A plaintext loopback control plane passes ValidateControlPlaneTransport,
+	// so the node's own client reaches cpServer without touching
+	// http.DefaultTransport, which every other test's background request
+	// also reads.
+	cpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/revocations" {
 			http.NotFound(w, r)
 			return
@@ -316,11 +320,6 @@ func TestNodeOAuthRevokeAndSyncRevocations(t *testing.T) {
 		_, _ = w.Write(payload)
 	}))
 	defer cpServer.Close()
-
-	// Point controlPlaneClient at cpServer by temporarily swapping http.DefaultTransport.
-	origTransport := http.DefaultTransport
-	http.DefaultTransport = cpServer.Client().Transport
-	t.Cleanup(func() { http.DefaultTransport = origTransport })
 
 	if err := h.node.syncRevocations(context.Background(), cpServer.URL); err != nil {
 		t.Fatalf("syncRevocations: %v", err)
@@ -349,7 +348,7 @@ func TestWithCallerOrTokenAuthAndJWTExchange(t *testing.T) {
 	}
 
 	var exchangeCalls atomic.Int32
-	cpServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/token/exchange" {
 			exchangeCalls.Add(1)
 			payload, _ := proto.Marshal(&api.TokenExchangeResponse{
@@ -366,9 +365,6 @@ func TestWithCallerOrTokenAuthAndJWTExchange(t *testing.T) {
 	}))
 	defer cpServer.Close()
 
-	origTransport := http.DefaultTransport
-	http.DefaultTransport = cpServer.Client().Transport
-	t.Cleanup(func() { http.DefaultTransport = origTransport })
 	if err := h.node.Store.SaveControlPlaneURL(cpServer.URL); err != nil {
 		t.Fatalf("SaveControlPlaneURL: %v", err)
 	}
@@ -430,7 +426,7 @@ func TestWithCallerOrTokenAuthAndJWTExchange(t *testing.T) {
 func startFakeExchangeControlPlane(t *testing.T, h *stsNodeHarness, delegated []byte) *atomic.Int32 {
 	t.Helper()
 	var calls atomic.Int32
-	cpServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/token/exchange" {
 			http.NotFound(w, r)
 			return
@@ -467,9 +463,6 @@ func startFakeExchangeControlPlane(t *testing.T, h *stsNodeHarness, delegated []
 		_, _ = w.Write(payload)
 	}))
 	t.Cleanup(cpServer.Close)
-	origTransport := http.DefaultTransport
-	http.DefaultTransport = cpServer.Client().Transport
-	t.Cleanup(func() { http.DefaultTransport = origTransport })
 	if err := h.node.Store.SaveControlPlaneURL(cpServer.URL); err != nil {
 		t.Fatalf("SaveControlPlaneURL: %v", err)
 	}
@@ -829,6 +822,30 @@ func TestInspectMCPHTTPRequestBody(t *testing.T) {
 	tool, allowInit, err = inspectMCPHTTPRequestBody(initReq)
 	if err != nil || tool != "" || !allowInit {
 		t.Fatalf("initialize: got tool=%q allowInit=%v err=%v, want allowInit=true", tool, allowInit, err)
+	}
+
+	notifReq := httptest.NewRequest(http.MethodPost, "/mcp/github", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
+	tool, allowInit, err = inspectMCPHTTPRequestBody(notifReq)
+	if err != nil || tool != "" || !allowInit {
+		t.Fatalf("notifications/initialized: got tool=%q allowInit=%v err=%v, want allowInit=true", tool, allowInit, err)
+	}
+
+	discoverReq := httptest.NewRequest(http.MethodPost, "/mcp/github", strings.NewReader(`{"jsonrpc":"2.0","id":0,"method":"server/discover"}`))
+	tool, allowInit, err = inspectMCPHTTPRequestBody(discoverReq)
+	if err != nil || tool != "" || !allowInit {
+		t.Fatalf("server/discover: got tool=%q allowInit=%v err=%v, want allowInit=true", tool, allowInit, err)
+	}
+
+	sseReq := httptest.NewRequest(http.MethodGet, "/mcp/github", nil)
+	tool, allowInit, err = inspectMCPHTTPRequestBody(sseReq)
+	if err != nil || tool != "" || !allowInit {
+		t.Fatalf("GET SSE stream: got tool=%q allowInit=%v err=%v, want allowInit=true", tool, allowInit, err)
+	}
+
+	unknownReq := httptest.NewRequest(http.MethodPost, "/mcp/github", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"resources/read"}`))
+	tool, allowInit, err = inspectMCPHTTPRequestBody(unknownReq)
+	if err != nil || tool != "" || allowInit {
+		t.Fatalf("resources/read: got tool=%q allowInit=%v err=%v, want allowInit=false", tool, allowInit, err)
 	}
 }
 

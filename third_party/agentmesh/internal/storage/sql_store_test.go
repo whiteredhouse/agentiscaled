@@ -893,3 +893,54 @@ func TestResolveEnrollmentRequestOnlyWhilePending(t *testing.T) {
 		t.Errorf("losing resolution overwrote the request: %+v", got)
 	}
 }
+
+func TestSaveInitialKeyIsIdempotentWhenActiveKeyExists(t *testing.T) {
+	store := newTestStore(t)
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+
+	pub1, priv1, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub2, priv2, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SaveInitialKey(ctx, priv1, pub1); err != nil {
+		t.Fatalf("first SaveInitialKey: %v", err)
+	}
+	if err := store.SaveInitialKey(ctx, priv2, pub2); err != nil {
+		t.Fatalf("second SaveInitialKey: %v", err)
+	}
+
+	gotPriv, gotPub, err := store.GetCurrentKey(ctx)
+	if err != nil {
+		t.Fatalf("GetCurrentKey: %v", err)
+	}
+	if !bytes.Equal(gotPub, pub1) || !bytes.Equal(gotPriv, priv1) {
+		t.Fatalf("current key was overwritten by second SaveInitialKey: got %x, want %x", gotPub, pub1)
+	}
+	validKeys, err := store.GetAllValidPublicKeys(ctx)
+	if err != nil {
+		t.Fatalf("GetAllValidPublicKeys: %v", err)
+	}
+	if len(validKeys) != 1 || !bytes.Equal(validKeys[0], pub1) {
+		t.Fatalf("GetAllValidPublicKeys = %d keys, want 1 (%x)", len(validKeys), pub1)
+	}
+
+	if err := store.SaveInitialOIDCKey(ctx, "kid-1", []byte("priv-1"), []byte("pub-1")); err != nil {
+		t.Fatalf("first SaveInitialOIDCKey: %v", err)
+	}
+	if err := store.SaveInitialOIDCKey(ctx, "kid-2", []byte("priv-2"), []byte("pub-2")); err != nil {
+		t.Fatalf("second SaveInitialOIDCKey: %v", err)
+	}
+	oidcKeys, err := store.GetAllValidOIDCKeys(ctx)
+	if err != nil {
+		t.Fatalf("GetAllValidOIDCKeys: %v", err)
+	}
+	if len(oidcKeys) != 1 || oidcKeys[0].Kid != "kid-1" {
+		t.Fatalf("GetAllValidOIDCKeys = %+v, want single kid-1", oidcKeys)
+	}
+}

@@ -174,6 +174,16 @@ type Options struct {
 	// TokenSource is the optional live platform/OIDC token provider presented
 	// as TokenRefreshRequest.jwt during RefreshEnrollment.
 	TokenSource TokenSource
+	// AllowInsecureControlPlane permits plaintext http:// control-plane and OIDC
+	// URLs on non-loopback hosts for this node instance without mutating the
+	// process-wide flag.
+	AllowInsecureControlPlane bool
+	// DisableFatalExit suppresses process-terminating logger.Fatalf calls on
+	// router dropout when the node runs embedded inside a host Go application.
+	DisableFatalExit bool
+	// OnStreamRefused, when non-nil, is invoked whenever the libp2p auth gate
+	// refuses an unauthenticated or non-router stream.
+	OnStreamRefused func(scope, protocol string)
 }
 
 // Default applies default values to Options if they are not specified.

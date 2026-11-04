@@ -86,9 +86,6 @@ type Options struct {
 	// STSRateBurst is the per-node burst size for /token/exchange and
 	// /sts/token (defaults to STSRateBurstDefault).
 	STSRateBurst int
-	// TrustForwardedHeaders controls whether oidcIssuerURL trusts X-Forwarded-Proto
-	// when STSIssuerURL is not explicitly configured.
-	TrustForwardedHeaders bool
 }
 
 const (

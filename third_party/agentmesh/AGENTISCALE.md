@@ -1,7 +1,7 @@
 # agentiscale's fork of Google Agent Mesh
 
 This directory is a copy of [google/agentmesh](https://github.com/google/agentmesh)
-at release **v0.1.1** (commit `70fbb22`), kept so that agentiscaled can embed the
+at release **v0.2.0** (commit `5da6337`), kept so that agentiscaled can embed the
 node. It is licensed under Apache-2.0; see [LICENSE](LICENSE).
 
 ## What differs from upstream
@@ -10,7 +10,7 @@ node. It is licensed under Apache-2.0; see [LICENSE](LICENSE).
 |---|---|
 | Added `export/node/` | Upstream keeps the node in `internal/node`, which Go forbids other modules to import. `export/node` is inside this module, so it may import it, and re-exports the names agentiscaled uses as type and function aliases. It adds no behaviour. |
 | Added `internal/controlplane/bound_peer.go` and its test, plus two calls in `internal/controlplane/server.go` (marked "agentiscale fork") | A bootstrap token whose description starts with `agentiscale-bound-peer:<peer ID>` admits only that peer: `/enroll` refuses any other key before issuing a credential, and `/admin/bootstrap-tokens` refuses an invalid peer ID. Upstream tokens admit any key, so a node could hand its token to another. The binding lives in the description so that the patch needs no schema or API change. |
-| Router member credentials cache owned serialized bytes and decode a separate Biscuit for each publish authorization | The Biscuit library can mutate a parsed token's backing buffers while creating an authorizer. Directory requests and the handshake's role check must not share that mutable state. Current policy and credential checks still run for every request; `internal/router/member_credential_test.go` exercises concurrent authorization. |
+| Router member credentials cache owned serialized bytes and decode a separate Biscuit for each authorization | The Biscuit library can mutate a parsed token's backing buffers while creating an authorizer. Directory requests (publish and ingress checks), the ingress proxy's target facts, the provider credentials the router caches for ingress, the revocation sweep and the handshake's role check must not share that mutable state. Current policy and credential checks still run for every request; `internal/router/member_credential_test.go` exercises concurrent authorization. |
 | Added this file | Records the fork. |
 | Left out `site/`, `sdk/`, `tests/`, `mobile/`, `charts/`, `deploy/`, `development/`, `hack/`, `scripts/`, Dockerfiles and the Makefile | Not needed to build the Go packages. Preserve the local patches when refreshing the vendored source. |
 
@@ -25,8 +25,11 @@ The agentiscaled module uses it through
    `internal/controlplane/bound_peer*.go`, and re-apply the two "agentiscale fork"
    calls in `internal/controlplane/server.go` (in `HandleEnroll` after the
    proof-of-possession check, and in `HandleAdminBootstrapTokens`).
-   Preserve the immutable member-credential cache in `internal/router/router.go`,
-   request-local decoding in `internal/router/directory.go`, and its regression tests.
+   Preserve the immutable member-credential cache in `internal/router/router.go`
+   (including `isSerializedBiscuitRevoked`), request-local decoding in
+   `internal/router/directory.go` and `internal/router/ingress.go`, and its regression
+   tests. Search for any new reads of a parsed credential: `grep -rn cred.biscuit internal/router`
+   must find nothing.
 3. Run `go build ./... && go vet ./export/...` here, then `go build ./...` at the
    repository root. If an aliased name was renamed or removed upstream, fix
    `export/node/node.go`. Run `go test -race ./internal/router ./internal/identity`

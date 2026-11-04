@@ -120,10 +120,6 @@ func TestSyncRecoversWhenControlPlaneForgotNode(t *testing.T) {
 // of its own making must not be able to replace it, and one attempt per
 // cooldown is all a 401 can cause.
 func TestRecoverEnrollmentTrustsOnlyKnownKeys(t *testing.T) {
-	prev := reenrollCooldown
-	reenrollCooldown = 50 * time.Millisecond
-	t.Cleanup(func() { reenrollCooldown = prev })
-
 	newHarness := func(t *testing.T, answer func(h *refreshHarness) *api.BootstrapEnrollResponse) (*refreshHarness, *atomic.Int32) {
 		t.Helper()
 		var enrolls atomic.Int32
@@ -216,7 +212,9 @@ func TestRecoverEnrollmentTrustsOnlyKnownKeys(t *testing.T) {
 		if enrolls.Load() != 1 {
 			t.Fatalf("enroll attempts within the cooldown = %d, want 1", enrolls.Load())
 		}
-		time.Sleep(2 * reenrollCooldown)
+		harness.node.reenrollMu.Lock()
+		harness.node.lastReenroll = time.Now().Add(-reenrollCooldown)
+		harness.node.reenrollMu.Unlock()
 		_ = harness.node.SyncControlPlane(context.Background())
 		if enrolls.Load() != 2 {
 			t.Fatalf("enroll attempts after the cooldown = %d, want 2", enrolls.Load())

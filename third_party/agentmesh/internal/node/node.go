@@ -60,6 +60,7 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
 	libp2ptls "github.com/libp2p/go-libp2p/p2p/security/tls"
 	"github.com/libp2p/go-msgio"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/multiformats/go-multiaddr"
 	madns "github.com/multiformats/go-multiaddr-dns"
 	"github.com/prometheus/client_golang/prometheus"
@@ -71,6 +72,15 @@ import (
 // This allows the node to "try once and remember", avoiding a 15-second timeout on
 // subsequent discovery or tool calls when dialing unroutable private networks.
 const PeerstoreKeyPrivateIPFailed = "private_ip_failed"
+
+// PeerstoreKeyUnresolved marks a peer whose addresses in the Peerstore are
+// this node's own fallback, circuits through the routers that admitted this
+// node, written because the directory knew no address for the peer or did
+// not answer. Those circuits are kept for TempAddrTTL so that the dial has
+// them, but they are a guess, not a record: while the mark is set the next
+// lookup asks the directory again instead of trusting them, so a lookup that
+// timed out once does not stand for two minutes.
+const PeerstoreKeyUnresolved = "directory_unresolved"
 
 const (
 	// Cache sizes
@@ -131,13 +141,43 @@ func (a *nodeRelayACL) AllowConnect(src peer.ID, srcAddr multiaddr.Multiaddr, de
 // has not lapsed since. The handshake only proves the token was valid at that
 // instant, so without this the relay ACL would honour an admission forever.
 func (n *AgentMeshNode) isAdmitted(p peer.ID) bool {
-	v, ok := n.authPeers.Load(p)
+	return admissionHolds(&n.authPeers, p)
+}
+
+// isAdmittedRouter reports whether a peer completed the auth handshake with a
+// credential carrying role("mesh:role:router") and that admission holds. It
+// requires isAdmitted too, so dropping a peer from authPeers (a ban, an
+// eviction) withdraws its router standing with it.
+func (n *AgentMeshNode) isAdmittedRouter(p peer.ID) bool {
+	return n.isAdmitted(p) && admissionHolds(&n.authRouters, p)
+}
+
+// admitPeer records a completed handshake: every admitted peer in authPeers,
+// and a router additionally in authRouters. A peer re-admitted without the
+// role loses it.
+func (n *AgentMeshNode) admitPeer(p peer.ID, expiry time.Time, router bool) {
+	n.authPeers.Store(p, expiry)
+	if router {
+		n.authRouters.Store(p, expiry)
+	} else {
+		n.authRouters.Delete(p)
+	}
+}
+
+// forgetAdmission drops every record of p's handshake.
+func (n *AgentMeshNode) forgetAdmission(p peer.ID) {
+	n.authPeers.Delete(p)
+	n.authRouters.Delete(p)
+}
+
+func admissionHolds(m *sync.Map, p peer.ID) bool {
+	v, ok := m.Load(p)
 	if !ok {
 		return false
 	}
 	expiry, ok := v.(time.Time)
 	if !ok || !time.Now().Before(expiry) {
-		n.authPeers.Delete(p)
+		m.Delete(p)
 		return false
 	}
 	return true
@@ -158,6 +198,8 @@ type AgentMeshNode struct {
 	authenticatedRouters map[peer.ID]bool
 	// redialing holds the routers a redialRouter goroutine is working on.
 	redialing map[peer.ID]bool
+	// dialing holds the routers a dialAndAttach goroutine is attaching to.
+	dialing map[peer.ID]bool
 	// handshaking holds the routers a handshake is in flight with; a second
 	// caller waits for that one (authRouter).
 	handshaking map[peer.ID]chan struct{}
@@ -183,12 +225,23 @@ type AgentMeshNode struct {
 	delegatedBiscuitCache *lru.Cache[string, *api.TokenExchangeResponse]
 	stsTokenCache         *lru.Cache[string, *api.STSTokenResponse]
 	peerLabelGate         *lru.Cache[string, time.Time]
-	authPeers             sync.Map
-	trustedKeys           []TrustedKey
-	keysMu                sync.RWMutex
-	MeshPolicyRules       []biscuit.Rule
-	meshPolicyTexts       []string
-	MeshPolicyMu          sync.RWMutex
+	// peerBiscuitInFlight is the credential fetch running to each peer, so
+	// that concurrent first calls to one provider share one handshake
+	// (fetchPeerBiscuit); nil until the first fetch, the map is created
+	// under peerBiscuitMu because tests build AgentMeshNode directly.
+	peerBiscuitInFlight map[peer.ID]*peerBiscuitFetch
+	peerBiscuitMu       sync.Mutex
+	// authPeers is every peer that completed the handshake with this node,
+	// keyed by peer.ID, with the instant its admission lapses. authRouters
+	// holds the subset whose credential carried mesh:role:router, with the
+	// same instant, for the protocols only a router may open (routerHost).
+	authPeers       sync.Map
+	authRouters     sync.Map
+	trustedKeys     []TrustedKey
+	keysMu          sync.RWMutex
+	MeshPolicyRules []biscuit.Rule
+	meshPolicyTexts []string
+	MeshPolicyMu    sync.RWMutex
 	// pendingEgress holds assignments that arrived before Start created the
 	// service registry (SyncControlPlane runs first); Start applies them.
 	pendingEgress   []*api.EgressDestination
@@ -198,10 +251,14 @@ type AgentMeshNode struct {
 	// rateLimiter, so a peer's authenticated traffic cannot starve its own
 	// re-authentication and vice versa.
 	handshakeLimiter *ratelimit.PeerRateLimiter
-	services         *ServiceRegistry
-	BoundHTTPAddr    string
-	BoundSocketPath  string
-	AllowLoopback    bool
+	// externalIngressLimiter bounds /mesh/ingress requests per forwarding router
+	// separately from peer-to-peer rateLimiter, because a single router
+	// multiplexes external HTTP traffic for many external callers.
+	externalIngressLimiter *ratelimit.PeerRateLimiter
+	services               *ServiceRegistry
+	BoundHTTPAddr          string
+	BoundSocketPath        string
+	AllowLoopback          bool
 
 	authSuccess             chan struct{}
 	authOnce                sync.Once
@@ -220,6 +277,11 @@ type AgentMeshNode struct {
 	// metricsRegistry holds this node's state collector; see metricsHandler.
 	metricsOnce     sync.Once
 	metricsRegistry *prometheus.Registry
+
+	catalogOnce      sync.Once
+	catalogMCPServer *mcp.Server
+	egressOnce       sync.Once
+	egressHandler    http.Handler
 }
 
 // SetTokenSource configures the live platform/OIDC token source presented as
@@ -449,6 +511,10 @@ func NewAgentMeshNode(cfg Options) (*AgentMeshNode, error) {
 	node.handshakeLimiter, err = ratelimit.NewPeerRateLimiter(RateLimiterSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handshake rate limiter: %w", err)
+	}
+	node.externalIngressLimiter, err = ratelimit.NewPeerRateLimiterWithRate(RateLimiterSize, 200, 400)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create external ingress rate limiter: %w", err)
 	}
 	node.revokedPeers, err = lru.New[string, int64](RevocationCacheSize)
 	if err != nil {
@@ -696,6 +762,7 @@ func (n *AgentMeshNode) Start(ctx context.Context) error {
 
 	n.services = NewServiceRegistry(n.Directory, n.config.BackendProbeTimeout)
 	n.services.reprovideNow = n.triggerReprovide
+	n.services.onIngressRegistered = n.logIngressURLs
 	n.applyPendingEgress(ctx)
 
 	if _, err := n.admitByRouters(ctx); err != nil {
@@ -775,6 +842,9 @@ func (n *AgentMeshNode) Start(ctx context.Context) error {
 	// Start Ingress HTTP Server
 	if err := n.StartIngressServer(ctx); err != nil {
 		return fmt.Errorf("failed to start ingress server: %w", err)
+	}
+	if err := n.StartExternalIngressServer(ctx); err != nil {
+		return fmt.Errorf("failed to start external ingress server: %w", err)
 	}
 
 	// Start connection monitor
@@ -977,7 +1047,10 @@ func (n *AgentMeshNode) startConnectionMonitor(ctx context.Context, bootstrapDur
 				consecutiveFailures++
 				logger.Errorf("[Monitor] Failed to reconnect to a router. Consecutive failures: %d/%d", consecutiveFailures, maxFailures)
 				if consecutiveFailures >= maxFailures {
-					logger.Fatalf("[Monitor] Failed to reconnect to a router for %d consecutive checks. Exiting to avoid network partition.", maxFailures)
+					if !n.config.DisableFatalExit {
+						logger.Fatalf("[Monitor] Failed to reconnect to a router for %d consecutive checks. Exiting to avoid network partition.", maxFailures)
+					}
+					logger.Errorf("[Monitor] Failed to reconnect to a router for %d consecutive checks; keeping embedded member running for background recovery.", maxFailures)
 				}
 			}
 		}
@@ -1051,7 +1124,10 @@ func (n *AgentMeshNode) admitByRouters(ctx context.Context) (authenticated bool,
 				logger.Debugf("[AuthN] Routers not re-read from the control plane: %v", refreshErr)
 			}
 		}
-		targets := n.pickRouters(n.wantRouters())
+		targets := n.reserveRoutersToAttach()
+		if len(targets) == 0 && n.IsConnected() {
+			return true, nil
+		}
 		var fatal error
 		if len(targets) > 0 {
 			results := n.dialAndAttach(ctx, targets, biscuitBytes)
@@ -1067,6 +1143,9 @@ func (n *AgentMeshNode) admitByRouters(ctx context.Context) (authenticated bool,
 		}
 		if fatal != nil {
 			return false, fmt.Errorf("fatal auth failure: %w", fatal)
+		}
+		if n.IsConnected() {
+			return true, nil
 		}
 		if attempt >= n.config.RouterAuthAttempts || delay <= 0 {
 			return false, errors.New("failed to authenticate with any router: all connection attempts failed")
@@ -1116,63 +1195,97 @@ func (n *AgentMeshNode) redialRouter(ctx context.Context, router peer.ID) {
 	}
 	if n.redialing[router] {
 		n.mu.Unlock()
+		logger.Debugf("[AuthN] Router %s dropped while a redial of it is running; that redial checks the session before it ends", router)
 		return
 	}
 	n.redialing[router] = true
 	n.mu.Unlock()
 
 	go func() {
-		defer func() {
-			n.mu.Lock()
-			delete(n.redialing, router)
-			n.mu.Unlock()
-		}()
-		biscuitBytes, err := n.loadIdentityForAuth()
-		if err != nil {
-			logger.Errorf("[AuthN] Cannot redial router %s without an identity: %v", router, err)
+		if n.redialUntilUp(ctx, router) {
 			return
 		}
-		delay := n.config.RouterRedialDelay
-		for attempt := 1; attempt <= n.config.RouterRedialAttempts; attempt++ {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(delay):
-			}
-			if n.isAuthenticatedAndConnected(router) {
-				return
-			}
-			if !n.isAttached(router) {
-				return
-			}
-			addrs := n.Host.Peerstore().Addrs(router)
-			if len(addrs) == 0 {
-				logger.Warnf("[AuthN] Router %s dropped and no address for it is known; replacing it", router)
-				n.detach(router)
-				return
-			}
-			err := n.authRouter(ctx, peer.AddrInfo{ID: router, Addrs: addrs}, biscuitBytes)
-			if err == nil {
+		n.mu.Lock()
+		delete(n.redialing, router)
+		n.mu.Unlock()
+	}()
+}
+
+// redialUntilUp runs the redial attempts of redialRouter and reports whether
+// it released the redial's in-flight mark. It releases it only on a live
+// session, through releaseRedialIfUp; on every other exit the mark is left
+// to the caller.
+func (n *AgentMeshNode) redialUntilUp(ctx context.Context, router peer.ID) bool {
+	biscuitBytes, err := n.loadIdentityForAuth()
+	if err != nil {
+		logger.Errorf("[AuthN] Cannot redial router %s without an identity: %v", router, err)
+		return false
+	}
+	delay := n.config.RouterRedialDelay
+	for attempt := 1; attempt <= n.config.RouterRedialAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(delay):
+		}
+		if n.releaseRedialIfUp(router) {
+			logger.Debugf("[AuthN] Router %s session was restored while its redial waited", router)
+			return true
+		}
+		if !n.isAttached(router) {
+			return false
+		}
+		addrs := n.Host.Peerstore().Addrs(router)
+		if len(addrs) == 0 {
+			logger.Warnf("[AuthN] Router %s dropped and no address for it is known; replacing it", router)
+			n.detach(router)
+			return false
+		}
+		err := n.authRouter(ctx, peer.AddrInfo{ID: router, Addrs: addrs}, biscuitBytes)
+		if err == nil {
+			if n.releaseRedialIfUp(router) {
 				logger.Infof("[AuthN] Router %s re-admitted this node on redial %d", router, attempt)
 				// A router that restarted lost this node's records.
 				n.triggerReprovide()
-				return
+				return true
 			}
+			// A drop since the handshake found this redial's mark and left
+			// the session to it, or came before the session was recorded.
+			logger.Warnf("[AuthN] Router %s admitted this node on redial %d and dropped it again", router, attempt)
+		} else {
 			if errors.Is(err, ErrFatalAuth) {
 				logger.Warnf("[AuthN] Router %s refused this node's credential on redial: %v", router, err)
 				n.detach(router)
 				n.shun(router, n.config.RouterShunDuration)
-				return
+				return false
 			}
 			logger.Debugf("[AuthN] Redial %d of router %s failed: %v", attempt, router, err)
-			delay *= 2
 		}
-		// Given up: the monitor tops up from the other routers, and this one
-		// is a candidate again once it is back on /info and the shun lapses.
-		logger.Warnf("[AuthN] Router %s did not come back within %d redials; replacing it", router, n.config.RouterRedialAttempts)
-		n.detach(router)
-		n.shun(router, n.config.RouterShunDuration)
-	}()
+		delay *= 2
+	}
+	// Given up: the monitor tops up from the other routers, and this one
+	// is a candidate again once it is back on /info and the shun lapses.
+	logger.Warnf("[AuthN] Router %s did not keep a session with this node within %d redials; replacing it", router, n.config.RouterRedialAttempts)
+	n.detach(router)
+	n.shun(router, n.config.RouterShunDuration)
+	return false
+}
+
+// releaseRedialIfUp ends a redial of router on a live session: it clears the
+// redial's in-flight mark only while the session is up, and reports whether
+// it did. It holds n.mu, as the disconnect handler does to clear the
+// session, so a drop either came first and is seen here, and the redial goes
+// on, or comes after, finds no mark and starts a redial of its own. The
+// connection is checked as well as the session flag, since a drop that
+// lands before the handshake records the session clears nothing.
+func (n *AgentMeshNode) releaseRedialIfUp(router peer.ID) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !n.authenticatedRouters[router] || n.Host.Network().Connectedness(router) != network.Connected {
+		return false
+	}
+	delete(n.redialing, router)
+	return true
 }
 
 func (n *AgentMeshNode) loadIdentityForAuth() ([]byte, error) {
@@ -1299,7 +1412,19 @@ func (n *AgentMeshNode) authenticateRouterSession(ctx context.Context, router pe
 	}
 	_ = s.Close()
 
+	// A router that closes the connection right after admitting the node can
+	// do so before the session is recorded, and the disconnect handler then
+	// finds none to clear. Recorded anyway, it would outlive the connection,
+	// and the next connection to the router, which AutoRelay opens within
+	// milliseconds, would make it look live although the router never
+	// authenticated it. The swarm closes a connection before it notifies
+	// the handler, and the handler takes n.mu, so a close either came first
+	// and is seen here or comes after and clears what is recorded now.
 	n.mu.Lock()
+	if s.Conn().IsClosed() {
+		n.mu.Unlock()
+		return fmt.Errorf("router %s closed the connection as it admitted this node", router)
+	}
 	n.authenticatedRouters[router] = true
 	n.RouterPeerID = router
 	n.mu.Unlock()
@@ -1571,7 +1696,7 @@ func (n *AgentMeshNode) RefreshEnrollment(ctx context.Context) error {
 
 	url := controlPlaneURL + "/refresh"
 	b64Biscuit := base64.StdEncoding.EncodeToString(currentBiscuit)
-	client := controlPlaneHTTPClient(30 * time.Second)
+	client := n.cpHTTPClient(30 * time.Second)
 	resp, err := cpclient.DoWithChallenge(client, time.Now, func(timestamp int64) (*http.Request, error) {
 		sig, err := privKey.Sign(api.RefreshChallenge(peerID.String(), timestamp))
 		if err != nil {
@@ -1977,25 +2102,32 @@ var authHandshakeTimeout = 10 * time.Second
 // HandleAuthHandshake is the core libp2p stream handler for /mesh/auth/1.0.0.
 // This is the "Admission Office" of the mesh node.
 func (n *AgentMeshNode) HandleAuthHandshake(s network.Stream) {
-	defer func() {
+	closeStream := func() {
 		if err := s.Close(); err != nil {
 			logger.Errorf("[AuthN] Failed to close auth stream: %v", err)
 		}
-	}()
+	}
 	remotePeer := s.Conn().RemotePeer()
 
 	if n.revokedPeers != nil {
 		if _, revoked := n.revokedPeers.Get(remotePeer.String()); revoked {
 			logger.Warnf("[AuthN] Peer %s is revoked", remotePeer)
+			closeStream()
 			return
 		}
 	}
 
+	// A reset stream cannot be closed, so this refusal returns before the
+	// deferred Close: it is this node's decision, not an error. The code
+	// tells the peer why, so it reports a refusal rather than a
+	// destination that did not answer (authResponseError).
 	if n.handshakeLimiter != nil && !n.handshakeLimiter.Allow(remotePeer.String()) {
 		logger.Warnf("[AuthN] Handshake rate limit exceeded for %s", remotePeer)
-		_ = s.Reset()
+		_ = s.ResetWithError(network.StreamRateLimited)
 		return
 	}
+	defer closeStream()
+
 	if err := s.SetDeadline(time.Now().Add(authHandshakeTimeout)); err != nil {
 		logger.Debugf("[AuthN] Failed to set handshake deadline for %s: %v", remotePeer, err)
 	}
@@ -2015,15 +2147,24 @@ func (n *AgentMeshNode) HandleAuthHandshake(s network.Stream) {
 	}
 
 	// One verifier call enforces signature, expiry and the authority-block peer
-	// binding, and reports when the admission lapses.
-	expiry, err := identity.VerifyBiscuitAndGetExpiry(exchange.Biscuit, remotePeer, n.getTrustedPublicKeys(), n.BiscuitTimeout)
+	// binding, and reports when the admission lapses, together with the key
+	// that verified so the role can be read under that same key.
+	b, verifyingKey, expiry, err := identity.VerifyBiscuitAdmission(exchange.Biscuit, remotePeer, n.getTrustedPublicKeys(), n.BiscuitTimeout)
 	if err != nil {
 		logger.Warnf("[AuthN] Authorization failed for %s: %v", remotePeer, err)
 		return
 	}
 
-	n.authPeers.Store(remotePeer, expiry)
-	logger.Infof("[AuthN] Successfully authenticated peer %s", remotePeer)
+	// A router that connects to this node (to forward external ingress, for
+	// one) is admitted like any peer, and additionally remembered as a router
+	// so routerHost protocols can serve it and refuse everyone else.
+	isRouter := identity.RequireRole(b, verifyingKey, api.RoleRouter, n.BiscuitTimeout) == nil
+	n.admitPeer(remotePeer, expiry, isRouter)
+	if isRouter {
+		logger.Infof("[AuthN] Successfully authenticated peer %s as router", remotePeer)
+	} else {
+		logger.Infof("[AuthN] Successfully authenticated peer %s", remotePeer)
+	}
 
 	// Mutual response with our identity, mirroring the router handler, so
 	// peers can verify this node's attested facts (e.g. region).
@@ -2066,8 +2207,12 @@ func (n *AgentMeshNode) Teardown() error {
 	if n.services != nil && n.Directory != nil && n.Host != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), withdrawTimeout)
 		n.services.WithdrawAll(ctx)
-		if err := n.Directory.Withdraw(ctx, api.PeerKey(n.Host.ID())); err != nil && !errors.Is(err, errNoDirectoryRouter) {
-			logger.Warnf("[Directory] Withdrawing this node's record: %v", err)
+		if err := n.Directory.Withdraw(ctx, api.PeerKey(n.Host.ID())); err != nil {
+			if errors.Is(err, errNoDirectoryRouter) {
+				logger.Debugf("[Directory] Withdrawing this node's record skipped: %v", err)
+			} else {
+				logger.Warnf("[Directory] Withdrawing this node's record: %v", err)
+			}
 		}
 		cancel()
 	}
@@ -2428,7 +2573,7 @@ func (n *AgentMeshNode) StartIngressServer(ctx context.Context) error {
 			path := r.URL.Path
 			// Policy is decided on the /{type}/{name} prefix; a ".." segment in
 			// what follows could resolve to a sibling service on a shared backend.
-			if hasDotSegment(path) {
+			if api.HasDotSegment(path) {
 				http.Error(w, "Invalid path", http.StatusBadRequest)
 				return
 			}
@@ -2539,6 +2684,9 @@ func (n *AgentMeshNode) StartIngressServer(ctx context.Context) error {
 				}
 				if len(claims.Roles) > 0 {
 					r.Header.Set(api.HeaderMeshRoles, strings.Join(claims.Roles, ","))
+				}
+				if t := claims.InnermostTaskName(); t != "" {
+					r.Header.Set(api.HeaderMeshTask, t)
 				}
 			}
 
@@ -2810,4 +2958,36 @@ func (n *AgentMeshNode) startCatalogReportLoop(ctx context.Context, initialDelay
 			}
 		}
 	}()
+}
+
+// Services returns the node's local service registry (available after Start).
+func (n *AgentMeshNode) Services() *ServiceRegistry {
+	return n.services
+}
+
+func (n *AgentMeshNode) rawEgressHandler() http.Handler {
+	n.egressOnce.Do(func() {
+		n.egressHandler = createEgressProxy(n)
+	})
+	return n.egressHandler
+}
+
+// EgressHandler returns an in-process HTTP handler that routes
+// /mesh/<peer_id>/<type>/<name>[/<path>] requests over authenticated libp2p
+// streams, enforcing provider Biscuit, label, egress-floor, and publish-grant
+// verification as well as A2A AgentCard rewriting.
+func (n *AgentMeshNode) EgressHandler() http.Handler {
+	return withCallerOrTokenAuth(n, "", false, n.rawEgressHandler())
+}
+
+// InferenceHandler returns an OpenAI-compatible HTTP handler serving
+// GET /v1/models, POST /v1/chat/completions, and POST /v1/completions backed
+// by local and remote inference://* services on the mesh.
+func (n *AgentMeshNode) InferenceHandler() http.Handler {
+	facade := newOpenAIFacade(n, n.rawEgressHandler())
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", facade.handleModels)
+	mux.HandleFunc("/v1/chat/completions", facade.handleCompletions)
+	mux.HandleFunc("/v1/completions", facade.handleCompletions)
+	return withCallerOrTokenAuth(n, "", true, mux)
 }

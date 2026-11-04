@@ -79,10 +79,15 @@ const (
 	// Example Datalog: check if client_peer_id($id), connection_peer_id($id)
 	FactClientPeerID = "client_peer_id"
 
-	// FactActorNode names the origin agentmesh-node PeerID that exchanged a delegated
-	// subject credential at POST /token/exchange, for audit logs, for act.sub in
-	// border JWTs, and for ext_proc attributes["mesh"].actor_node. It grants
-	// nothing: no baseline rule and no policy binding reads it.
+	// FactActorNode names the origin agentmesh-node PeerID of a delegated Biscuit:
+	// the node that exchanged the subject credential at POST /token/exchange. For
+	// a Biscuit the control plane mints at /oauth/*, it is the node whose
+	// credential came with the request, or else the actor_peer_id the client
+	// named (checked only for admission) or the control plane's own peer ID. It
+	// is for audit logs, for ext_proc attributes["mesh"].actor_node, and,
+	// together with client_peer_id, for the authority-block request binding
+	// (identity.RequireAuthorityRequestBinding). No baseline rule and no policy
+	// binding reads it, so it grants nothing.
 	FactActorNode = "actor_node"
 
 	// FactGroup defines the group claim extracted from the OIDC token.
@@ -181,6 +186,24 @@ const (
 	// FactPublish is the service a verifier asks about: publish("mcp", "calc").
 	// Added by the verifier, never carried in a token.
 	FactPublish = "publish"
+
+	// The granted_ingress_* facts are the granted_publish_* counterparts for
+	// external router HTTP ingress (PolicyRole.allowed_ingress), parameterized
+	// by the effective auth mode ("edge" or "passthrough") as their final term.
+	// A router verifies them via IngressPolicies over an
+	// ingress($type, $name, $mode) fact before accepting or serving an
+	// external-ingress directory record.
+	FactGrantedIngressAllTypes = "granted_ingress_all_types"
+	FactGrantedIngressAll      = "granted_ingress_all"
+	FactGrantedIngressSuffix   = "granted_ingress_suffix"
+	FactGrantedIngressPrefix   = "granted_ingress_prefix"
+	FactGrantedIngressExact    = "granted_ingress_exact"
+	FactGrantedIngressSet      = "granted_ingress_set"
+
+	// FactIngress is the external ingress exposure a verifier asks about:
+	// ingress("a2a", "assistant", "edge"). Added by the verifier, never carried
+	// in a token.
+	FactIngress = "ingress"
 
 	// FactGrantedTargetAllTypes allows target access to all network targets (unrestricted).
 	// Contains: biscuit.Bool(true) (marker fact)
@@ -443,6 +466,12 @@ var (
 	// caller before it sends a request to a provider it found by name.
 	PublishPolicies []biscuit.Policy
 
+	// IngressPolicies decide whether a member may expose an inbound service on
+	// router HTTP ingress under a given auth mode: over its own credential and
+	// an ingress($type, $name, $mode) fact, one allows when a granted_ingress_*
+	// fact covers both the service and the mode.
+	IngressPolicies []biscuit.Policy
+
 	// BaselineSources is the Datalog text every variable above is parsed from.
 	// The SDKs embed this text (see hack/gen-sdk-datalog) so that a provider
 	// written in another language evaluates the same authorizer as agentmesh-node.
@@ -456,6 +485,8 @@ type DatalogSources struct {
 	Policies []string `json:"policies"`
 	// PublishPolicies decide whether a member may serve a service (PublishPolicies).
 	PublishPolicies []string `json:"publish_policies"`
+	// IngressPolicies decide whether a member may expose a service on router HTTP ingress (IngressPolicies).
+	IngressPolicies []string `json:"ingress_policies"`
 	// Rules derive allow_network_target from target grants (BaselineRules).
 	Rules []string `json:"rules"`
 	// HTTPRules derive service grants from narrowed grants (BaselineHTTPRules).
@@ -524,6 +555,24 @@ func init() {
 			panic(fmt.Sprintf("failed to parse publish policy %d: %v", i, err))
 		}
 		PublishPolicies = append(PublishPolicies, p)
+	}
+
+	// Ingress policies: decide whether a member may expose an inbound service on
+	// router HTTP ingress under $mode ("edge" or "passthrough").
+	BaselineSources.IngressPolicies = []string{
+		fmt.Sprintf(`allow if %s($type, $name, $mode), %s($type, $name, $mode)`, FactIngress, FactGrantedIngressExact),
+		fmt.Sprintf(`allow if %s($type, $name, $mode), %s($type, $set, $mode), $set.contains($name)`, FactIngress, FactGrantedIngressSet),
+		fmt.Sprintf(`allow if %s($type, $name, $mode), %s($type, $prefix, $mode), $name.starts_with($prefix)`, FactIngress, FactGrantedIngressPrefix),
+		fmt.Sprintf(`allow if %s($type, $name, $mode), %s($type, $suffix, $mode), $name.ends_with($suffix)`, FactIngress, FactGrantedIngressSuffix),
+		fmt.Sprintf(`allow if %s($type, $name, $mode), %s($type, $mode)`, FactIngress, FactGrantedIngressAll),
+		fmt.Sprintf(`allow if %s($type, $name, $mode), %s($mode)`, FactIngress, FactGrantedIngressAllTypes),
+	}
+	for i, pStr := range BaselineSources.IngressPolicies {
+		p, err := parser.FromStringPolicy(pStr)
+		if err != nil {
+			panic(fmt.Sprintf("failed to parse ingress policy %d: %v", i, err))
+		}
+		IngressPolicies = append(IngressPolicies, p)
 	}
 
 	// 2. Target Evaluation Rules
@@ -831,6 +880,87 @@ func BuildPublishDatalogFacts(services []string) []biscuit.Fact {
 // serving a service: publish("<type>", "<name>").
 func PublishFact(svcType, svcName string) biscuit.Fact {
 	return biscuit.Fact{Predicate: biscuit.Predicate{Name: FactPublish, IDs: []biscuit.Term{biscuit.String(svcType), biscuit.String(svcName)}}}
+}
+
+// ingressFactNames maps each granted_service_* fact to its granted_ingress_*
+// counterpart.
+var ingressFactNames = map[string]string{
+	FactGrantedServiceAllTypes: FactGrantedIngressAllTypes,
+	FactGrantedServiceAll:      FactGrantedIngressAll,
+	FactGrantedServiceSuffix:   FactGrantedIngressSuffix,
+	FactGrantedServicePrefix:   FactGrantedIngressPrefix,
+	FactGrantedServiceExact:    FactGrantedIngressExact,
+	FactGrantedServiceSet:      FactGrantedIngressSet,
+}
+
+// BuildIngressDatalogFacts translates a role's allowed_ingress grants into
+// granted_ingress_* facts, grouping service patterns by effective auth mode
+// ("edge" when allowed_auth_modes is empty, otherwise each listed mode).
+func BuildIngressDatalogFacts(grants []*IngressGrant) []biscuit.Fact {
+	if len(grants) == 0 {
+		return nil
+	}
+	byMode := make(map[string][]string)
+	var modes []string
+	addMode := func(m string, services []string) {
+		if len(services) == 0 {
+			return
+		}
+		if _, ok := byMode[m]; !ok {
+			modes = append(modes, m)
+		}
+		byMode[m] = append(byMode[m], services...)
+	}
+	for _, g := range grants {
+		if g == nil || len(g.Services) == 0 {
+			continue
+		}
+		if len(g.AllowedAuthModes) == 0 {
+			addMode(IngressAuthModeStringEdge, g.Services)
+			continue
+		}
+		for _, m := range g.AllowedAuthModes {
+			modeStr, err := IngressAuthModeToString(m)
+			if err != nil {
+				continue
+			}
+			addMode(modeStr, g.Services)
+		}
+	}
+	sort.Strings(modes)
+	var out []biscuit.Fact
+	for _, modeStr := range modes {
+		modeTerm := biscuit.String(modeStr)
+		svcFacts := BuildServiceDatalogFacts(byMode[modeStr])
+		for _, f := range svcFacts {
+			name := ingressFactNames[f.Name]
+			if f.Name == FactGrantedServiceAllTypes {
+				out = append(out, biscuit.Fact{Predicate: biscuit.Predicate{
+					Name: name,
+					IDs:  []biscuit.Term{modeTerm},
+				}})
+				continue
+			}
+			ids := make([]biscuit.Term, 0, len(f.IDs)+1)
+			ids = append(ids, f.IDs...)
+			ids = append(ids, modeTerm)
+			out = append(out, biscuit.Fact{Predicate: biscuit.Predicate{
+				Name: name,
+				IDs:  ids,
+			}})
+		}
+	}
+	return out
+}
+
+// IngressFact is the fact a verifier adds to ask whether a credential grants
+// exposing a service on router HTTP ingress under mode ("edge" or
+// "passthrough"): ingress("<type>", "<name>", "<mode>").
+func IngressFact(svcType, svcName, mode string) biscuit.Fact {
+	return biscuit.Fact{Predicate: biscuit.Predicate{
+		Name: FactIngress,
+		IDs:  []biscuit.Term{biscuit.String(svcType), biscuit.String(svcName), biscuit.String(mode)},
+	}}
 }
 
 // BuildServiceDatalogFacts translates a list of service patterns into a minimal set of Datalog facts.

@@ -28,7 +28,15 @@ import (
 	"time"
 )
 
+func useEphemeralOIDCPort(t *testing.T) {
+	t.Helper()
+	orig := oidcLoopbackPorts
+	oidcLoopbackPorts = []string{"0"}
+	t.Cleanup(func() { oidcLoopbackPorts = orig })
+}
+
 func TestInteractiveLogin(t *testing.T) {
+	useEphemeralOIDCPort(t)
 	t.Setenv("SSH_CLIENT", "")
 	t.Setenv("SSH_TTY", "")
 
@@ -79,7 +87,9 @@ func TestInteractiveLogin(t *testing.T) {
 
 		go func() {
 			time.Sleep(100 * time.Millisecond)
-			_, _ = http.Get(redirectURI + "?code=dev_code_123&state=" + state)
+			if resp, gErr := http.Get(redirectURI + "?code=dev_code_123&state=" + state); gErr == nil {
+				_ = resp.Body.Close()
+			}
 		}()
 		return nil
 	}
@@ -204,6 +214,7 @@ func TestDiscoverEndpointsDoesNotHangOnUnresponsiveIssuer(t *testing.T) {
 }
 
 func TestInteractiveLoginWithRefresh(t *testing.T) {
+	useEphemeralOIDCPort(t)
 	t.Setenv("SSH_CLIENT", "")
 	t.Setenv("SSH_TTY", "")
 
@@ -262,7 +273,9 @@ func TestInteractiveLoginWithRefresh(t *testing.T) {
 
 		go func() {
 			time.Sleep(100 * time.Millisecond)
-			_, _ = http.Get(redirectURI + "?code=dev_code_123&state=" + state)
+			if resp, gErr := http.Get(redirectURI + "?code=dev_code_123&state=" + state); gErr == nil {
+				_ = resp.Body.Close()
+			}
 		}()
 		return nil
 	}
@@ -396,6 +409,7 @@ func TestInteractiveLoginWithDeviceAuth_Headless(t *testing.T) {
 // back to the device authorization flow when the provider advertises one,
 // instead of leaving the user to paste a callback code.
 func TestInteractiveLoginBrowserFailFallsBackToDevice(t *testing.T) {
+	useEphemeralOIDCPort(t)
 	t.Setenv("SSH_CLIENT", "")
 	t.Setenv("SSH_TTY", "")
 
@@ -748,6 +762,7 @@ func TestAuthModeDeviceWithoutEndpointErrors(t *testing.T) {
 // loopback flow even under a headless (SSH) environment with a device
 // endpoint available, and never falls back to device flow.
 func TestAuthModeBrowserIgnoresDevice(t *testing.T) {
+	useEphemeralOIDCPort(t)
 	t.Setenv("SSH_CLIENT", "1")
 	t.Setenv("SSH_TTY", "")
 
@@ -780,7 +795,9 @@ func TestAuthModeBrowserIgnoresDevice(t *testing.T) {
 		state := u.Query().Get("state")
 		go func() {
 			time.Sleep(50 * time.Millisecond)
-			_, _ = http.Get(redirectURI + "?code=dev_code_123&state=" + state)
+			if resp, gErr := http.Get(redirectURI + "?code=dev_code_123&state=" + state); gErr == nil {
+				_ = resp.Body.Close()
+			}
 		}()
 		return nil
 	}
@@ -883,5 +900,75 @@ func TestRenewWithRefreshToken(t *testing.T) {
 	}
 	if newRefresh != "new_refresh_token_456" {
 		t.Errorf("Expected updated refresh token 'new_refresh_token_456', got '%s'", newRefresh)
+	}
+}
+
+func TestOIDCMethodsRejectPlaintextNonLoopbackTransport(t *testing.T) {
+	prevGlobal := allowInsecureControlPlane.Load()
+	SetAllowInsecureControlPlane(false)
+	t.Cleanup(func() { SetAllowInsecureControlPlane(prevGlobal) })
+
+	// 192.0.2.10 is RFC 5737 TEST-NET-1: if RoundTrip attempted a TCP dial
+	// instead of failing at api.ValidateControlPlaneTransport, the short context
+	// would time out with context.DeadlineExceeded rather than a transport policy error.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	strictNode := &AgentMeshNode{BiscuitTimeout: 500 * time.Millisecond}
+	// An in-process node opting into AllowInsecureControlPlane must stay scoped
+	// to that instance and leave strictNode rejecting plaintext non-loopback URLs.
+	_ = &AgentMeshNode{
+		BiscuitTimeout: 500 * time.Millisecond,
+		config:         Options{AllowInsecureControlPlane: true},
+	}
+
+	const nonLoopbackIssuer = "http://192.0.2.10:8080"
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "DiscoverTokenURL",
+			call: func() error {
+				_, err := strictNode.DiscoverTokenURL(ctx, nonLoopbackIssuer)
+				return err
+			},
+		},
+		{
+			name: "DiscoverEndpointsWithDevice",
+			call: func() error {
+				_, err := strictNode.DiscoverEndpointsWithDevice(ctx, nonLoopbackIssuer)
+				return err
+			},
+		},
+		{
+			name: "DeviceLogin",
+			call: func() error {
+				_, err := strictNode.DeviceLogin(ctx, nonLoopbackIssuer+"/device", nonLoopbackIssuer+"/token", "client-id", "aud", false)
+				return err
+			},
+		},
+		{
+			name: "RefreshJWT",
+			call: func() error {
+				_, _, err := strictNode.RefreshJWT(ctx, nonLoopbackIssuer+"/token", "client-id", "", "rt-123")
+				return err
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			if err == nil {
+				t.Fatalf("%s accepted plaintext non-loopback URL %s, want error", tc.name, nonLoopbackIssuer)
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("%s dialed the network and hit context deadline (%v) instead of failing closed at transport check: %v", tc.name, ctx.Err(), err)
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), "https") && !strings.Contains(strings.ToLower(err.Error()), "plaintext") && !strings.Contains(strings.ToLower(err.Error()), "insecure") {
+				t.Errorf("%s error = %v, want transport policy rejection mentioning https/plaintext/insecure", tc.name, err)
+			}
+		})
 	}
 }
