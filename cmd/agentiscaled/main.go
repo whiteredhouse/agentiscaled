@@ -358,6 +358,7 @@ func run(ctx context.Context, c config) error {
 			return fmt.Errorf("register services: %w", err)
 		}
 	}
+	var agentTarget string
 	if agent != nil {
 		target, err := serveAgent(nodeCtx, agent, c.agentName)
 		if err != nil {
@@ -371,7 +372,17 @@ func run(ctx context.Context, c config) error {
 		}}); err != nil {
 			return fmt.Errorf("register agent %s: %w", c.agentName, err)
 		}
-		localAPI, err := serveLocalAgent(nodeCtx, node, nodeConfig, c.agentName, target, c.dataDir)
+		agentTarget = target
+	}
+	node.StartRenewalLoop(nodeCtx, "", "", "", "")
+
+	srv, err := startNodeAPI(node, c, apiToken)
+	if err != nil {
+		return fmt.Errorf("start node API: %w", err)
+	}
+	defer srv.Close()
+	if agent != nil {
+		localAPI, err := serveLocalAgent(nodeCtx, node, nodeConfig, c.agentName, agentTarget, c.dataDir)
 		if err != nil {
 			return fmt.Errorf("start local agent API: %w", err)
 		}
@@ -380,13 +391,6 @@ func run(ctx context.Context, c config) error {
 		go warnDuplicateAgent(nodeCtx, node.Host.ID().String(), c.agentName, func(ctx context.Context) ([]*api.DiscoveredProvider, error) {
 			return node.DiscoverRemoteServices(ctx, api.ServiceType_SERVICE_TYPE_A2A, c.agentName)
 		})
-	}
-	node.StartRenewalLoop(nodeCtx, "", "", "", "")
-
-	socket := filepath.Join(c.dataDir, meshnode.DefaultSocketName)
-	srv, err := meshnode.StartSidecarServer(node, c.bindAddr, socket, apiToken, "", "", "")
-	if err != nil {
-		return fmt.Errorf("start node API: %w", err)
 	}
 	log.Printf("agentiscaled running")
 
@@ -407,6 +411,21 @@ func run(ctx context.Context, c config) error {
 	}
 	teardown.Do(func() { node.Teardown() })
 	return halt(ctx, c.dataDir, *halted)
+}
+
+// startNodeAPI requires the owned Unix listener when local agent calls depend
+// on it. Mesh otherwise permits a TCP-only fallback when that socket is blocked.
+func startNodeAPI(node *meshnode.AgentMeshNode, c config, token string) (*http.Server, error) {
+	socket := filepath.Join(c.dataDir, meshnode.DefaultSocketName)
+	server, err := meshnode.StartSidecarServer(node, c.bindAddr, socket, token, "", "", "")
+	if err != nil {
+		return nil, err
+	}
+	if c.agent != "" && node.BoundSocketPath != socket {
+		server.Close()
+		return nil, fmt.Errorf("hosted agent requires the node API Unix socket at %s", socket)
+	}
+	return server, nil
 }
 
 // nodeOptions builds the embedded node's options for its mesh's control plane

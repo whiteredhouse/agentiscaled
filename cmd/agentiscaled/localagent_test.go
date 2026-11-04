@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -482,5 +483,37 @@ func TestLocalProviderUsesCurrentPublishPolicy(t *testing.T) {
 	n.MeshPolicyMu.Unlock()
 	if _, _, err := tasks.card(context.Background(), nil, taskTarget{Service: "helper"}); err == nil || !strings.Contains(err.Error(), "HTTP 403") {
 		t.Fatalf("removed publish policy still authorized the provider: %v", err)
+	}
+}
+
+func TestNodeAPIRequiresSocketForHostedAgent(t *testing.T) {
+	for _, hosted := range []bool{false, true} {
+		t.Run(fmt.Sprint(hosted), func(t *testing.T) {
+			n, _, _, _ := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
+			dir := shortTempDir(t)
+			path := filepath.Join(dir, meshnode.DefaultSocketName)
+			if err := os.WriteFile(path, []byte("keep"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			c := config{dataDir: dir, bindAddr: "127.0.0.1:0"}
+			if hosted {
+				c.agent = "codex"
+			}
+			server, err := startNodeAPI(n, c, "test-owner-token")
+			if server != nil {
+				defer server.Close()
+			}
+			if hosted {
+				if err == nil || !strings.Contains(err.Error(), "hosted agent requires") {
+					t.Fatalf("missing required Unix socket did not fail startup: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("ordinary TCP node lost its optional socket fallback: %v", err)
+			}
+			content, _ := os.ReadFile(path)
+			if string(content) != "keep" {
+				t.Fatal("startup changed the obstructing file")
+			}
+		})
 	}
 }
