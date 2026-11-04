@@ -17,7 +17,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const a2aInstructions = `agentiscale: to use an A2A agent on another node of your network, do not use the a2a CLI or hand-written requests. Find it with discover_remote_services (type "a2a") and inspect its card with get_agent_card using peer_id and service (the discovered srv_name). Then call send_task with the same target, and follow the task with get_task until it reaches a terminal state (completed, rejected, cancelled, timeout or failed). cancel_task stops it. A node that is offline cannot be reached: there is no mailbox, so the call fails and you should tell the user.`
+const a2aInstructions = `agentiscale: use list_local_services (type "a2a") to find agents hosted on this node; read their card with get_agent_card and call send_task with their name as service, omitting peer_id in both calls. Use discover_remote_services (type "a2a") to find agents on other nodes; inspect their current card with get_agent_card using peer_id and srv_name as service, then call send_task with the same target. Follow tasks with get_task until terminal (completed, rejected, cancelled, timeout or failed); cancel_task stops them. Use the same target for send/get/cancel. Do not use the a2a CLI or hand-written requests. An offline remote node cannot be reached and nothing is queued.`
 
 // maxWait bounds how long get_task holds one tool call, below the timeouts
 // MCP clients put on a call.
@@ -29,16 +29,17 @@ const agentCardTimeout = 30 * time.Second
 
 var serviceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
-// a2aTasks sends A2A tasks through this node's mesh proxy, which carries
-// them to the receiving node over the network's encrypted connection.
+// a2aTasks selects agentiscaled's owner socket for local tasks and the
+// unchanged Agent Mesh proxy for tasks sent to other nodes.
 type a2aTasks struct {
-	http *http.Client
-	base string // the node's local API
+	http  *http.Client
+	base  string       // the node's local API
+	local *http.Client // owner-only agent socket; nil for older nodes
 }
 
 type taskTarget struct {
-	PeerID  string `json:"peer_id" jsonschema:"peer ID of the node that serves the agent, from discover_remote_services"`
-	Service string `json:"service" jsonschema:"the agent's service name (srv_name), as discovery lists it"`
+	PeerID  string `json:"peer_id,omitempty" jsonschema:"Peer ID from discover_remote_services for a remote agent; omit for an agent from list_local_services on this node."`
+	Service string `json:"service" jsonschema:"The agent's name from list_local_services, or srv_name from discover_remote_services"`
 }
 
 type sendTaskIn struct {
@@ -71,12 +72,12 @@ type taskOut struct {
 func addA2ATools(server *mcp.Server, t *a2aTasks) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_agent_card",
-		Description: "Read the current card of a discovered A2A agent through this node's encrypted mesh connection. Use its peer_id and service name (srv_name). An unavailable or refused service returns an error; this does not send a task.",
+		Description: "Read the current card of an A2A agent. For a local agent use its service name and omit peer_id; for a remote agent use its discovered peer_id and service name (srv_name). Remote reads use the encrypted mesh connection. An unavailable or refused service returns an error; this does not send a task.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, t.card)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "send_task",
-		Description: "Send one task to an A2A agent on another node of your agentiscale network, over its end-to-end encrypted connection. Returns at once with the task ID and state; follow it with get_task.",
+		Description: "Send one task to an A2A agent on this node or another node of your agentiscale network. Remote calls use the network's end-to-end encrypted connection. Returns at once with the task ID and state; follow it with get_task.",
 	}, t.send)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_task",
@@ -89,39 +90,85 @@ func addA2ATools(server *mcp.Server, t *a2aTasks) {
 }
 
 func (t *a2aTasks) client(ctx context.Context, target taskTarget) (*a2aclient.Client, error) {
-	url, err := t.endpoint(target)
+	endpoint, client, err := t.route(ctx, target)
 	if err != nil {
 		return nil, err
 	}
 	return a2aclient.NewFromEndpoints(ctx,
-		[]*a2a.AgentInterface{a2a.NewAgentInterface(url, a2a.TransportProtocolJSONRPC)},
-		a2aclient.WithJSONRPCTransport(t.http))
+		[]*a2a.AgentInterface{a2a.NewAgentInterface(endpoint, a2a.TransportProtocolJSONRPC)},
+		a2aclient.WithJSONRPCTransport(client))
 }
 
-func (t *a2aTasks) endpoint(target taskTarget) (string, error) {
-	if _, err := peer.Decode(target.PeerID); err != nil {
-		return "", fmt.Errorf("peer_id %q is not a peer ID", target.PeerID)
+// route keeps card reads and task operations on the same authenticated path.
+func (t *a2aTasks) route(ctx context.Context, target taskTarget) (string, *http.Client, error) {
+	if _, err := peer.Decode(target.PeerID); target.PeerID != "" && err != nil {
+		return "", nil, fmt.Errorf("peer_id %q is not a peer ID", target.PeerID)
 	}
 	if !serviceName.MatchString(target.Service) {
-		return "", fmt.Errorf("service %q is not a service name", target.Service)
+		return "", nil, fmt.Errorf("service %q is not a service name", target.Service)
 	}
-	return fmt.Sprintf("%s/mesh/%s/a2a/%s", t.base, target.PeerID, target.Service), nil
+	if t.local != nil {
+		info, err := t.localInfo(ctx)
+		if err == nil && (target.PeerID == "" || target.PeerID == info.PeerID) {
+			if target.Service != info.Service {
+				return "", nil, fmt.Errorf("this node does not host agent %q", target.Service)
+			}
+			return fmt.Sprintf("http://agentiscaled/a2a/%s/%s", info.PeerID, target.Service), t.local, nil
+		} else if target.PeerID == "" {
+			return "", nil, fmt.Errorf("local agent unavailable: %w", err)
+		}
+	} else if target.PeerID == "" {
+		return "", nil, errors.New("no local agent API available")
+	}
+	return fmt.Sprintf("%s/mesh/%s/a2a/%s", t.base, target.PeerID, target.Service), t.http, nil
+}
+
+// localInfoTimeout bounds the local agent lookup that precedes every call,
+// so a stuck local socket cannot hold up a call meant for another node.
+var localInfoTimeout = 2 * time.Second
+
+func (t *a2aTasks) localInfo(ctx context.Context) (localAgentInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, localInfoTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://agentiscaled/info", nil)
+	if err != nil {
+		return localAgentInfo{}, err
+	}
+	response, err := t.local.Do(req)
+	if err != nil {
+		return localAgentInfo{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return localAgentInfo{}, fmt.Errorf("local agent API: %s", response.Status)
+	}
+	var info localAgentInfo
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&info); err != nil {
+		return info, err
+	}
+	if _, err := peer.Decode(info.PeerID); err != nil {
+		return info, fmt.Errorf("invalid local peer ID: %w", err)
+	}
+	if !serviceName.MatchString(info.Service) {
+		return info, errors.New("invalid local service name")
+	}
+	return info, nil
 }
 
 func (t *a2aTasks) card(ctx context.Context, _ *mcp.CallToolRequest, target taskTarget) (*mcp.CallToolResult, any, error) {
-	endpoint, err := t.endpoint(target)
+	ctx, cancel := context.WithTimeout(ctx, agentCardTimeout)
+	defer cancel()
+	endpoint, transport, err := t.route(ctx, target)
 	if err != nil {
 		return nil, nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, agentCardTimeout)
-	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/.well-known/agent-card.json", nil)
 	if err != nil {
 		return nil, nil, err
 	}
-	// Only the selected node's mesh route may answer. A redirect must not
+	// Only the selected local/mesh route may answer. A redirect must not
 	// become a request to a different route, host or advertised interface.
-	client := *t.http
+	client := *transport
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	response, err := client.Do(request)
 	if err != nil {

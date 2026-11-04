@@ -69,6 +69,23 @@ client configuration files.
 
 ## Send a task from Claude Desktop to Codex
 
+With the default setup, Claude Desktop and the hosted Codex agent use the same
+node. Configure the agent with `agentiscaled up -agent codex -agent-dir /absolute/path/to/workspace`,
+then quit and reopen Claude Desktop to load the current MCP bridge. Use
+`list_local_services` with type `a2a`, read the agent's card with `get_agent_card`,
+and call `send_task` with its name as `service`; omit `peer_id` for local calls.
+Use the same target for `get_task` and `cancel_task`.
+
+An explicit self peer ID also selects this local path. Card reads and task calls
+check the node's current credential, revocation, publish/invocation policy and
+configured label floor through the owner-only Unix socket. An unavailable or
+refused agent returns an error. This path shares the ordinary agent handler and
+task store and does not change remote Mesh routes.
+
+For existing separate agent directories, follow [the consolidation guidance](getting-started.md#more-than-one-node-on-a-machine).
+
+### Use separate nodes explicitly
+
 Here Claude Desktop sends a task to a Codex CLI agent working in a configured
 directory under your runtime permissions. The task crosses your network's
 encrypted mesh between two nodes, which can both run on the same Mac. Tasks can
@@ -76,9 +93,8 @@ include implementation, code review, explaining code or summarising notes,
 according to the permissions you configure locally in Codex.
 
 **Node A** is the one you already run, with Claude Desktop connected as above.
-It serves no services; Claude Desktop only sends. Since node B serves an agent,
-`up` does not add it to your agent clients, so Claude Desktop sees one
-`agentiscale` server.
+It serves no services; Claude Desktop only sends. Configure node B with
+`-clients none` below so Claude Desktop keeps using node A's `agentiscale` server.
 
 **Node B** serves the agent. Give it its own data directory and the directory
 the agent works in:
@@ -87,6 +103,7 @@ the agent works in:
 agentiscaled up \
   -data-dir ~/Library/Application\ Support/agentiscale-codex \
   -agent codex \
+  -clients none \
   -agent-dir /absolute/path/to/the/directory
 ```
 
@@ -148,7 +165,11 @@ cancel it. Limits: one task at a time (others are refused, not
 queued), 15 minutes per task, and a request that says it was delegated is
 refused. With your configuration the agent can itself send tasks to your other
 agents through your agentiscale MCP server; nothing counts those calls as delegation,
-so use `-agent-owner-config=false` where that must not happen. A repeated message ID from the same node is refused instead of run
+so use `-agent-owner-config=false` where that must not happen. Calling itself while
+its task is running is rejected by the same one-task-at-a-time gate. That gate is
+not a general delegation boundary: outgoing `send_task` calls use depth zero;
+the hosted runtime's delegation provenance is not automatically propagated.
+A repeated message ID from the same node is refused instead of run
 again, also after node B restarts (`<data-dir>/tasks-delivered.jsonl`). Incomplete
 final log writes are repaired before new tasks start. A malformed completed
 record prevents the service from starting because its duplicate history cannot

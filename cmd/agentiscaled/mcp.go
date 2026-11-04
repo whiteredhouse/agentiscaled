@@ -19,7 +19,7 @@ import (
 // runMCP is `agentiscaled mcp`: it serves the running node's MCP tools on
 // stdin and stdout, for agent clients that start local MCP servers as a
 // command, such as Claude Desktop and the Codex CLI, and adds the
-// tools that send A2A tasks to other nodes' agents. It reaches the
+// tools that send A2A tasks to local and remote agents. It reaches the
 // node over its Unix socket, whose file permissions are the credential, so no
 // API token goes into a client's configuration.
 func runMCP(ctx context.Context, args []string) error {
@@ -131,7 +131,7 @@ func bridgeMCP(ctx context.Context, client mcp.Transport, socket string) error {
 			break
 		}
 	}
-	addA2ATools(server, &a2aTasks{http: httpClient, base: "http://agentiscaled"})
+	addA2ATools(server, &a2aTasks{http: httpClient, base: "http://agentiscaled", local: socketClient(filepath.Join(filepath.Dir(socket), localAgentSocketName))})
 
 	// The client closing its end is the normal way to stop.
 	if err := server.Run(ctx, client); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, mcp.ErrConnectionClosed) && ctx.Err() == nil {

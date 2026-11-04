@@ -43,7 +43,18 @@ func TestUpPreservesHostedAgent(t *testing.T) {
 	}
 }
 
-func TestWizardKeepsOfferedAgentOnSeparateNode(t *testing.T) {
+func TestDefaultClientsIncludeHostedNode(t *testing.T) {
+	if len(selectClients(clientsAuto)) == 0 {
+		t.Fatal("hosting an agent must not disable default local clients")
+	}
+	w, _ := testWizard("\n\n")
+	got, err := w.chooseClients([]string{"claude-desktop", "codex"})
+	if err != nil || got != "claude-desktop,codex" {
+		t.Fatalf("clients = %q, %v", got, err)
+	}
+}
+
+func TestWizardHostsAgentOnSelectedNode(t *testing.T) {
 	dir := withDefaultDataDir(t)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -76,9 +87,8 @@ func TestWizardKeepsOfferedAgentOnSeparateNode(t *testing.T) {
 	}
 	oldStdin, oldInteractive, oldRun := os.Stdin, interactive, runAttached
 	os.Stdin, interactive = input, func() bool { return true }
-	var childArgs []string
 	runAttached = func(_ context.Context, cmd *exec.Cmd) error {
-		childArgs = append([]string(nil), cmd.Args...)
+		t.Fatalf("setup launched another process: %v", cmd.Args)
 		return nil
 	}
 	t.Cleanup(func() { os.Stdin, interactive, runAttached = oldStdin, oldInteractive, oldRun })
@@ -90,26 +100,16 @@ func TestWizardKeepsOfferedAgentOnSeparateNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.PeerID != pid || got.Agent != "" {
-		t.Fatalf("sending node was changed to host an agent: %+v", got)
-	}
-	if len(childArgs) == 0 {
-		t.Fatal("wizard did not configure a separate agent node")
-	}
-	var childDir string
-	for i := 0; i+1 < len(childArgs); i++ {
-		if childArgs[i] == "-data-dir" {
-			childDir = childArgs[i+1]
-		}
-	}
-	if childDir == "" || childDir == dir {
-		t.Fatalf("offered agent does not have its own node: %v", childArgs)
+	if got.PeerID != pid || got.Agent != "codex" || got.AgentDir != workspace || got.AgentName != "codex" || got.AgentOwnConfig {
+		t.Fatalf("selected node settings: %+v", got)
 	}
 	legacy, err := os.ReadFile(filepath.Join(oldDir, settingsFile))
 	if err != nil || string(legacy) != "legacy node" {
 		t.Fatalf("legacy node changed: %q %v", legacy, err)
 	}
-
+	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "agentiscale-codex")); !os.IsNotExist(err) {
+		t.Fatalf("created a second node: %v", err)
+	}
 }
 
 func TestUpPreservesDefaultOwnerConfig(t *testing.T) {

@@ -92,7 +92,7 @@ func installedClients() []string {
 		if n == "claude-desktop" && goruntime.GOOS != "darwin" {
 			continue
 		}
-		if c := selectClients(n, false); len(c) == 1 && c[0].installed() {
+		if c := selectClients(n); len(c) == 1 && c[0].installed() {
 			names = append(names, n)
 		}
 	}
@@ -100,8 +100,8 @@ func installedClients() []string {
 }
 
 // chooseClients asks which installed clients to connect, each one chosen by
-// default unless the node serves an agent, and answers a -clients value.
-func (w *wizard) chooseClients(installed []string, servesAgent bool) (string, error) {
+// default, including when the node hosts an agent, and answers a -clients value.
+func (w *wizard) chooseClients(installed []string) (string, error) {
 	if len(installed) == 0 {
 		return clientsAuto, nil
 	}
@@ -109,7 +109,7 @@ func (w *wizard) chooseClients(installed []string, servesAgent bool) (string, er
 	var chosen []string
 	for _, n := range installed {
 		// At the end of the input each answer is its default.
-		yes, err := w.yesNo("  Connect "+selectClients(n, false)[0].name()+"?", !servesAgent)
+		yes, err := w.yesNo("  Connect "+selectClients(n)[0].name()+"?", true)
 		if err := ignoreEOF(err); err != nil {
 			return "", err
 		}
@@ -170,8 +170,7 @@ type agentOffer struct {
 }
 
 // offerAgent asks whether to offer an agent from this machine and, on yes,
-// which runtime, name and directory. The agent gets a node of its own, so the node
-// the clients use stays one that only sends.
+// which runtime, name and directory. It is hosted on the selected node.
 func (w *wizard) offerAgent() (*agentOffer, error) {
 	yes, err := w.yesNo("\nOffer an agent from this machine to your network?", false)
 	if err != nil || !yes {
@@ -241,7 +240,7 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 		}
 		break
 	}
-	offer := &agentOffer{runtime: rt, name: name, description: description, agentDir: dir, dataDir: agentDataDir(rt, dir)}
+	offer := &agentOffer{runtime: rt, name: name, description: description, agentDir: dir, dataDir: defaultDataDir()}
 	// The agent runs as the owner's own runtime would, with their
 	// configuration and the directory's own guidance, unless the owner says
 	// no, such as for code from someone else.
@@ -289,68 +288,7 @@ func expandHome(path string) string {
 	return path
 }
 
-// agentDataDir is the data directory of the node that serves an agent,
-// next to the default one and named after the runtime and its directory,
-// such as agentiscale-codex-my-project, or agentiscale-codex for the
-// workspace of the agent codex (defaultAgentDir). Only a directory that
-// holds no node yet (nothing, or only the agent's own sign-in from a setup
-// that stopped before `up`), or whose node serves this same agent
-// directory, is taken: any other, such as the node of /work/a/service when
-// this is /work/b/service, a node that serves no agent, or one whose
-// settings cannot be read, keeps its directory, and the new one gets -2, -3
-// and so on.
-func agentDataDir(rt, agentDir string) string {
-	name := clientEntryName(filepath.Join("/", filepath.Base(agentDir)))
-	base := filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-"+rt)
-	name = strings.TrimPrefix(strings.TrimPrefix(name, "agentiscale-"), rt+"-")
-	if name != rt {
-		base += "-" + name
-	}
-	for n := 1; ; n++ {
-		dir := base
-		if n > 1 {
-			dir = fmt.Sprintf("%s-%d", base, n)
-		}
-		if entries, err := os.ReadDir(dir); errors.Is(err, os.ErrNotExist) ||
-			err == nil && (len(entries) == 0 || len(entries) == 1 && entries[0].Name() == "codex") {
-			return dir
-		}
-		if s, err := loadSettings(dir); err == nil && s.AgentDir == agentDir {
-			return dir
-		}
-	}
-}
-
-// setUpAgent signs the agent in, if its runtime needs it and it has not,
-// and sets up its node with `up` for that data directory.
-func (w *wizard) setUpAgent(ctx context.Context, exe string, o *agentOffer) error {
-	if err := w.prepareAgent(ctx, o); err != nil {
-		return err
-	}
-	fmt.Fprintf(w.out, "\nSetting up the agent's own node in %s:\n", o.dataDir)
-	// Every wizard answer is explicit, including empty and default values:
-	// the child preserves saved settings for any flag we omit.
-	args := []string{
-		"up", "-y", "-data-dir", o.dataDir, "-agent", o.runtime, "-agent-dir", o.agentDir,
-		"-agent-name", o.name, "-agent-description", o.description,
-		fmt.Sprintf("-agent-dir-instructions=%t", o.policy.DirInstructions),
-		fmt.Sprintf("-agent-dir-skills=%t", o.policy.DirSkills),
-		fmt.Sprintf("-agent-owner-config=%t", o.policy.OwnerConfig),
-	}
-	return runAttached(ctx, exec.CommandContext(ctx, exe, args...))
-}
-
-// runAttached runs a command on this terminal, for steps that talk to the
-// owner themselves, such as a sign-in.
-var runAttached = func(ctx context.Context, cmd *exec.Cmd) error {
-	if cmd.Stdin == nil {
-		cmd.Stdin = os.Stdin
-	}
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	return cmd.Run()
-}
-
-// prepareAgent completes runtime login before changing a running node.
+// prepareAgent signs the runtime in before the selected node starts.
 func (w *wizard) prepareAgent(ctx context.Context, o *agentOffer) error {
 	spec := runtimes[o.runtime]
 	if spec.login != nil && !spec.signedIn(o.dataDir, o.policy) {
@@ -367,4 +305,14 @@ func (w *wizard) prepareAgent(ctx context.Context, o *agentOffer) error {
 		}
 	}
 	return nil
+}
+
+// runAttached runs a command on this terminal, for steps that talk to the
+// owner themselves, such as a sign-in.
+var runAttached = func(ctx context.Context, cmd *exec.Cmd) error {
+	if cmd.Stdin == nil {
+		cmd.Stdin = os.Stdin
+	}
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	return cmd.Run()
 }
