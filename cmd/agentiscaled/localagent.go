@@ -174,3 +174,37 @@ func listenAgentSocket(path string) (net.Listener, error) {
 	}
 	return listener, nil
 }
+
+// duplicateAgentChecks are the delays before each look for another node
+// serving the same agent name; the first look may run before the mesh has
+// heard from other nodes.
+var duplicateAgentChecks = []time.Duration{15 * time.Second, 2 * time.Minute}
+
+// warnDuplicateAgent logs once when another node on the network also serves
+// an agent named name, such as a separate agent node left from an earlier
+// setup. Callers then reach whichever node discovery returns first.
+func warnDuplicateAgent(ctx context.Context, self, name string, discover func(context.Context) ([]*api.DiscoveredProvider, error)) {
+	for _, delay := range duplicateAgentChecks {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		lookCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		providers, err := discover(lookCtx)
+		cancel()
+		if err != nil {
+			continue
+		}
+		var others []string
+		for _, p := range providers {
+			if p.GetSrvName() == name && p.GetPeerId() != self && !slices.Contains(others, p.GetPeerId()) {
+				others = append(others, p.GetPeerId())
+			}
+		}
+		if len(others) > 0 {
+			log.Printf("warning: another node on your network also serves a2a://%s (peer %s); stop it with 'agentiscaled down -data-dir <its directory>' or give this agent another -agent-name", name, strings.Join(others, ", "))
+			return
+		}
+	}
+}

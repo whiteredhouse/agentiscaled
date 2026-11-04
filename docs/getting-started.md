@@ -181,7 +181,8 @@ Nodes created by older versions in directories such as `agentiscale-codex-2` sta
 independent. This version does not move their configuration or remove their services.
 To move an agent onto the default node, explicitly configure its workspace, name and
 runtime policy there. Stop the old node with `down -data-dir <old-directory>` before
-offering the same service name from the default node. Keep its data directory until
+offering the same service name from the default node. If another node on your network still serves that name, the node's log says so
+shortly after it starts. Keep its data directory until
 you have verified the new setup; isolated runtime sign-ins are specific to that directory.
 
 Before configuring the selected node, record the old agent's workspace, name,

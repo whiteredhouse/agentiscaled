@@ -123,7 +123,13 @@ func (t *a2aTasks) route(ctx context.Context, target taskTarget) (string, *http.
 	return fmt.Sprintf("%s/mesh/%s/a2a/%s", t.base, target.PeerID, target.Service), t.http, nil
 }
 
+// localInfoTimeout bounds the local agent lookup that precedes every call,
+// so a stuck local socket cannot hold up a call meant for another node.
+var localInfoTimeout = 2 * time.Second
+
 func (t *a2aTasks) localInfo(ctx context.Context) (localAgentInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, localInfoTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://agentiscaled/info", nil)
 	if err != nil {
 		return localAgentInfo{}, err

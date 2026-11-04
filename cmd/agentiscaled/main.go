@@ -377,6 +377,9 @@ func run(ctx context.Context, c config) error {
 		}
 		defer localAPI.Close()
 		log.Printf("serving a2a://%s: %s agent in %s", c.agentName, c.agent, c.agentDir)
+		go warnDuplicateAgent(nodeCtx, node.Host.ID().String(), c.agentName, func(ctx context.Context) ([]*api.DiscoveredProvider, error) {
+			return node.DiscoverRemoteServices(ctx, api.ServiceType_SERVICE_TYPE_A2A, c.agentName)
+		})
 	}
 	node.StartRenewalLoop(nodeCtx, "", "", "", "")
 
