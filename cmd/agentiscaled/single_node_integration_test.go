@@ -181,6 +181,10 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer localAPI.Close()
+		cardResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "get_agent_card", Arguments: map[string]any{"service": "helper"}})
+		if err != nil || cardResult.IsError {
+			t.Fatalf("local get_agent_card through MCP: %+v %v", cardResult, err)
+		}
 		tasks := &a2aTasks{http: client, base: "http://agentiscaled", local: socketClient(filepath.Join(dir, localAgentSocketName))}
 		target := taskTarget{PeerID: pid, Service: "helper"}
 		fix.release <- "completed locally"
@@ -241,7 +245,7 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 	oldEnroll := enrollNew
 	enrollNew = func(context.Context, config) (string, error) { pid = mint(); return uuid.NewString(), nil }
 	t.Cleanup(func() { enrollNew = oldEnroll })
-	auth := newFakeAuth0(t, "")
+	auth := newFakeIdP(t, "")
 	if err := runReset(context.Background(), []string{"-data-dir", dir, "-auth-issuer", auth.config().issuer, "-auth-client-id", "CLIENT", "-auth-audience", "https://control.test"}, io.Discard); err != nil {
 		t.Fatal(err)
 	}

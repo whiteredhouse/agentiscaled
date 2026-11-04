@@ -17,7 +17,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const a2aInstructions = `agentiscale: use list_local_services (type "a2a") to find agents hosted on this node; call send_task with their name as service and omit peer_id. Use discover_remote_services (type "a2a") to find agents on other nodes; inspect their current card with get_agent_card using peer_id and srv_name as service, then call send_task with the same target. Follow tasks with get_task until terminal (completed, rejected, cancelled, timeout or failed); cancel_task stops them. Use the same target for send/get/cancel. Do not use the a2a CLI or hand-written requests. An offline remote node cannot be reached and nothing is queued.`
+const a2aInstructions = `agentiscale: use list_local_services (type "a2a") to find agents hosted on this node; read their card with get_agent_card and call send_task with their name as service, omitting peer_id in both calls. Use discover_remote_services (type "a2a") to find agents on other nodes; inspect their current card with get_agent_card using peer_id and srv_name as service, then call send_task with the same target. Follow tasks with get_task until terminal (completed, rejected, cancelled, timeout or failed); cancel_task stops them. Use the same target for send/get/cancel. Do not use the a2a CLI or hand-written requests. An offline remote node cannot be reached and nothing is queued.`
 
 // maxWait bounds how long get_task holds one tool call, below the timeouts
 // MCP clients put on a call.
@@ -72,7 +72,7 @@ type taskOut struct {
 func addA2ATools(server *mcp.Server, t *a2aTasks) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_agent_card",
-		Description: "Read the current card of a discovered A2A agent through this node's encrypted mesh connection. Use its peer_id and service name (srv_name). An unavailable or refused service returns an error; this does not send a task.",
+		Description: "Read the current card of an A2A agent. For a local agent use its service name and omit peer_id; for a remote agent use its discovered peer_id and service name (srv_name). Remote reads use the encrypted mesh connection. An unavailable or refused service returns an error; this does not send a task.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, t.card)
 	mcp.AddTool(server, &mcp.Tool{
@@ -90,31 +90,37 @@ func addA2ATools(server *mcp.Server, t *a2aTasks) {
 }
 
 func (t *a2aTasks) client(ctx context.Context, target taskTarget) (*a2aclient.Client, error) {
-	if _, err := peer.Decode(target.PeerID); target.PeerID != "" && err != nil {
-		return nil, fmt.Errorf("peer_id %q is not a peer ID", target.PeerID)
-	}
-	if !serviceName.MatchString(target.Service) {
-		return nil, fmt.Errorf("service %q is not a service name", target.Service)
-	}
-	endpoint := fmt.Sprintf("%s/mesh/%s/a2a/%s", t.base, target.PeerID, target.Service)
-	client := t.http
-	if t.local != nil {
-		info, err := t.localInfo(ctx)
-		if err == nil && (target.PeerID == "" || target.PeerID == info.PeerID) {
-			if target.Service != info.Service {
-				return nil, fmt.Errorf("this node does not host agent %q", target.Service)
-			}
-			endpoint = fmt.Sprintf("http://agentiscaled/a2a/%s/%s", info.PeerID, target.Service)
-			client = t.local
-		} else if target.PeerID == "" {
-			return nil, fmt.Errorf("local agent unavailable: %w", err)
-		}
-	} else if target.PeerID == "" {
-		return nil, errors.New("no local agent API available")
+	endpoint, client, err := t.route(ctx, target)
+	if err != nil {
+		return nil, err
 	}
 	return a2aclient.NewFromEndpoints(ctx,
 		[]*a2a.AgentInterface{a2a.NewAgentInterface(endpoint, a2a.TransportProtocolJSONRPC)},
 		a2aclient.WithJSONRPCTransport(client))
+}
+
+// route keeps card reads and task operations on the same authenticated path.
+func (t *a2aTasks) route(ctx context.Context, target taskTarget) (string, *http.Client, error) {
+	if _, err := peer.Decode(target.PeerID); target.PeerID != "" && err != nil {
+		return "", nil, fmt.Errorf("peer_id %q is not a peer ID", target.PeerID)
+	}
+	if !serviceName.MatchString(target.Service) {
+		return "", nil, fmt.Errorf("service %q is not a service name", target.Service)
+	}
+	if t.local != nil {
+		info, err := t.localInfo(ctx)
+		if err == nil && (target.PeerID == "" || target.PeerID == info.PeerID) {
+			if target.Service != info.Service {
+				return "", nil, fmt.Errorf("this node does not host agent %q", target.Service)
+			}
+			return fmt.Sprintf("http://agentiscaled/a2a/%s/%s", info.PeerID, target.Service), t.local, nil
+		} else if target.PeerID == "" {
+			return "", nil, fmt.Errorf("local agent unavailable: %w", err)
+		}
+	} else if target.PeerID == "" {
+		return "", nil, errors.New("no local agent API available")
+	}
+	return fmt.Sprintf("%s/mesh/%s/a2a/%s", t.base, target.PeerID, target.Service), t.http, nil
 }
 
 func (t *a2aTasks) localInfo(ctx context.Context) (localAgentInfo, error) {
@@ -143,30 +149,20 @@ func (t *a2aTasks) localInfo(ctx context.Context) (localAgentInfo, error) {
 	return info, nil
 }
 
-func (t *a2aTasks) endpoint(target taskTarget) (string, error) {
-	if _, err := peer.Decode(target.PeerID); err != nil {
-		return "", fmt.Errorf("peer_id %q is not a peer ID", target.PeerID)
-	}
-	if !serviceName.MatchString(target.Service) {
-		return "", fmt.Errorf("service %q is not a service name", target.Service)
-	}
-	return fmt.Sprintf("%s/mesh/%s/a2a/%s", t.base, target.PeerID, target.Service), nil
-}
-
 func (t *a2aTasks) card(ctx context.Context, _ *mcp.CallToolRequest, target taskTarget) (*mcp.CallToolResult, any, error) {
-	endpoint, err := t.endpoint(target)
+	ctx, cancel := context.WithTimeout(ctx, agentCardTimeout)
+	defer cancel()
+	endpoint, transport, err := t.route(ctx, target)
 	if err != nil {
 		return nil, nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, agentCardTimeout)
-	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/.well-known/agent-card.json", nil)
 	if err != nil {
 		return nil, nil, err
 	}
-	// Only the selected node's mesh route may answer. A redirect must not
+	// Only the selected local/mesh route may answer. A redirect must not
 	// become a request to a different route, host or advertised interface.
-	client := *t.http
+	client := *transport
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	response, err := client.Do(request)
 	if err != nil {

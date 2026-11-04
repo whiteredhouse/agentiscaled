@@ -69,6 +69,23 @@ client configuration files.
 
 ## Send a task from Claude Desktop to Codex
 
+With the default setup, Claude Desktop and the hosted Codex agent use the same
+node. Configure the agent with `agentiscaled up -agent codex -agent-dir /absolute/path/to/workspace`,
+then quit and reopen Claude Desktop to load the current MCP bridge. Use
+`list_local_services` with type `a2a`, read the agent's card with `get_agent_card`,
+and call `send_task` with its name as `service`; omit `peer_id` for local calls.
+Use the same target for `get_task` and `cancel_task`.
+
+An explicit self peer ID also selects this local path. Card reads and task calls
+check the node's current credential, revocation, publish/invocation policy and
+configured label floor through the owner-only Unix socket. An unavailable or
+refused agent returns an error. This path shares the ordinary agent handler and
+task store and does not change remote Mesh routes.
+
+For existing separate agent directories, follow [the consolidation guidance](getting-started.md#more-than-one-node-on-a-machine).
+
+### Use separate nodes explicitly
+
 Here Claude Desktop sends a task to a Codex CLI agent working in a configured
 directory under your runtime permissions. The task crosses your network's
 encrypted mesh between two nodes, which can both run on the same Mac. Tasks can

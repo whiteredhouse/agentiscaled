@@ -18,6 +18,7 @@ import (
 	"github.com/google/agentmesh/api"
 	meshnode "github.com/google/agentmesh/export/node"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func localAgentFixture(t *testing.T, role *api.PolicyRole, expiry time.Time, cfg *meshnode.NodeConfigComplete) (*meshnode.AgentMeshNode, *fixture, *a2aTasks, string) {
@@ -104,7 +105,7 @@ func TestLocalTaskAdapter(t *testing.T) {
 }
 
 func TestLocalTaskAuthorization(t *testing.T) {
-	for _, name := range []string{"no invocation grant", "no publish grant", "expired", "revoked", "label floor"} {
+	for _, name := range []string{"no invocation grant", "no publish grant", "expired", "revoked", "invalid signature", "label floor"} {
 		t.Run(name, func(t *testing.T) {
 			role := localAgentRole()
 			expiry := time.Now().Add(time.Hour)
@@ -120,12 +121,20 @@ func TestLocalTaskAuthorization(t *testing.T) {
 				cfg.EgressRequireLabels = map[string]string{"region": "eu"}
 			}
 			n, fix, tasks, _ := localAgentFixture(t, role, expiry, cfg)
+			if name == "invalid signature" {
+				raw := append([]byte(nil), n.GetIdentity()...)
+				raw[len(raw)-1] ^= 1
+				n.SetIdentityCache(raw)
+			}
 			if name == "revoked" {
 				claims, err := n.VerifyLocalBiscuit(n.GetIdentity())
 				if err != nil {
 					t.Fatal(err)
 				}
 				n.RevokeBiscuitID(hex.EncodeToString(claims.RevocationIDs[0]), time.Now().Add(time.Hour))
+			}
+			if _, _, err := tasks.card(context.Background(), nil, taskTarget{Service: "helper"}); err == nil || !strings.Contains(err.Error(), "HTTP 403") {
+				t.Fatalf("unauthorized local card was not refused by owner API: %v", err)
 			}
 			_, _, err := tasks.send(context.Background(), nil, sendTaskIn{taskTarget: taskTarget{Service: "helper"}, Text: "must not run"})
 			if err == nil {
@@ -335,5 +344,42 @@ func TestLocalAgentRejectsSelfCallWhileRunning(t *testing.T) {
 	_, completed, err := tasks.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: target, TaskID: parent.TaskID}, WaitSeconds: 5})
 	if err != nil || completed.Terminal != "completed" {
 		t.Fatalf("parent: %+v %v", completed, err)
+	}
+}
+
+func TestLocalAgentCardUsesOwnerSocketWithoutRunningTask(t *testing.T) {
+	n, fix, tasks, _ := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
+	tasks.local.Transport = spoofLocalIdentity{next: tasks.local.Transport}
+	for _, id := range []string{"", n.Host.ID().String()} {
+		result, _, err := tasks.card(context.Background(), nil, taskTarget{PeerID: id, Service: "helper"})
+		if err != nil || result == nil || result.IsError {
+			t.Fatalf("local agent card for %q: %v, %+v", id, err, result)
+		}
+		if len(result.Content) != 1 || !strings.Contains(result.Content[0].(*mcp.TextContent).Text, `"name":"helper"`) {
+			t.Fatalf("unexpected agent card: %+v", result)
+		}
+	}
+	select {
+	case <-fix.prompts:
+		t.Fatal("reading an agent card started a task")
+	default:
+	}
+}
+
+func TestLocalAgentCardHonorsHTTPMethodAndPathGrant(t *testing.T) {
+	role := localAgentRole()
+	role.Http = []*api.HTTPGrant{{Service: "a2a://helper", Methods: []string{"GET"}, Paths: []string{"/.well-known/agent-card.json"}}}
+	_, fix, tasks, _ := localAgentFixture(t, role, time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
+	target := taskTarget{Service: "helper"}
+	if _, _, err := tasks.card(context.Background(), nil, target); err != nil {
+		t.Fatalf("permitted card read: %v", err)
+	}
+	if _, _, err := tasks.send(context.Background(), nil, sendTaskIn{taskTarget: target, Text: "must not run"}); err == nil {
+		t.Fatal("GET-only credential authorized a task POST")
+	}
+	select {
+	case <-fix.prompts:
+		t.Fatal("forbidden POST ran the agent")
+	default:
 	}
 }

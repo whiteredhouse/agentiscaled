@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -202,12 +204,11 @@ func TestUserDataDir(t *testing.T) {
 	}
 }
 
-func TestReofferAgentOverridesSavedAnswers(t *testing.T) {
+func TestWizardOfferOverridesSavedAnswers(t *testing.T) {
 	for _, defaults := range []bool{true, false} {
 		t.Run(fmt.Sprintf("defaults=%v", defaults), func(t *testing.T) {
-			withDefaultDataDir(t)
+			dir := withDefaultDataDir(t)
 			workspace := t.TempDir()
-			dir := agentDataDir("codex", workspace)
 			if err := os.MkdirAll(dir, 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -223,7 +224,7 @@ func TestReofferAgentOverridesSavedAnswers(t *testing.T) {
 			t.Setenv("CODEX_HOME", t.TempDir())
 			write(t, filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"), "{}")
 			write(t, filepath.Join(dir, "codex", "auth.json"), "{}")
-			writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", Agent: "codex", AgentDir: workspace, AgentCommand: command, AgentName: "old-helper", AgentDescription: "Old description", AgentOwnConfig: defaults, AgentIgnoreDirInstructions: defaults, AgentIgnoreDirSkills: defaults, PeerID: pid, NetworkID: "saved-network", MeshURL: mesh.srv.URL})
+			writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", AgentDir: workspace, AgentCommand: command, AgentName: "old-helper", AgentDescription: "Old description", AgentOwnConfig: defaults, AgentIgnoreDirInstructions: defaults, AgentIgnoreDirSkills: defaults, PeerID: pid, NetworkID: "saved-network", MeshURL: mesh.srv.URL})
 			input := "y\n\n\n" + workspace + "\n\n\n\n"
 			if !defaults {
 				input = "y\nnew-helper\nNew description\n" + workspace + "\nn\nn\nn\n"
@@ -236,18 +237,25 @@ func TestReofferAgentOverridesSavedAnswers(t *testing.T) {
 			if offer.dataDir != dir {
 				t.Fatalf("did not reuse agent node: %q, want %q", offer.dataDir, dir)
 			}
-			oldRun := runAttached
-			runAttached = func(ctx context.Context, cmd *exec.Cmd) error {
-				if len(cmd.Args) < 2 || cmd.Args[1] != "up" {
-					t.Fatalf("unexpected command: %v", cmd.Args)
-				}
-				// Exercise the actual child's saved-settings merge and persistence,
-				// without installing a service or changing real client configs.
-				args := append(append([]string(nil), cmd.Args[2:]...), "-foreground", "-clients", "none")
-				return runUp(ctx, args, io.Discard)
+			stdin, err := os.CreateTemp(t.TempDir(), "wizard-input")
+			if err != nil {
+				t.Fatal(err)
 			}
-			t.Cleanup(func() { runAttached = oldRun })
-			if err := w.setUpAgent(context.Background(), "/bin/agentiscaled", offer); err != nil {
+			t.Cleanup(func() { stdin.Close() })
+			if _, err := stdin.WriteString(input); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stdin.Seek(0, 0); err != nil {
+				t.Fatal(err)
+			}
+			oldStdin, oldInteractive, oldRun := os.Stdin, interactive, runAttached
+			os.Stdin, interactive = stdin, func() bool { return true }
+			runAttached = func(context.Context, *exec.Cmd) error {
+				t.Fatal("configured runtime must not launch login or another node")
+				return nil
+			}
+			t.Cleanup(func() { os.Stdin, interactive, runAttached = oldStdin, oldInteractive, oldRun })
+			if err := runUp(context.Background(), []string{"-foreground", "-clients", "none"}, io.Discard); err != nil {
 				t.Fatal(err)
 			}
 			got, err := loadSettings(dir)

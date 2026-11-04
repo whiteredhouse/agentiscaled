@@ -57,16 +57,22 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 			_ = json.NewEncoder(w).Encode(info)
 			return
 		}
-		if strings.TrimSuffix(r.URL.Path, "/") != "/a2a/"+info.PeerID+"/"+name {
+		prefix := "/a2a/" + info.PeerID + "/" + name
+		backendPath, allowedMethod := "/", http.MethodPost
+		switch r.URL.Path {
+		case prefix, prefix + "/":
+		case prefix + "/.well-known/agent-card.json":
+			backendPath, allowedMethod = "/.well-known/agent-card.json", http.MethodGet
+		default:
 			http.NotFound(w, r)
 			return
 		}
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
-			http.Error(w, "JSON-RPC POST required", http.StatusMethodNotAllowed)
+		if r.Method != allowedMethod {
+			w.Header().Set("Allow", allowedMethod)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if err := authorizeLocalAgent(node, cfg, name, r.Method); err != nil {
+		if err := authorizeLocalAgent(node, cfg, name, r.Method, backendPath); err != nil {
 			log.Printf("local agent %s refused: %v", name, err)
 			http.Error(w, "local agent authorization failed", http.StatusForbidden)
 			return
@@ -81,7 +87,7 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 			}
 		}
 		req.Header.Set(api.HeaderPeerID, info.PeerID)
-		req.URL.Path = "/"
+		req.URL.Path = backendPath
 		req.URL.RawPath = ""
 		proxy.ServeHTTP(w, req)
 	})
@@ -103,7 +109,7 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 
 // authorizeLocalAgent reuses the embedded node's existing authorization
 // methods. The embedding package exports aliases only; no mesh behavior changes.
-func authorizeLocalAgent(node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, name, method string) error {
+func authorizeLocalAgent(node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, name, method, path string) error {
 	token := node.GetIdentity()
 	claims, err := node.VerifyLocalBiscuit(token)
 	if err != nil {
@@ -133,7 +139,7 @@ func authorizeLocalAgent(node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigC
 			return fmt.Errorf("local provider does not meet the configured label floor: %w", err)
 		}
 	}
-	return node.VerifyBiscuitToken(token, meshnode.RequestContext{PeerID: node.Host.ID(), Local: true, Protocol: "agentiscale-local-a2a", Target: "a2a://" + name, HTTP: &meshnode.HTTPRequestFacts{Method: method, Path: "/"}})
+	return node.VerifyBiscuitToken(token, meshnode.RequestContext{PeerID: node.Host.ID(), Local: true, Protocol: "agentiscale-local-a2a", Target: "a2a://" + name, HTTP: &meshnode.HTTPRequestFacts{Method: method, Path: path}})
 }
 
 func listenAgentSocket(path string) (net.Listener, error) {

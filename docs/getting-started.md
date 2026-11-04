@@ -154,11 +154,11 @@ agent uses a different saved `CODEX_HOME`.
 
 The MCP tools preserve Agent Mesh's discovery distinction: `list_local_services`
 with type `a2a` lists this node's hosted agent; `discover_remote_services` lists
-agents on other nodes. For a local agent, call `send_task` with its `name` as
-`service` and omit `peer_id`. For a remote agent, pass its `srv_name` as `service`
+agents on other nodes. For a local agent, read its card with `get_agent_card`,
+then call `send_task`, using its `name` as `service` and omitting `peer_id` for both. For a remote agent, pass its `srv_name` as `service`
 and its `peer_id`. Use the same target with `get_task` and `cancel_task`.
 
-Local task calls use agentiscaled's owner-only Unix socket. They use the same
+Local card reads and task calls use agentiscaled's owner-only Unix socket. They use the same
 agent handler and permissions as network calls; Agent Mesh's network discovery
 and proxy routes are unchanged.
 
@@ -183,6 +183,18 @@ To move an agent onto the default node, explicitly configure its workspace, name
 runtime policy there. Stop the old node with `down -data-dir <old-directory>` before
 offering the same service name from the default node. Keep its data directory until
 you have verified the new setup; isolated runtime sign-ins are specific to that directory.
+
+Before configuring the selected node, record the old agent's workspace, name,
+description, and choices for `-agent-owner-config`, `-agent-dir-instructions`, and
+`-agent-dir-skills`. Pass those choices explicitly so consolidation preserves its
+permissions. For an owner-configured runtime, use the same `CODEX_HOME` if one was
+configured. An isolated runtime needs its own login in the selected node's data
+directory. Do not copy node keys or enrollment files between directories.
+
+Confirm that `status` names the intended network and agent, then use
+`list_local_services`, `get_agent_card`, and a harmless task to verify the same-node
+path. Existing client entries stay unchanged; if a client is configured for the old
+agent node, reconnect it deliberately to the selected node.
 
 ## Machines that cannot sign in
 
