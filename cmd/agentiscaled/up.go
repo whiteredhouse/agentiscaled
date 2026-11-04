@@ -152,9 +152,9 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 	nodeFlags(fs, &c)
 	fs.StringVar(&c.control, "control", defaultControl, "URL of the agentiscale control service")
 	var auth authConfig
-	fs.StringVar(&auth.issuer, "auth-issuer", defaultAuth.issuer, "Auth0 tenant that signs you in")
-	fs.StringVar(&auth.clientID, "auth-client-id", defaultAuth.clientID, "Auth0 application agentiscaled signs in with")
-	fs.StringVar(&auth.audience, "auth-audience", defaultAuth.audience, "Auth0 API the sign-in is for")
+	fs.StringVar(&auth.issuer, "auth-issuer", defaultAuth.issuer, "OIDC issuer that signs you in")
+	fs.StringVar(&auth.clientID, "auth-client-id", defaultAuth.clientID, "Public client ID agentiscaled signs in with")
+	fs.StringVar(&auth.audience, "auth-audience", defaultAuth.audience, "API audience the sign-in is for")
 	noService := fs.Bool("foreground", false, "Do not install a background service; join and exit, then run 'agentiscaled run' yourself")
 	assumeYes := fs.Bool("y", false, "Ask nothing; take every default, as when 'up' runs without a terminal")
 	clients := fs.String("clients", clientsAuto, "Agent clients to connect to this node: auto (every installed one, unless the node serves an agent), none, or a list of "+strings.Join(clientNames, ","))

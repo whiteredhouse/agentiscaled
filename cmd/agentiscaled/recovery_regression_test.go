@@ -170,7 +170,7 @@ func resetForegroundNode(t *testing.T, control string) {
 		return newNetwork, nil
 	}
 	t.Cleanup(func() { enrollNew = enrollOnly })
-	auth := newFakeAuth0(t, "")
+	auth := newFakeIdP(t, "")
 	var out bytes.Buffer
 	args := []string{"-data-dir", dir, "-auth-issuer", auth.config().issuer, "-auth-client-id", "CLIENT", "-auth-audience", "https://control.test"}
 	if control != defaultControl {

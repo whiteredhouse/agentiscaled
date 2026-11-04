@@ -17,17 +17,17 @@ import (
 	"time"
 )
 
-// fakeAuth0 is a stand-in for Auth0's device authorization endpoints. Each
+// fakeIdP is a stand-in for the identity provider's device authorization endpoints. Each
 // token poll takes the next answer from polls; the last one repeats.
-type fakeAuth0 struct {
+type fakeIdP struct {
 	mu    sync.Mutex
 	polls []string // OAuth error codes, or "" for a token
 	forms []map[string]string
 	srv   *httptest.Server
 }
 
-func newFakeAuth0(t *testing.T, polls ...string) *fakeAuth0 {
-	f := &fakeAuth0{polls: polls}
+func newFakeIdP(t *testing.T, polls ...string) *fakeIdP {
+	f := &fakeIdP{polls: polls}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		form := map[string]string{"path": r.URL.Path}
@@ -39,14 +39,14 @@ func newFakeAuth0(t *testing.T, polls ...string) *fakeAuth0 {
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/oauth/device/code":
+		case "/oauth2/device/auth":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"device_code": "DEV", "user_code": "ABCD-EFGH",
 				"verification_uri":          f.srv.URL + "/activate",
 				"verification_uri_complete": f.srv.URL + "/activate?user_code=ABCD-EFGH",
 				"expires_in":                900, "interval": 0,
 			})
-		case "/oauth/token":
+		case "/oauth2/token":
 			f.mu.Lock()
 			next := f.polls[0]
 			if len(f.polls) > 1 {
@@ -68,15 +68,15 @@ func newFakeAuth0(t *testing.T, polls ...string) *fakeAuth0 {
 	return f
 }
 
-func (f *fakeAuth0) config() authConfig {
-	return authConfig{issuer: f.srv.URL + "/", clientID: "CLIENT", audience: "https://control.test"}
+func (f *fakeIdP) config() authConfig {
+	return authConfig{issuer: f.srv.URL, clientID: "CLIENT", audience: "https://control.test"}
 }
 
 // The device flow asks for the control service's audience,
 // waits while the owner has not approved, backs off when told to, and
 // returns the access token.
 func TestDeviceLogin(t *testing.T) {
-	f := newFakeAuth0(t, "authorization_pending", "slow_down", "")
+	f := newFakeIdP(t, "authorization_pending", "slow_down", "")
 	var out bytes.Buffer
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -90,7 +90,7 @@ func TestDeviceLogin(t *testing.T) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	start := f.forms[0]
-	if start["path"] != "/oauth/device/code" || start["client_id"] != "CLIENT" || start["audience"] != "https://control.test" {
+	if start["path"] != "/oauth2/device/auth" || start["client_id"] != "CLIENT" || start["audience"] != "https://control.test" {
 		t.Errorf("device code request = %v", start)
 	}
 	// No refresh token is asked for: the sign-in is for enrollment only (c3).
@@ -113,7 +113,7 @@ func TestDeviceLoginEnds(t *testing.T) {
 		"access_denied": "cancelled",
 		"invalid_grant": "invalid_grant",
 	} {
-		f := newFakeAuth0(t, code)
+		f := newFakeIdP(t, code)
 		_, err := deviceLogin(context.Background(), f.config(), io.Discard)
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: err = %v, want %q", code, err, want)

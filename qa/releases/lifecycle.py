@@ -267,7 +267,7 @@ def exercise_headless(fixture, root, home, env, primary, primary_peer, primary_i
         stream.write(fixture["join_code"] + "\n")
     outputs = []
     # Every up uses the local forbidden-auth fixture even when joined, so an
-    # identity regression cannot fall back to production Auth0 unnoticed.
+    # identity regression cannot fall back to production sign-in unnoticed.
     args = ["up", "-data-dir", data, "-clients", "none", "-y", "-control", control,
             "-auth-issuer", control + "/", "-auth-client-id", "ci-client", "-auth-audience", "ci-control"]
     secondary.prepare()
