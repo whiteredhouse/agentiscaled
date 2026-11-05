@@ -224,8 +224,12 @@ func (r *codexRuntime) Run(ctx context.Context, dir string, req taskRequest) (st
 	if !r.policy.OwnerConfig {
 		args = append(args, "--ignore-user-config")
 	}
+	// The agent's directory is the one its owner chose for it, often an
+	// empty folder the setup created: Codex's refusal to run outside a Git
+	// repository or a folder it trusts would stop every task there.
 	args = append(args,
 		"--ephemeral",
+		"--skip-git-repo-check",
 		"--color", "never")
 	if !r.policy.OwnerConfig {
 		args = append(args, "-c", `approval_policy="never"`)
