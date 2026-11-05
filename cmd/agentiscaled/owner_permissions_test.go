@@ -32,6 +32,10 @@ func TestCodexOwnerConfigurationKeepsPermissions(t *testing.T) {
 			t.Errorf("owner policy or working root overridden by %q in %s", override, args)
 		}
 	}
+	// The owner's chosen directory needn't be a Git repository or trusted.
+	if !strings.Contains(string(args), "\n--skip-git-repo-check\n") {
+		t.Errorf("missing --skip-git-repo-check: %s", args)
+	}
 	if !strings.Contains(string(args), "-C\n"+dir+"\n") {
 		t.Errorf("missing configured root: %s", args)
 	}

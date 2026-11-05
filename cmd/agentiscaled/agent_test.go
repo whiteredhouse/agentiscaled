@@ -403,7 +403,7 @@ func TestCodexRuntimeIsReadOnlyAndUnconfigured(t *testing.T) {
 	}
 	b, _ := os.ReadFile(argsFile)
 	args := " " + strings.ReplaceAll(string(b), "\n", " ")
-	for _, want := range []string{" exec ", " --ignore-user-config ", ` approval_policy="never" `,
+	for _, want := range []string{" exec ", " --ignore-user-config ", " --skip-git-repo-check ", ` approval_policy="never" `,
 		// No AGENTS.md from the checkout, none of the owner's variables in
 		// commands, and reads confined to dir.
 		" project_doc_max_bytes=0 ", ` shell_environment_policy.inherit="core" `,
