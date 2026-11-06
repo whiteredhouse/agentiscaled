@@ -212,22 +212,14 @@ func (r *claudeRuntime) Run(ctx context.Context, dir string, req taskRequest) (s
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		if runErr != nil {
-			return "", claudeError(fmt.Sprintf("%v: %s", runErr, failureLines(stderr.String(), 3)))
+			return "", fmt.Errorf("claude -p: %v: %s", runErr, failureLines(stderr.String(), 3))
 		}
 		return "", fmt.Errorf("claude -p: unreadable result: %v", err)
 	}
 	if result.IsError || runErr != nil {
-		return "", claudeError(strings.TrimSpace(result.Result + " " + failureLines(stderr.String(), 3)))
+		return "", fmt.Errorf("claude -p: %s", strings.TrimSpace(result.Result+" "+failureLines(stderr.String(), 3)))
 	}
 	return strings.TrimSpace(result.Result), nil
-}
-
-func claudeError(detail string) error {
-	err := fmt.Errorf("claude -p: %s", detail)
-	if usageLimited(detail) {
-		return &usageLimitError{err}
-	}
-	return err
 }
 
 // claudeEnv is the run's environment: of the node's, only what a process

@@ -49,7 +49,6 @@ type config struct {
 	agent              string
 	agentDir           string
 	agentCommand       string
-	agentFallback      string
 	agentName          string
 	agentDescription   string
 	agentPolicy        agentPolicy
@@ -145,7 +144,6 @@ func nodeFlags(fs *flag.FlagSet, c *config) {
 	fs.StringVar(&c.agent, "agent", "", "Serve an A2A agent to the network, run by this runtime ("+strings.Join(runtimeNames(), ", ")+"); empty serves none")
 	fs.StringVar(&c.agentDir, "agent-dir", "", "Directory the agent works in")
 	fs.StringVar(&c.agentCommand, "agent-command", "", "Command of the agent CLI (default: the runtime's, e.g. codex)")
-	fs.StringVar(&c.agentFallback, "agent-fallback", "", "Another runtime ("+strings.Join(runtimeNames(), ", ")+") that runs a task again when the agent's runtime stops at its usage limit, under your own sign-in on this machine; empty runs none")
 	fs.StringVar(&c.agentName, "agent-name", "", "Service name of the agent in the network (default: the runtime's)")
 	fs.StringVar(&c.agentDescription, "agent-description", "", "What the agent does, as other agents see it on its card (default: the runtime's)")
 	fs.BoolVar(&c.agentPolicy.DirInstructions, "agent-dir-instructions", true, "Let the agent load the instruction files (AGENTS.md, CLAUDE.md) of -agent-dir; =false ignores them")
@@ -232,9 +230,6 @@ func newAgent(c *config) (*agentService, error) {
 	}
 	rt, err := spec.new(c.agentCommand, c.dataDir, c.agentPolicy)
 	if err != nil {
-		return nil, err
-	}
-	if rt, err = withFallback(c, rt); err != nil {
 		return nil, err
 	}
 	if c.agentName == "" {

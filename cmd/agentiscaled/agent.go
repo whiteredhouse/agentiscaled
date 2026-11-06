@@ -118,15 +118,14 @@ var runtimes = map[string]struct {
 	"claude": {newClaudeRuntime, "claude", "claude", claudeSignedIn, claudeEnvSignedIn, claudeLogin, []string{"CLAUDE_CONFIG_DIR"}},
 }
 
-// agentOwnerEnv is what `up` keeps of the ownerEnv of the agent's runtimes,
-// its fallback included: each variable set in its environment, as
-// NAME=value.
-func agentOwnerEnv(agents []string, policy agentPolicy) []string {
+// agentOwnerEnv is what `up` keeps of the runtime's ownerEnv: each variable
+// set in its environment, as NAME=value.
+func agentOwnerEnv(agent string, policy agentPolicy) []string {
 	if !policy.OwnerConfig {
 		return nil
 	}
 	var env []string
-	for _, name := range ownerEnvNames(agents) {
+	for _, name := range runtimes[agent].ownerEnv {
 		if v := os.Getenv(name); v != "" {
 			env = append(env, name+"="+v)
 		}

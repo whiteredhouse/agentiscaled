@@ -2,13 +2,10 @@ package main
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/a2aproject/a2a-go/v2/a2a"
 )
 
 // fakeClaude writes a claude script that records its arguments, environment
@@ -107,88 +104,11 @@ func TestClaudeRuntimeOwnerConfig(t *testing.T) {
 	}
 }
 
-func TestClaudeRuntimeUsageLimit(t *testing.T) {
+func TestClaudeRuntimeFailure(t *testing.T) {
 	dir := t.TempDir()
-	command, _ := fakeClaude(t, dir, "You have hit your limit, resets 3pm", true)
+	command, _ := fakeClaude(t, dir, "something broke", true)
 	_, err := (&claudeRuntime{command: command, config: filepath.Join(dir, "c")}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x"})
-	var limit *usageLimitError
-	if !errors.As(err, &limit) {
-		t.Fatalf("err = %v, want a usage limit", err)
-	}
-	command, _ = fakeClaude(t, dir, "something else broke", true)
-	_, err = (&claudeRuntime{command: command, config: filepath.Join(dir, "c")}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x"})
-	if err == nil || errors.As(err, &limit) {
-		t.Fatalf("err = %v, want a failure that is not a usage limit", err)
-	}
-}
-
-type stubRuntime struct {
-	out   string
-	err   error
-	calls int
-}
-
-func (s *stubRuntime) Describe(card *a2a.AgentCard) {
-	card.Description = "stub " + s.out
-	card.Skills = []a2a.AgentSkill{{ID: "task", Tags: []string{"stub"}}}
-}
-
-func (s *stubRuntime) Run(context.Context, string, taskRequest) (string, error) {
-	s.calls++
-	return s.out, s.err
-}
-
-func TestFallbackRunsOnlyOnUsageLimit(t *testing.T) {
-	limited := &stubRuntime{err: &usageLimitError{errors.New("usage limit")}}
-	next := &stubRuntime{out: "from fallback"}
-	f := &fallbackRuntime{names: []string{"codex", "claude"}, runtimes: []runtime{limited, next}}
-	if out, err := f.Run(context.Background(), "", taskRequest{}); err != nil || out != "from fallback" {
-		t.Fatalf("run: %q, %v", out, err)
-	}
-	failing := &stubRuntime{err: errors.New("broke")}
-	next.calls = 0
-	f = &fallbackRuntime{names: []string{"codex", "claude"}, runtimes: []runtime{failing, next}}
-	if _, err := f.Run(context.Background(), "", taskRequest{}); err == nil || next.calls != 0 {
-		t.Fatalf("a failure that is no usage limit went to the fallback: %v, %d calls", err, next.calls)
-	}
-	ok := &stubRuntime{out: "first"}
-	next.calls = 0
-	f = &fallbackRuntime{names: []string{"codex", "claude"}, runtimes: []runtime{ok, next}}
-	if out, _ := f.Run(context.Background(), "", taskRequest{}); out != "first" || next.calls != 0 {
-		t.Fatalf("run: %q, fallback calls %d", out, next.calls)
-	}
-	var card a2a.AgentCard
-	f.Describe(&card)
-	if card.Description != "stub first" || strings.Join(card.Skills[0].Tags, ",") != "stub,claude" {
-		t.Errorf("card %q tags %v", card.Description, card.Skills[0].Tags)
-	}
-}
-
-func TestUsageLimited(t *testing.T) {
-	for _, s := range []string{"ERROR: You've hit your usage limit. Try again at 3pm", "Claude AI usage limit reached|1760000000", "You've hit your limit · resets 2pm", "429 rate_limit_error"} {
-		if !usageLimited(s) {
-			t.Errorf("%q is a usage limit", s)
-		}
-	}
-	if usageLimited("permission denied") {
-		t.Error("permission denied is no usage limit")
-	}
-}
-
-func TestCheckFallback(t *testing.T) {
-	c := &config{agent: "codex", agentFallback: "codex"}
-	if err := checkFallback(c, false); err == nil || !strings.Contains(err.Error(), "agent's own runtime") {
-		t.Errorf("same runtime: %v", err)
-	}
-	c.agentFallback = "nope"
-	if err := checkFallback(c, false); err == nil || !strings.Contains(err.Error(), "unknown runtime") {
-		t.Errorf("unknown runtime: %v", err)
-	}
-	c.agentFallback = ""
-	if err := checkFallback(c, false); err != nil {
-		t.Error(err)
-	}
-	if got := (&config{agent: "codex", agentFallback: "claude"}).agentRuntimes(); strings.Join(got, ",") != "codex,claude" {
-		t.Errorf("agentRuntimes = %v", got)
+	if err == nil || !strings.Contains(err.Error(), "something broke") {
+		t.Fatalf("err = %v, want the result's failure", err)
 	}
 }

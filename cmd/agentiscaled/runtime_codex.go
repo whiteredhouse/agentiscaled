@@ -275,11 +275,7 @@ func (r *codexRuntime) Run(ctx context.Context, dir string, req taskRequest) (st
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		err = fmt.Errorf("codex exec: %v: %s", err, failureLines(stderr.String(), 3))
-		if usageLimited(stderr.String()) {
-			err = &usageLimitError{err}
-		}
-		return "", err
+		return "", fmt.Errorf("codex exec: %v: %s", err, failureLines(stderr.String(), 3))
 	}
 	b, err := os.ReadFile(out.Name())
 	if err != nil {

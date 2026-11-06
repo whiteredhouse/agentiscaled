@@ -175,24 +175,6 @@ agent's directory, no MCP servers, and none of your credentials from the environ
 stops `CLAUDE.md` files from loading. `-agent-dir-skills=false` turns off every
 skill and command of the run, since Claude Code cannot turn off only the directory's.
 
-### Fallback when a plan's usage limit is reached
-
-`-agent-fallback` names a second runtime on the same node. When a task stops because
-the agent's runtime reached its usage limit, for example your plan's limit for the
-next hours, the node runs the same task again with the fallback, in the same
-directory and under the same policy, and the caller gets that answer. Any other
-failure is returned as it is. Sign the fallback in the same way:
-
-```sh
-agentiscaled up \
-  -data-dir ~/Library/Application\ Support/agentiscale-codex \
-  -agent codex -agent-fallback claude \
-  -agent-dir /absolute/path/to/the/directory
-```
-
-Both runtimes run on your machine under your own sign-ins. A task the first runtime
-began may have changed files before it stopped; the fallback sees those changes.
-
 Each task belongs to the node that sent it: no other node can read its result or
 cancel it. Limits: one task at a time (others are refused, not
 queued), 15 minutes per task, and a request that says it was delegated is
