@@ -34,7 +34,7 @@ Agent clients on this machine can use this node.
   Connect Claude Desktop? [Y/n]:
   Connect Codex CLI? [Y/n]:
 
-Offer an agent from this machine to your network? [y/N]:
+Offer an agent from this machine to your network? Found: codex, claude [y/N]:
 ```
 
 `up -y` asks nothing, and neither does `up` in a script, a service or an SSH session
@@ -102,14 +102,15 @@ prints the lines to add yourself, and `-clients codex` connects only the Codex C
 ## Offer an agent to your network
 
 To let your other agents send tasks to an agent on this machine, answer y to "Offer an
-agent from this machine to your network?" and give its name in your network and the
+agent from this machine to your network?". `up` asks only when it finds an agent CLI it
+can host (`codex`, `claude`) and lists the ones it found; with several, pick one. Then give its name in your network and the
 directory it works in. Press Enter at the directory for a workspace of its own, which
 `up` creates: `~/Library/Application Support/agentiscaled/workspaces/<name>` on macOS
 and `~/.local/share/agentiscaled/workspaces/<name>` (`$XDG_DATA_HOME`) on Linux.
 
 ```text
-Offer an agent from this machine to your network? [y/N]: y
-  Runtime (claude, codex) [codex]:
+Offer an agent from this machine to your network? Found: codex, claude [y/N]: y
+  Which one (codex, claude) [codex]:
   Name of the agent in your network [codex]:
   What it does, as other agents see it (Enter for the runtime's):
   Directory the agent works in [~/Library/Application Support/agentiscaled/workspaces/codex]: ~/work/my-project

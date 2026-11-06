@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"slices"
 	"strings"
 )
 
@@ -82,6 +83,20 @@ func (w *wizard) yesNo(question string, def bool) (bool, error) {
 		}
 		fmt.Fprintln(w.out, "  Answer y or n.")
 	}
+}
+
+// installedRuntimes are the runtimes whose agent CLI is installed, found by
+// its default command on PATH, Codex first.
+var installedRuntimes = func() []string {
+	var names []string
+	for _, name := range append([]string{"codex"}, runtimeNames()...) {
+		if spec, ok := runtimes[name]; ok && !slices.Contains(names, name) {
+			if _, err := exec.LookPath(spec.defaultCommand); err == nil {
+				names = append(names, name)
+			}
+		}
+	}
+	return names
 }
 
 // installedClients are the clients this system can have that are installed,
@@ -172,29 +187,30 @@ type agentOffer struct {
 // offerAgent asks whether to offer an agent from this machine and, on yes,
 // which runtime, name and directory. It is hosted on the selected node.
 func (w *wizard) offerAgent() (*agentOffer, error) {
-	yes, err := w.yesNo("\nOffer an agent from this machine to your network?", false)
+	names := installedRuntimes()
+	if len(names) == 0 {
+		fmt.Fprintf(w.out, "\nNo agent CLI to offer from this machine was found (%s).\n", strings.Join(runtimeNames(), ", "))
+		return nil, nil
+	}
+	yes, err := w.yesNo("\nOffer an agent from this machine to your network? Found: "+strings.Join(names, ", "), false)
 	if err != nil || !yes {
 		return nil, ignoreEOF(err)
 	}
-	names := runtimeNames()
 	rt := names[0]
-	if _, ok := runtimes["codex"]; ok {
-		rt = "codex"
-	}
 	if len(names) > 1 {
 		for {
-			answer, err := w.ask("  Runtime ("+strings.Join(names, ", ")+")", rt)
+			answer, err := w.ask("  Which one ("+strings.Join(names, ", ")+")", rt)
 			if err != nil {
 				return nil, ignoreEOF(err)
 			}
-			if _, ok := runtimes[answer]; ok {
+			if slices.Contains(names, answer) {
 				rt = answer
 				break
 			}
-			fmt.Fprintf(w.out, "  Unknown runtime %q.\n", answer)
+			fmt.Fprintf(w.out, "  Pick one of %s.\n", strings.Join(names, ", "))
 		}
 	} else {
-		fmt.Fprintf(w.out, "  Runtime: %s (the only one today)\n", rt)
+		fmt.Fprintf(w.out, "  Runtime: %s\n", rt)
 	}
 	name := runtimes[rt].defaultName
 	for {

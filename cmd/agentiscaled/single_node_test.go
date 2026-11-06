@@ -79,7 +79,7 @@ func TestWizardHostsAgentOnSelectedNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer input.Close()
-	if _, err := input.WriteString("y\n\n\n\n" + workspace + "\n\n\n\n"); err != nil {
+	if _, err := input.WriteString("y\n\n\n" + workspace + "\n\n\n\n"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := input.Seek(0, 0); err != nil {
