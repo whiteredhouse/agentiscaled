@@ -109,12 +109,12 @@ and `~/.local/share/agentiscaled/workspaces/<name>` (`$XDG_DATA_HOME`) on Linux.
 
 ```text
 Offer an agent from this machine to your network? [y/N]: y
-  Runtime: codex (the only one today)
+  Runtime (claude, codex) [codex]:
   Name of the agent in your network [codex]:
   What it does, as other agents see it (Enter for the runtime's):
   Directory the agent works in [~/Library/Application Support/agentiscaled/workspaces/codex]: ~/work/my-project
   Use your own codex configuration (sign-in, skills, plugins, MCP servers)? [Y/n]:
-  Load the directory's instruction files (AGENTS.md)? [Y/n]:
+  Load the directory's instruction files (AGENTS.md, CLAUDE.md)? [Y/n]:
   Load the directory's skills? [Y/n]:
 ```
 

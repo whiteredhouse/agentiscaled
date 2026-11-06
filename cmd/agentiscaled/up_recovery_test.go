@@ -116,7 +116,7 @@ func TestUpAgentSetupFailureKeepsServiceRunning(t *testing.T) {
 				workspace = dir
 				write(t, filepath.Join(home, "auth.json"), "{}")
 			}
-			upWizardInput(t, "y\n\n\n"+workspace+"\n\n\n\n")
+			upWizardInput(t, "y\n\n\n\n"+workspace+"\n\n\n\n")
 			oldRun := runAttached
 			runAttached = func(context.Context, *exec.Cmd) error {
 				if !supervisor.running {

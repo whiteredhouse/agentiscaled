@@ -178,6 +178,9 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 	}
 	names := runtimeNames()
 	rt := names[0]
+	if _, ok := runtimes["codex"]; ok {
+		rt = "codex"
+	}
 	if len(names) > 1 {
 		for {
 			answer, err := w.ask("  Runtime ("+strings.Join(names, ", ")+")", rt)
@@ -249,7 +252,7 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 		allow    *bool
 	}{
 		{"  Use your own " + rt + " configuration (sign-in, skills, plugins, MCP servers)?", &offer.policy.OwnerConfig},
-		{"  Load the directory's instruction files (AGENTS.md)?", &offer.policy.DirInstructions},
+		{"  Load the directory's instruction files (AGENTS.md, CLAUDE.md)?", &offer.policy.DirInstructions},
 		{"  Load the directory's skills?", &offer.policy.DirSkills},
 	} {
 		yes, err := w.yesNo(q.question, true)
@@ -291,7 +294,7 @@ func expandHome(path string) string {
 // prepareAgent signs the runtime in before the selected node starts.
 func (w *wizard) prepareAgent(ctx context.Context, o *agentOffer) error {
 	spec := runtimes[o.runtime]
-	if spec.login != nil && !spec.signedIn(o.dataDir, o.policy) {
+	if spec.login != nil && !spec.signedIn(spec.defaultCommand, o.dataDir, o.policy) {
 		cmd, shown := spec.login(ctx, spec.defaultCommand, o.dataDir, o.policy)
 		if spec.envSignedIn != nil && spec.envSignedIn(o.policy) {
 			fmt.Fprintf(w.out, "\nYour %s credential is only in this shell, which the agent's background service does not get; storing it:\n  %s\n", o.runtime, shown)

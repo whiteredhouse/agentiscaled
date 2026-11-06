@@ -57,7 +57,7 @@ func TestOfferAgent(t *testing.T) {
 			t.Errorf("input %q: offered %+v, %v", input, o, err)
 		}
 	}
-	w, out := testWizard("y\n\n\n/does/not/exist\n" + dir + "\n")
+	w, out := testWizard("y\n\n\n\n/does/not/exist\n" + dir + "\n")
 	o, err := w.offerAgent()
 	if err != nil || o == nil {
 		t.Fatalf("%+v, %v\n%s", o, err, out)
@@ -69,19 +69,19 @@ func TestOfferAgent(t *testing.T) {
 	if !strings.Contains(out.String(), "/does/not/exist is not a directory") {
 		t.Errorf("output:\n%s", out)
 	}
-	w, _ = testWizard("y\n\nAnswers questions about the code\n" + dir + "\nn\ny\nn\n")
+	w, _ = testWizard("y\n\n\nAnswers questions about the code\n" + dir + "\nn\ny\nn\n")
 	if o, err := w.offerAgent(); err != nil || o == nil || o.policy != (agentPolicy{DirInstructions: true}) || o.description != "Answers questions about the code" {
 		t.Errorf("own config and skills turned off: offered %+v, %v", o, err)
 	}
-	w, _ = testWizard("y\n")
+	w, _ = testWizard("y\n\n")
 	if o, err := w.offerAgent(); o != nil || err != nil {
 		t.Errorf("no directory: offered %+v, %v", o, err)
 	}
 	for _, c := range []struct{ input, name string }{
-		{"y\n\n\n\n", "codex"},
-		{"y\nBad Name\nhelper\n\n\n", "helper"},
-		{"y\ncodex-helper\n\n\n", "codex-helper"},
-		{"y\n" + strings.Repeat("a", 64) + "\n" + strings.Repeat("a", 63) + "\n\n\n", strings.Repeat("a", 63)},
+		{"y\n\n\n\n\n", "codex"},
+		{"y\n\nBad Name\nhelper\n\n\n", "helper"},
+		{"y\n\ncodex-helper\n\n\n", "codex-helper"},
+		{"y\n\n" + strings.Repeat("a", 64) + "\n" + strings.Repeat("a", 63) + "\n\n\n", strings.Repeat("a", 63)},
 	} {
 		w, out = testWizard(c.input)
 		o, err = w.offerAgent()
@@ -225,9 +225,9 @@ func TestWizardOfferOverridesSavedAnswers(t *testing.T) {
 			write(t, filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"), "{}")
 			write(t, filepath.Join(dir, "codex", "auth.json"), "{}")
 			writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", AgentDir: workspace, AgentCommand: command, AgentName: "old-helper", AgentDescription: "Old description", AgentOwnConfig: defaults, AgentIgnoreDirInstructions: defaults, AgentIgnoreDirSkills: defaults, PeerID: pid, NetworkID: "saved-network", MeshURL: mesh.srv.URL})
-			input := "y\n\n\n" + workspace + "\n\n\n\n"
+			input := "y\n\n\n\n" + workspace + "\n\n\n\n"
 			if !defaults {
-				input = "y\nnew-helper\nNew description\n" + workspace + "\nn\nn\nn\n"
+				input = "y\n\nnew-helper\nNew description\n" + workspace + "\nn\nn\nn\n"
 			}
 			w, _ := testWizard(input)
 			offer, err := w.offerAgent()

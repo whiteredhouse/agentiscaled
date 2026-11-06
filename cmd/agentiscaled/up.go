@@ -37,7 +37,9 @@ type settings struct {
 	Agent        string `json:"agent,omitempty"`
 	AgentDir     string `json:"agent_dir,omitempty"`
 	AgentCommand string `json:"agent_command,omitempty"`
-	AgentName    string `json:"agent_name,omitempty"`
+	// AgentFallback runs a task when Agent stops at its usage limit.
+	AgentFallback string `json:"agent_fallback,omitempty"`
+	AgentName     string `json:"agent_name,omitempty"`
 	// AgentDescription replaces the runtime's description on the card.
 	AgentDescription string `json:"agent_description,omitempty"`
 	// What the agent may not take from AgentDir; it takes all when absent.
@@ -94,6 +96,7 @@ func (s settings) config(dataDir string) config {
 		agent:            s.Agent,
 		agentDir:         s.AgentDir,
 		agentCommand:     s.AgentCommand,
+		agentFallback:    s.AgentFallback,
 		agentName:        s.AgentName,
 		agentDescription: s.AgentDescription,
 		agentPolicy:      agentPolicy{DirInstructions: !s.AgentIgnoreDirInstructions, DirSkills: !s.AgentIgnoreDirSkills, OwnerConfig: !s.AgentOwnConfig},
@@ -180,13 +183,14 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 		return fmt.Errorf("load settings: %w", err)
 	}
 	haveSaved := err == nil
-	preserveAgentEnv := haveSaved && !set["agent"] && !set["agent-owner-config"]
+	preserveAgentEnv := haveSaved && !set["agent"] && !set["agent-fallback"] && !set["agent-owner-config"]
 	if err == nil {
 		values := map[string]string{
 			"control": saved.Control, "config": saved.ConfigFile, "bind-addr": saved.BindAddr,
 			"api-token-path": saved.APITokenPath, "listen": saved.Listen, "log-level": saved.LogLevel,
 			"agent": saved.Agent, "agent-dir": saved.AgentDir, "agent-command": saved.AgentCommand,
-			"agent-name": saved.AgentName, "agent-description": saved.AgentDescription, "hostname": saved.MachineName,
+			"agent-fallback": saved.AgentFallback,
+			"agent-name":     saved.AgentName, "agent-description": saved.AgentDescription, "hostname": saved.MachineName,
 			"agent-dir-instructions": strconv.FormatBool(!saved.AgentIgnoreDirInstructions),
 			"agent-dir-skills":       strconv.FormatBool(!saved.AgentIgnoreDirSkills),
 			"agent-owner-config":     strconv.FormatBool(!saved.AgentOwnConfig),
@@ -240,7 +244,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 					return err
 				}
 				c.agent, c.agentDir, c.agentName, c.agentDescription, c.agentPolicy = offer.runtime, offer.agentDir, offer.name, offer.description, offer.policy
-				c.agentEnv = agentOwnerEnv(c.agent, c.agentPolicy)
+				c.agentEnv = agentOwnerEnv(c.agentRuntimes(), c.agentPolicy)
 				if err := checkAgent(&c, !*noService); err != nil {
 					return err
 				}
@@ -288,7 +292,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 	}
 	fmt.Fprintf(out, "This node is %s in network %s.\n", joined.peerID, joined.networkID)
 	if !preserveAgentEnv {
-		c.agentEnv = agentOwnerEnv(c.agent, c.agentPolicy)
+		c.agentEnv = agentOwnerEnv(c.agentRuntimes(), c.agentPolicy)
 	}
 	s := settings{
 		Control:          c.control,
@@ -300,6 +304,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 		Agent:            c.agent,
 		AgentDir:         c.agentDir,
 		AgentCommand:     c.agentCommand,
+		AgentFallback:    c.agentFallback,
 		AgentName:        c.agentName,
 		AgentDescription: c.agentDescription,
 		MachineName:      c.machineName,
@@ -350,7 +355,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 // setup and interactive questions use the invoking shell's configuration.
 func checkUpAgent(c *config, service, preserveEnv bool) error {
 	if preserveEnv && c.agentPolicy.OwnerConfig {
-		for _, name := range runtimes[c.agent].ownerEnv {
+		for _, name := range ownerEnvNames(c.agentRuntimes()) {
 			previous, existed := os.LookupEnv(name)
 			defer func() {
 				if existed {
@@ -432,11 +437,11 @@ func checkAgent(c *config, service bool) error {
 	}
 	// A credential in this shell's environment does not reach the
 	// background service.
-	if service && spec.signedIn != nil && !spec.signedIn(c.dataDir, c.agentPolicy) {
+	if service && spec.signedIn != nil && !spec.signedIn(c.agentCommand, c.dataDir, c.agentPolicy) {
 		_, shown := spec.login(context.Background(), c.agentCommand, c.dataDir, c.agentPolicy)
 		return fmt.Errorf("%s is signed in only through this shell's environment, which the background service does not get: run\n  %s\nor use -foreground and start 'agentiscaled run' from this shell", c.agent, shown)
 	}
-	return nil
+	return checkFallback(c, service)
 }
 
 type joinedNode struct {

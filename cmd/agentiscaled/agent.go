@@ -49,7 +49,7 @@ const (
 
 // runtime runs the tasks of a hosted agent with one agent CLI. The agent
 // service around it keeps the A2A contract and the bounds, so supporting
-// another agent CLI means adding a runtime. Codex is the only one today.
+// another agent CLI means adding a runtime.
 type runtime interface {
 	// Describe says on the agent card what the agent does.
 	Describe(card *a2a.AgentCard)
@@ -70,7 +70,7 @@ type taskRequest struct {
 // owner turns it off, such as for code from someone else.
 type agentPolicy struct {
 	// DirInstructions loads the directory's instruction files, such as
-	// AGENTS.md (-agent-dir-instructions).
+	// AGENTS.md or CLAUDE.md (-agent-dir-instructions).
 	DirInstructions bool
 	// DirSkills loads the directory's skills (-agent-dir-skills).
 	DirSkills bool
@@ -105,7 +105,7 @@ var runtimes = map[string]struct {
 	// that signs it in, with how to show that command. A runtime may also
 	// accept a credential in the environment (envSignedIn), which only a
 	// node run from the owner's shell gets.
-	signedIn    func(dataDir string, policy agentPolicy) bool
+	signedIn    func(command, dataDir string, policy agentPolicy) bool
 	envSignedIn func(policy agentPolicy) bool
 	login       func(ctx context.Context, command, dataDir string, policy agentPolicy) (*exec.Cmd, string)
 	// ownerEnv names the variables that locate the owner's configuration
@@ -114,17 +114,19 @@ var runtimes = map[string]struct {
 	// agentPolicy.OwnerConfig the agent finds the same configuration.
 	ownerEnv []string
 }{
-	"codex": {newCodexRuntime, "codex", "codex", codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
+	"codex":  {newCodexRuntime, "codex", "codex", codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
+	"claude": {newClaudeRuntime, "claude", "claude", claudeSignedIn, claudeEnvSignedIn, claudeLogin, []string{"CLAUDE_CONFIG_DIR"}},
 }
 
-// agentOwnerEnv is what `up` keeps of the runtime's ownerEnv: each variable
-// set in its environment, as NAME=value.
-func agentOwnerEnv(agent string, policy agentPolicy) []string {
+// agentOwnerEnv is what `up` keeps of the ownerEnv of the agent's runtimes,
+// its fallback included: each variable set in its environment, as
+// NAME=value.
+func agentOwnerEnv(agents []string, policy agentPolicy) []string {
 	if !policy.OwnerConfig {
 		return nil
 	}
 	var env []string
-	for _, name := range runtimes[agent].ownerEnv {
+	for _, name := range ownerEnvNames(agents) {
 		if v := os.Getenv(name); v != "" {
 			env = append(env, name+"="+v)
 		}
