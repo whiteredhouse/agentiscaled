@@ -51,14 +51,14 @@ func newCodexRuntime(command, dataDir string, policy agentPolicy) (runtime, erro
 		return nil, err
 	}
 	if policy.OwnerConfig {
-		if !codexSignedIn(dataDir, policy) && !codexEnvSignedIn(policy) {
+		if !codexSignedIn(path, dataDir, policy) && !codexEnvSignedIn(policy) {
 			return nil, fmt.Errorf("your Codex is not signed in (CODEX_HOME %s): run\n  %s login", home, path)
 		}
 	} else {
 		if err := os.MkdirAll(filepath.Join(home, "home"), 0o700); err != nil {
 			return nil, err
 		}
-		if !codexSignedIn(dataDir, policy) {
+		if !codexSignedIn(path, dataDir, policy) {
 			return nil, fmt.Errorf("the agent's Codex is not signed in. With -agent-owner-config=false it signs in apart from your own Codex, so that a remote request cannot reach your Codex skills, plugins or settings: run\n  CODEX_HOME=%s %s login", home, path)
 		}
 	}
@@ -82,7 +82,7 @@ func codexHome(dataDir string, policy agentPolicy) (string, error) {
 	return filepath.Join(home, ".codex"), nil
 }
 
-func codexSignedIn(dataDir string, policy agentPolicy) bool {
+func codexSignedIn(_, dataDir string, policy agentPolicy) bool {
 	home, err := codexHome(dataDir, policy)
 	if err != nil {
 		return false

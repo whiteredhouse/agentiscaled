@@ -268,3 +268,30 @@ func TestWizardOfferOverridesSavedAnswers(t *testing.T) {
 		})
 	}
 }
+
+// The wizard offers only the agent CLIs it finds, and asks which one when
+// it finds several.
+func TestOfferAgentDetectsRuntimes(t *testing.T) {
+	withDefaultDataDir(t)
+	dir := t.TempDir()
+	old := installedRuntimes
+	t.Cleanup(func() { installedRuntimes = old })
+
+	installedRuntimes = func() []string { return nil }
+	w, out := testWizard("y\n")
+	if o, err := w.offerAgent(); o != nil || err != nil || !strings.Contains(out.String(), "No agent CLI") {
+		t.Errorf("none installed: offered %+v, %v\n%s", o, err, out)
+	}
+
+	installedRuntimes = func() []string { return []string{"codex", "claude"} }
+	w, out = testWizard("y\nnope\nclaude\n\n\n" + dir + "\n")
+	o, err := w.offerAgent()
+	if err != nil || o == nil || o.runtime != "claude" || o.name != "claude" {
+		t.Fatalf("offered %+v, %v\n%s", o, err, out)
+	}
+	for _, want := range []string{"Found: codex, claude", "Which one (codex, claude) [codex]", "Pick one of codex, claude."} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+}

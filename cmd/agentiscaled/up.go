@@ -432,7 +432,7 @@ func checkAgent(c *config, service bool) error {
 	}
 	// A credential in this shell's environment does not reach the
 	// background service.
-	if service && spec.signedIn != nil && !spec.signedIn(c.dataDir, c.agentPolicy) {
+	if service && spec.signedIn != nil && !spec.signedIn(c.agentCommand, c.dataDir, c.agentPolicy) {
 		_, shown := spec.login(context.Background(), c.agentCommand, c.dataDir, c.agentPolicy)
 		return fmt.Errorf("%s is signed in only through this shell's environment, which the background service does not get: run\n  %s\nor use -foreground and start 'agentiscaled run' from this shell", c.agent, shown)
 	}

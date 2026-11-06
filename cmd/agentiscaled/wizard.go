@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"slices"
 	"strings"
 )
 
@@ -82,6 +83,20 @@ func (w *wizard) yesNo(question string, def bool) (bool, error) {
 		}
 		fmt.Fprintln(w.out, "  Answer y or n.")
 	}
+}
+
+// installedRuntimes are the runtimes whose agent CLI is installed, found by
+// its default command on PATH, Codex first.
+var installedRuntimes = func() []string {
+	var names []string
+	for _, name := range append([]string{"codex"}, runtimeNames()...) {
+		if spec, ok := runtimes[name]; ok && !slices.Contains(names, name) {
+			if _, err := exec.LookPath(spec.defaultCommand); err == nil {
+				names = append(names, name)
+			}
+		}
+	}
+	return names
 }
 
 // installedClients are the clients this system can have that are installed,
@@ -172,26 +187,30 @@ type agentOffer struct {
 // offerAgent asks whether to offer an agent from this machine and, on yes,
 // which runtime, name and directory. It is hosted on the selected node.
 func (w *wizard) offerAgent() (*agentOffer, error) {
-	yes, err := w.yesNo("\nOffer an agent from this machine to your network?", false)
+	names := installedRuntimes()
+	if len(names) == 0 {
+		fmt.Fprintf(w.out, "\nNo agent CLI to offer from this machine was found (%s).\n", strings.Join(runtimeNames(), ", "))
+		return nil, nil
+	}
+	yes, err := w.yesNo("\nOffer an agent from this machine to your network? Found: "+strings.Join(names, ", "), false)
 	if err != nil || !yes {
 		return nil, ignoreEOF(err)
 	}
-	names := runtimeNames()
 	rt := names[0]
 	if len(names) > 1 {
 		for {
-			answer, err := w.ask("  Runtime ("+strings.Join(names, ", ")+")", rt)
+			answer, err := w.ask("  Which one ("+strings.Join(names, ", ")+")", rt)
 			if err != nil {
 				return nil, ignoreEOF(err)
 			}
-			if _, ok := runtimes[answer]; ok {
+			if slices.Contains(names, answer) {
 				rt = answer
 				break
 			}
-			fmt.Fprintf(w.out, "  Unknown runtime %q.\n", answer)
+			fmt.Fprintf(w.out, "  Pick one of %s.\n", strings.Join(names, ", "))
 		}
 	} else {
-		fmt.Fprintf(w.out, "  Runtime: %s (the only one today)\n", rt)
+		fmt.Fprintf(w.out, "  Runtime: %s\n", rt)
 	}
 	name := runtimes[rt].defaultName
 	for {
@@ -249,7 +268,7 @@ func (w *wizard) offerAgent() (*agentOffer, error) {
 		allow    *bool
 	}{
 		{"  Use your own " + rt + " configuration (sign-in, skills, plugins, MCP servers)?", &offer.policy.OwnerConfig},
-		{"  Load the directory's instruction files (AGENTS.md)?", &offer.policy.DirInstructions},
+		{"  Load the directory's instruction files (AGENTS.md, CLAUDE.md)?", &offer.policy.DirInstructions},
 		{"  Load the directory's skills?", &offer.policy.DirSkills},
 	} {
 		yes, err := w.yesNo(q.question, true)
@@ -291,7 +310,7 @@ func expandHome(path string) string {
 // prepareAgent signs the runtime in before the selected node starts.
 func (w *wizard) prepareAgent(ctx context.Context, o *agentOffer) error {
 	spec := runtimes[o.runtime]
-	if spec.login != nil && !spec.signedIn(o.dataDir, o.policy) {
+	if spec.login != nil && !spec.signedIn(spec.defaultCommand, o.dataDir, o.policy) {
 		cmd, shown := spec.login(ctx, spec.defaultCommand, o.dataDir, o.policy)
 		if spec.envSignedIn != nil && spec.envSignedIn(o.policy) {
 			fmt.Fprintf(w.out, "\nYour %s credential is only in this shell, which the agent's background service does not get; storing it:\n  %s\n", o.runtime, shown)

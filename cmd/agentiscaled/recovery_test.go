@@ -32,6 +32,8 @@ import (
 // TestMain lets a test start the node as its own process, the way the
 // background service does, with its output in a log file.
 func TestMain(m *testing.M) {
+	// Tests see only Codex installed, whatever this machine has.
+	installedRuntimes = func() []string { return []string{"codex"} }
 	if os.Getenv("AGENTISCALED_TEST_MAIN") == "1" {
 		watchPoll, watchCheckAfter, watchCheckEvery = 50*time.Millisecond, 300*time.Millisecond, 500*time.Millisecond
 		main()

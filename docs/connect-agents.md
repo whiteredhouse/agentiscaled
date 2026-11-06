@@ -108,9 +108,9 @@ agentiscaled up \
 ```
 
 `up` signs in once more for node B, joins it to the same network and runs it as
-its own background service. `-agent` picks the runtime that does the work;
-`codex` is the only one today, and others can be added behind the same flags.
-Node B checks that `codex` runs (`-agent-command` takes another path), then
+its own background service. `-agent` picks the runtime that does the work:
+`codex` (the Codex CLI) or `claude` (Claude Code, see
+[Claude Code as the agent](#claude-code-as-the-agent)). Node B checks that `codex` runs (`-agent-command` takes another path), then
 serves the A2A 1.0 agent `a2a://codex` to the other nodes of your network.
 `-agent-name` picks another name, and `-agent-description` replaces the
 description other agents see on its card. Each task runs:
@@ -159,6 +159,21 @@ It cannot write files. The adapter does not force that profile onto your own
 configuration.
 To check this on your machine without signing in:
 `AGENTISCALE_TEST_CODEX=$(command -v codex) go test ./cmd/agentiscaled -run 'TestCodexAgainstAHostileCheckout|TestCodexOwnerWorkspaceWrite' -v`.
+
+### Claude Code as the agent
+
+`-agent claude` runs each task with `claude -p` in the agent's directory, the
+unmodified Claude Code CLI signed in through its own `claude auth login`. The node
+never reads or stores that sign-in. With your configuration (the default) it runs as
+your own Claude Code does: your sign-in, settings, permissions, skills, plugins and
+MCP servers. Nothing can prompt for approval, so anything that would prompt is
+denied. With `-agent-owner-config=false` it uses its own `CLAUDE_CONFIG_DIR`
+(`<data-dir>/claude`, signed in with `CLAUDE_CONFIG_DIR=<data-dir>/claude claude auth login`)
+and runs `--restricted` with only the Read, Grep and Glob tools, confined to the
+agent's directory, no MCP servers, and none of your credentials from the environment
+(`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`). `-agent-dir-instructions=false`
+stops `CLAUDE.md` files from loading. `-agent-dir-skills=false` turns off every
+skill and command of the run, since Claude Code cannot turn off only the directory's.
 
 Each task belongs to the node that sent it: no other node can read its result or
 cancel it. Limits: one task at a time (others are refused, not
