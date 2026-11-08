@@ -124,8 +124,14 @@ func main() {
 	nodeFlags(fs, &c)
 	fs.StringVar(&c.controlPlane, "control-plane", "", "https URL of the network's mesh (agentmesh-one)")
 	fs.StringVar(&c.bootstrapTokenPath, "bootstrap-token-path", "", "File holding the bootstrap token; used only when the node has no identity yet")
-	fs.StringVar(&c.control, "control", "", "URL of the agentiscale control service, used with --join-code-path")
+	fs.StringVar(&c.control, "control", "", "URL of the agentiscale control service (default with --join-code-path: "+defaultControl+")")
 	flag.Parse()
+	// A join code is redeemed at a control service, the hosted one unless
+	// told otherwise. Without one, a node given --control-plane and
+	// --bootstrap-token-path talks to its mesh alone.
+	if c.control == "" && c.joinCodePath != "" {
+		c.control = defaultControl
+	}
 	if err := run(ctx, c); err != nil {
 		log.Fatal(err)
 	}

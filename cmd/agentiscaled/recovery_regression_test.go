@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -221,5 +222,62 @@ func TestJoinWithCodeAfterReset(t *testing.T) {
 	}
 	if h, err := loadHalt(dir); err != nil || h != nil {
 		t.Fatalf("join did not clear the old stop: %+v, %v", h, err)
+	}
+}
+
+// An enrollment that saved its credential and then failed is retried as an
+// already joined node; a stop left from the previous identity must not block
+// that retry.
+func TestFailedJoinAfterResetDoesNotKeepTheOldStop(t *testing.T) {
+	dir := shortTempDir(t)
+	writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info"})
+	if err := saveHalt(dir, newHalt(haltNetworkGone, "old", dir)); err != nil {
+		t.Fatal(err)
+	}
+	code := filepath.Join(dir, "join-code")
+	write(t, code, "ajc_test\n")
+	_, key, _ := ed25519.GenerateKey(rand.Reader)
+	enrollNew = func(ctx context.Context, c config) (string, error) {
+		seedNode(t, dir, "https://new.mesh.test", key)
+		return "", errors.New("no router reachable")
+	}
+	t.Cleanup(func() { enrollNew = enrollOnly })
+	c := settings{Control: "https://control.test"}.config(dir)
+	c.joinCodePath = code
+	if _, err := ensureJoined(context.Background(), &c, authConfig{issuer: "http://127.0.0.1:1"}, io.Discard); err == nil {
+		t.Fatal("join succeeded with a failing enrollment")
+	}
+	joined, err := ensureJoined(context.Background(), &c, authConfig{issuer: "http://127.0.0.1:1"}, io.Discard)
+	if err != nil || joined.meshURL != "https://new.mesh.test" {
+		t.Fatalf("retry after a partial enrollment: %+v, %v", joined, err)
+	}
+}
+
+// The steps after reset keep the node in the shape it ran in and leave the
+// agent clients, which already name the data directory, alone.
+func TestRejoinStepsKeepTheNodeShape(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", shortTempDir(t))
+	dir := filepath.Join(shortTempDir(t), "node")
+	service := rejoinSteps(dir, true, true)
+	foreground := rejoinSteps(dir, true, false)
+	direct := rejoinSteps(dir, false, false)
+	for name, tc := range map[string]struct {
+		got        string
+		want, deny []string
+	}{
+		"service":    {service, []string{"up -data-dir " + dir + " -clients none\n", "-clients none -join-code-path <file>"}, []string{"-foreground", " run "}},
+		"foreground": {foreground, []string{"up -data-dir " + dir + " -foreground -clients none\n", "-foreground -clients none -join-code-path <file>", "agentiscaled run -data-dir " + dir}, nil},
+		"direct":     {direct, []string{"original flags", "adding -join-code-path <file>", "-foreground -clients none"}, nil},
+	} {
+		for _, w := range tc.want {
+			if !strings.Contains(tc.got, w) {
+				t.Errorf("%s: missing %q in:\n%s", name, w, tc.got)
+			}
+		}
+		for _, d := range tc.deny {
+			if strings.Contains(tc.got, d) {
+				t.Errorf("%s: unexpected %q in:\n%s", name, d, tc.got)
+			}
+		}
 	}
 }

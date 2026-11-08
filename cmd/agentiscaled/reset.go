@@ -48,7 +48,9 @@ func runReset(ctx context.Context, args []string, out io.Writer) error {
 		}
 	}
 
-	if svc := newService(dir); svc != nil && svc.installed() {
+	svc := newService(dir)
+	installed := svc != nil && svc.installed()
+	if installed {
 		// Removed, not only stopped: a service left installed would start
 		// a node with no identity at the next login.
 		if err := svc.remove(); err != nil {
@@ -74,12 +76,28 @@ func runReset(ctx context.Context, args []string, out io.Writer) error {
 	} else {
 		fmt.Fprintln(out, "The node had no identity; nothing to move aside.")
 	}
-	if !savedSettings {
-		fmt.Fprintf(out, "Restart the foreground node with its original flags and -data-dir %s, adding -join-code-path <file> to join with a join code, or run '%s' to join by signing in.\n", shellQuote(dir), upCommand(dir))
-		return nil
-	}
-	fmt.Fprintf(out, "Its settings and agent clients are unchanged. To join your network as a new node, run:\n  %s\nor, on a machine where nobody can sign in:\n  %s -join-code-path <file>\n", upCommand(dir), upCommand(dir))
+	fmt.Fprint(out, rejoinSteps(dir, savedSettings, installed))
 	return nil
+}
+
+// rejoinSteps tells the owner how to join a reset node again, in the same
+// shape it ran before: a background service, a foreground node with saved
+// settings, or a foreground node run directly with flags. The agent clients
+// already name the data directory, so `up` is told to leave them alone.
+func rejoinSteps(dir string, savedSettings, installed bool) string {
+	up := upCommand(dir)
+	switch {
+	case !savedSettings:
+		return fmt.Sprintf("To join your network as a new node, restart the foreground node with its original flags and -data-dir %s, adding -join-code-path <file>, or run '%s -foreground -clients none' to join by signing in.\n", shellQuote(dir), up)
+	case !installed:
+		run := "agentiscaled run"
+		if dir != defaultDataDir() {
+			run += " -data-dir " + shellQuote(dir)
+		}
+		return fmt.Sprintf("Its settings and agent clients are unchanged. To join your network as a new node, run:\n  %[1]s -foreground -clients none\nor, on a machine where nobody can sign in:\n  %[1]s -foreground -clients none -join-code-path <file>\nthen start the node with:\n  %[2]s\n", up, run)
+	default:
+		return fmt.Sprintf("Its settings and agent clients are unchanged. To join your network as a new node, run:\n  %[1]s -clients none\nor, on a machine where nobody can sign in:\n  %[1]s -clients none -join-code-path <file>\n", up)
+	}
 }
 
 // moveIdentityAside renames the node's store, which holds only its key and

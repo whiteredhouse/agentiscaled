@@ -63,21 +63,25 @@ in `agentiscaled status` and in its log. That line names the fix:
 
 ```sh
 agentiscaled reset
-agentiscaled up
+agentiscaled up -clients none
 ```
 
 `reset` stops and removes the background service, moves the node's identity aside
 and clears the recorded stop. It does not sign in or join. `up` then joins the node
 to your current network as a new node, by signing in as it did the first time, or
-with `up -join-code-path <file>` on a machine where nobody can sign in. Everything
+with `up -clients none -join-code-path <file>` on a machine where nobody can sign in.
+`-clients none` leaves your agent apps as they are; their entries already point at
+this node. `reset` prints these commands for your node. Everything
 else stays as it was: the options `up` saved, the agent the node offers and that
 agent's own sign-in, and the entries in your agent apps, which need no change.
 
 The node tries to refresh an expired credential before treating a mesh refusal as
 final. A temporary refresh failure is not recorded as a permanent halt.
-For a foreground node started directly with flags, stop that process before
-running `reset`, then restart it with its original flags plus `-join-code-path <file>`,
-or run `up` to join it by signing in and turn it into a background service.
+A node set up with `up -foreground` joins again with `up -foreground -clients none`
+and then `agentiscaled run`, so it does not become a background service. For a node
+started directly with flags, stop that process before running `reset`, then restart
+it with its original flags plus `-join-code-path <file>`. A join code is redeemed at
+the hosted control service unless you pass `-control <URL>`.
 
 On a Linux server, run the `sudo loginctl enable-linger <you>` command that `up`
 prints, so the node keeps running after you log out.

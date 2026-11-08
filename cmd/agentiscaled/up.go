@@ -490,13 +490,15 @@ func ensureJoined(ctx context.Context, c *config, auth authConfig, out io.Writer
 		c.signInToken = token
 		defer func() { c.signInToken = "" }()
 	}
-	network, err := enrollNew(ctx, *c)
-	if err != nil {
+	// A stop recorded for an identity the node no longer has, as after
+	// `reset`, does not apply to the new one. Clear it before enrolling: an
+	// enrollment that saves its credential and then fails to reach a router
+	// is retried as an already joined node, which a stale stop would block.
+	if err := os.Remove(filepath.Join(c.dataDir, haltFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return joinedNode{}, err
 	}
-	// A stop recorded for an identity the node no longer has, as after
-	// `reset`, does not apply to the new one.
-	if err := os.Remove(filepath.Join(c.dataDir, haltFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	network, err := enrollNew(ctx, *c)
+	if err != nil {
 		return joinedNode{}, err
 	}
 	store, err = meshnode.NewStore(c.dataDir)
