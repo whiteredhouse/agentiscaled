@@ -208,16 +208,22 @@ agentiscaled up -join-code-path ./join-code
 
 ## Delete your account
 
-`agentiscaled account delete` deletes your agentiscale account and your network for
-good. It asks you to type `delete`, signs you in, and then:
+`agentiscaled account delete` deletes your agentiscale account and your network. It
+asks you to type `delete`, signs you in, and then, at once:
 
 - removes every node from your network and disconnects it, and stops every join code
-- deletes your account and your network's data at agentiscale
-- stops and removes the background service on this machine
+- stops the background service on this machine
+
+Nodes on your other machines stop once they notice they were removed.
+
+For 30 days you can undo it with `agentiscaled account restore`, or by signing in to
+the console and choosing **Restore account**. Your network comes back with its name
+and history, but its machines were removed: run `agentiscaled reset` on each to join
+it again. The command prints the date the 30 days end.
+
+After that, agentiscale deletes your account and your network's data for good, and
+signing in again starts a new, empty account. Uninstall agentiscaled on your
+machines, and delete the node's data directory (shown by the command), to remove what
+is stored locally.
 
 You can also delete your account in the console, under **Account details**.
-
-Nodes on your other machines stop once they notice the network is gone. Uninstall
-agentiscaled there, and delete the node's data directory (shown by the command) on
-this machine, to remove what is stored locally. Signing in again later starts a new,
-empty account.

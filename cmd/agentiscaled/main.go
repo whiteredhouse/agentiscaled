@@ -79,7 +79,7 @@ Commands:
   run      run the node in the foreground with the settings 'up' saved
   mcp      serve the node's MCP tools on stdio, for agent clients
   tasks    stop, resume or show the agent's task execution
-  account  delete your account and network ('account delete')
+  account  delete your account and network, or restore them ('account delete', 'account restore')
 
 Without a command, agentiscaled runs the node in the foreground with the
 flags given (see agentiscaled -h).
