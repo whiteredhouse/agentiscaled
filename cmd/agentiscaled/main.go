@@ -75,7 +75,7 @@ Commands:
   down     stop the node's background service; its identity stays
   status   show the node's service, network and mesh connection
   version  print the version
-  reset    give the node a new identity in your current network; its settings stay
+  reset    drop the node's identity so 'up' joins it again as a new node; its settings stay
   run      run the node in the foreground with the settings 'up' saved
   mcp      serve the node's MCP tools on stdio, for agent clients
   tasks    stop, resume or show the agent's task execution

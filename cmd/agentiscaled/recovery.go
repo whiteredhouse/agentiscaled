@@ -25,7 +25,8 @@ import (
 // admitting the node because the node was removed, its credential is
 // refused or its network's signing key is one it no longer trusts. Then it
 // stops, says so in one line in its log and in `agentiscaled status`, and
-// waits for `agentiscaled reset`.
+// waits for `agentiscaled reset`, which drops its identity, and `up`, which
+// joins it again.
 
 // nodeHalt is why a node stopped retrying its network, kept in haltFile so
 // that the stop survives a restart of the background service.
@@ -70,7 +71,7 @@ func saveHalt(dataDir string, h nodeHalt) error {
 
 // newHalt is a halt with its one line, which names the fix.
 func newHalt(reason, network, dataDir string) nodeHalt {
-	fix := resetCommand(dataDir)
+	fix := fmt.Sprintf("Run '%s', then '%s',", resetCommand(dataDir), upCommand(dataDir))
 	name := "network " + network
 	if network == "" {
 		name = "its network"
@@ -78,15 +79,22 @@ func newHalt(reason, network, dataDir string) nodeHalt {
 	var msg string
 	switch reason {
 	case haltNetworkGone:
-		msg = fmt.Sprintf("This node stopped: %s no longer exists. Run '%s' to join your current network.", name, fix)
+		msg = fmt.Sprintf("This node stopped: %s no longer exists. %s to join your current network.", name, fix)
 	case haltRemoved:
-		msg = fmt.Sprintf("This node stopped: it was removed from %s. Run '%s' to join again as a new node.", name, fix)
+		msg = fmt.Sprintf("This node stopped: it was removed from %s. %s to join again as a new node.", name, fix)
 	case haltCredentialRefused:
-		msg = fmt.Sprintf("This node stopped: %s no longer accepts its credential. Run '%s' to join again.", name, fix)
+		msg = fmt.Sprintf("This node stopped: %s no longer accepts its credential. %s to join again.", name, fix)
 	case haltSigningKeyRejected:
-		msg = fmt.Sprintf("This node stopped: %s is signed with a key this node no longer trusts. Run '%s' to join again.", name, fix)
+		msg = fmt.Sprintf("This node stopped: %s is signed with a key this node no longer trusts. %s to join again.", name, fix)
 	}
 	return nodeHalt{Reason: reason, Network: network, Message: msg, At: time.Now().UTC()}
+}
+
+func upCommand(dataDir string) string {
+	if dataDir == defaultDataDir() {
+		return "agentiscaled up"
+	}
+	return "agentiscaled up -data-dir " + shellQuote(dataDir)
 }
 
 func resetCommand(dataDir string) string {

@@ -59,18 +59,25 @@ log in. Your sign-in is used once and not stored on the machine.
 A node keeps trying to reach its network through an outage. If the network is gone
 for good, because it was deleted, the node was removed from it, or the network no
 longer accepts the node's credential, the node stops trying and says so in one line,
-in `agentiscaled status` and in its log. That line names the fix,
-`agentiscaled reset`: it signs you in, as `up` did the first time, and joins the node
-to your current network with a new identity. Everything else stays as it was: the
-options `up` saved, the agent the node offers and that agent's own sign-in, and the
-entries in your agent apps, which need no change.
+in `agentiscaled status` and in its log. That line names the fix:
+
+```sh
+agentiscaled reset
+agentiscaled up
+```
+
+`reset` stops and removes the background service, moves the node's identity aside
+and clears the recorded stop. It does not sign in or join. `up` then joins the node
+to your current network as a new node, by signing in as it did the first time, or
+with `up -join-code-path <file>` on a machine where nobody can sign in. Everything
+else stays as it was: the options `up` saved, the agent the node offers and that
+agent's own sign-in, and the entries in your agent apps, which need no change.
 
 The node tries to refresh an expired credential before treating a mesh refusal as
 final. A temporary refresh failure is not recorded as a permanent halt.
 For a foreground node started directly with flags, stop that process before
-running `reset`, then restart it with its original flags. Reset also works without
-settings saved by `up`; it leaves those foreground options for you to supply again.
-If that node uses a custom control service, pass `reset -control <URL>`.
+running `reset`, then restart it with its original flags plus `-join-code-path <file>`,
+or run `up` to join it by signing in and turn it into a background service.
 
 On a Linux server, run the `sudo loginctl enable-linger <you>` command that `up`
 prints, so the node keeps running after you log out.
@@ -200,7 +207,8 @@ agent node, reconnect it deliberately to the selected node.
 
 ## Machines that cannot sign in
 
-Create a join code in your network and pass it in a file:
+Create a join code in your network and pass it in a file, to join the first time or
+after `reset`:
 
 ```sh
 agentiscaled up -join-code-path ./join-code

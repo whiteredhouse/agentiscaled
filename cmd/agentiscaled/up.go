@@ -439,6 +439,9 @@ func checkAgent(c *config, service bool) error {
 	return nil
 }
 
+// enrollNew enrolls the node with its new key; tests stand in for the mesh.
+var enrollNew = enrollOnly
+
 type joinedNode struct {
 	peerID    string
 	networkID string
@@ -487,8 +490,13 @@ func ensureJoined(ctx context.Context, c *config, auth authConfig, out io.Writer
 		c.signInToken = token
 		defer func() { c.signInToken = "" }()
 	}
-	network, err := enrollOnly(ctx, *c)
+	network, err := enrollNew(ctx, *c)
 	if err != nil {
+		return joinedNode{}, err
+	}
+	// A stop recorded for an identity the node no longer has, as after
+	// `reset`, does not apply to the new one.
+	if err := os.Remove(filepath.Join(c.dataDir, haltFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return joinedNode{}, err
 	}
 	store, err = meshnode.NewStore(c.dataDir)
@@ -574,9 +582,13 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 	} else if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Node:     %s (%s)\n", s.PeerID, s.MachineName)
-	fmt.Fprintf(out, "Network:  %s\n", s.network())
-	fmt.Fprintf(out, "Mesh:     %s\n", s.MeshURL)
+	if s.PeerID == "" {
+		fmt.Fprintf(out, "Node:     not joined (%s); run '%s' to join your network\n", s.MachineName, upCommand(dir))
+	} else {
+		fmt.Fprintf(out, "Node:     %s (%s)\n", s.PeerID, s.MachineName)
+		fmt.Fprintf(out, "Network:  %s\n", s.network())
+		fmt.Fprintf(out, "Mesh:     %s\n", s.MeshURL)
+	}
 	if s.Agent != "" {
 		fmt.Fprintf(out, "Agent:    %s in %s\n", s.Agent, s.AgentDir)
 	}

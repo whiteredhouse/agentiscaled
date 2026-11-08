@@ -317,8 +317,8 @@ func TestNodeStopsWhenItsNetworkNoLongerAdmitsIt(t *testing.T) {
 
 			node := startNode(t, dir)
 			line := node.waitLog(t, "This node stopped", 30*time.Second)
-			if !strings.Contains(line, tc.want) || !strings.Contains(line, network) || !strings.Contains(line, "agentiscaled reset -data-dir "+dir) {
-				t.Fatalf("stop line %q, want it to say %q about network %s and name the reset", line, tc.want, network)
+			if !strings.Contains(line, tc.want) || !strings.Contains(line, network) || !strings.Contains(line, "agentiscaled reset -data-dir "+dir) || !strings.Contains(line, "then 'agentiscaled up -data-dir "+dir) {
+				t.Fatalf("stop line %q, want it to say %q about network %s and name reset, then up", line, tc.want, network)
 			}
 			status := statusOf(t, dir)
 			if !strings.Contains(status, "Mesh connection: "+strings.TrimSpace(line[strings.Index(line, "This node stopped"):])) {
@@ -450,35 +450,20 @@ func TestResetKeepsEverythingButTheIdentity(t *testing.T) {
 		snapshot[f], _ = os.ReadFile(f)
 	}
 
-	// The mesh's part of enrolling, which needs a router, is stood in for:
-	// the new key gets a credential.
-	newNetwork := uuid.NewString()
-	_, newKey, _ := ed25519.GenerateKey(rand.Reader)
-	var signedInWith string
-	enrollNew = func(ctx context.Context, c config) (string, error) {
-		signedInWith = c.signInToken
-		seedNode(t, c.dataDir, "https://"+newNetwork+".mesh.test", newKey)
-		return newNetwork, nil
-	}
-	t.Cleanup(func() { enrollNew = enrollOnly })
-	auth := newFakeIdP(t, "")
 	var out bytes.Buffer
-	if err := runReset(context.Background(), []string{"-data-dir", dir, "-auth-issuer", auth.config().issuer, "-auth-client-id", "CLIENT", "-auth-audience", "https://control.test"}, &out); err != nil {
+	if err := runReset(context.Background(), []string{"-data-dir", dir}, &out); err != nil {
 		t.Fatalf("reset: %v\n%s", err, out.String())
 	}
-	if signedInWith != "ACCESS" {
-		t.Errorf("enrolled with sign-in %q, want the owner's", signedInWith)
+	if !strings.Contains(out.String(), "agentiscaled up -data-dir "+dir) || !strings.Contains(out.String(), "-join-code-path") {
+		t.Errorf("reset does not say how to join again:\n%s", out.String())
 	}
 
 	after, err := loadSettings(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.PeerID == oldPeer || after.NetworkID != newNetwork || after.MeshURL != "https://"+newNetwork+".mesh.test" {
-		t.Errorf("identity after reset: %s in %s at %s, want a new peer in %s", after.PeerID, after.NetworkID, after.MeshURL, newNetwork)
-	}
 	want := before
-	want.PeerID, want.NetworkID, want.MeshURL = after.PeerID, after.NetworkID, after.MeshURL
+	want.PeerID, want.NetworkID, want.MeshURL = "", "", ""
 	if !reflect.DeepEqual(after, want) {
 		t.Errorf("settings changed beyond the identity:\n got %+v\nwant %+v", after, want)
 	}
@@ -494,7 +479,10 @@ func TestResetKeepsEverythingButTheIdentity(t *testing.T) {
 	if len(moved) != 1 {
 		t.Fatalf("previous identity moved to %v, want one file", moved)
 	}
-	if status := statusOf(t, dir); strings.Contains(status, "stopped") || !strings.Contains(status, after.PeerID) {
+	if _, err := os.Stat(filepath.Join(dir, meshnode.StoreFile)); !os.IsNotExist(err) {
+		t.Fatalf("reset left a store: %v", err)
+	}
+	if status := statusOf(t, dir); strings.Contains(status, "stopped") || strings.Contains(status, oldPeer) || !strings.Contains(status, "not joined") {
 		t.Errorf("status after reset:\n%s", status)
 	}
 
