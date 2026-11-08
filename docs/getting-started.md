@@ -59,31 +59,26 @@ log in. Your sign-in is used once and not stored on the machine.
 A node keeps trying to reach its network through an outage. If the network is gone
 for good, because it was deleted, the node was removed from it, or the network no
 longer accepts the node's credential, the node stops trying and says so in one line,
-in `agentiscaled status` and in its log. That line names the fix: run `reset`, then
-the commands it prints, which `status` also shows until the node joins again. For a
-background service they are:
+in `agentiscaled status` and in its log. That line names the fix:
 
 ```sh
 agentiscaled reset
-agentiscaled up -clients none
+agentiscaled up
 ```
 
 `reset` stops and removes the background service, moves the node's identity aside
 and clears the recorded stop. It does not sign in or join. `up` then joins the node
 to your current network as a new node, by signing in as it did the first time, or
-with `up -clients none -join-code-path <file>` on a machine where nobody can sign in.
-`-clients none` leaves your agent apps as they are; their entries already point at
-this node. `reset` prints these commands for your node. Everything
-else stays as it was: the options `up` saved, the agent the node offers and that
-agent's own sign-in, and the entries in your agent apps, which need no change.
+with `up -join-code-path <file>` on a machine where nobody can sign in. Everything
+else stays as it was: the options `up` saved, including your choice of agent apps and
+of `-foreground`, the agent the node offers and that agent's own sign-in, and the
+entries in your agent apps, which need no change.
 
 The node tries to refresh an expired credential before treating a mesh refusal as
 final. A temporary refresh failure is not recorded as a permanent halt.
-A node set up with `up -foreground` joins again with `up -foreground -clients none`
-and then `agentiscaled run`, so it does not become a background service. For a node
-started directly with flags, stop that process before running `reset`, then restart
-it with its original flags plus `-join-code-path <file>`. A join code is redeemed at
-the hosted control service unless you pass `-control <URL>`.
+For a node started directly with flags, stop that process before running `reset`,
+then restart it with its original flags plus `-join-code-path <file>`. A join code is
+redeemed at the hosted control service unless you pass `-control <URL>`.
 
 On a Linux server, run the `sudo loginctl enable-linger <you>` command that `up`
 prints, so the node keeps running after you log out.
@@ -111,6 +106,8 @@ by hand with the lines in [Connect an agent client](connect-agents.md).
 
 Answering n for an app, or `-clients none`, leaves it as it is; `-clients none` also
 prints the lines to add yourself, and `-clients codex` connects only the Codex CLI.
+`up` remembers your choice, and `-foreground`, so a later `up` keeps them until you
+pass the flag again.
 
 ## Offer an agent to your network
 

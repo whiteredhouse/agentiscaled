@@ -51,15 +51,15 @@ type settings struct {
 	// PATH for the service, captured at `up`, since launchd and systemd
 	// start services with a minimal one and an agent CLI may need more.
 	Path string `json:"path,omitempty"`
+	// The owner's choices of agent clients and of running in the
+	// foreground, which a later `up` keeps unless given again.
+	Clients    string `json:"clients,omitempty"`
+	Foreground bool   `json:"foreground,omitempty"`
 
 	// What the node joined, shown by `status`.
 	PeerID    string `json:"peer_id,omitempty"`
 	NetworkID string `json:"network_id,omitempty"`
 	MeshURL   string `json:"mesh_url,omitempty"`
-	// RejoinMode is how a reset node ran before, "service" or "foreground",
-	// so that reset, status and a retried reset give the same steps to join
-	// again. `up` drops it when the node joins.
-	RejoinMode string `json:"rejoin_mode,omitempty"`
 }
 
 const settingsFile = "agentiscaled.json"
@@ -194,9 +194,11 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 			"agent-dir-instructions": strconv.FormatBool(!saved.AgentIgnoreDirInstructions),
 			"agent-dir-skills":       strconv.FormatBool(!saved.AgentIgnoreDirSkills),
 			"agent-owner-config":     strconv.FormatBool(!saved.AgentOwnConfig),
+			"foreground":             strconv.FormatBool(saved.Foreground),
+			"clients":                saved.Clients,
 		}
 		for name, value := range values {
-			if !set[name] {
+			if !set[name] && !(name == "clients" && value == "") {
 				if err := fs.Set(name, value); err != nil {
 					return err
 				}
@@ -227,7 +229,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 	// Gather and validate changes while the existing node remains available.
 	// Runtime login or an invalid workspace must not stop a working service.
 	if ask != nil {
-		if !set["clients"] {
+		if !set["clients"] && (!haveSaved || saved.Clients == "") {
 			if *clients, err = ask.chooseClients(installedClients()); err != nil {
 				return err
 			}
@@ -313,6 +315,8 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 		AgentOwnConfig:             !c.agentPolicy.OwnerConfig,
 		AgentEnv:                   c.agentEnv,
 		Path:                       os.Getenv("PATH"),
+		Clients:                    *clients,
+		Foreground:                 *noService,
 		PeerID:                     joined.peerID,
 		NetworkID:                  joined.networkID,
 		MeshURL:                    joined.meshURL,
@@ -590,7 +594,7 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 	}
 	if s.PeerID == "" {
 		fmt.Fprintf(out, "Node:     not joined (%s)\n", s.MachineName)
-		fmt.Fprint(out, rejoinSteps(dir, true, s.RejoinMode != rejoinForeground))
+		fmt.Fprint(out, rejoinSteps(dir, true))
 	} else {
 		fmt.Fprintf(out, "Node:     %s (%s)\n", s.PeerID, s.MachineName)
 		fmt.Fprintf(out, "Network:  %s\n", s.network())

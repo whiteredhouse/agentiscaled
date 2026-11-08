@@ -253,54 +253,24 @@ func TestFailedJoinAfterResetDoesNotKeepTheOldStop(t *testing.T) {
 	}
 }
 
-// The steps after reset keep the node in the shape it ran in and leave the
-// agent clients, which already name the data directory, alone.
-func TestRejoinStepsKeepTheNodeShape(t *testing.T) {
+// After reset, a node with saved settings joins again with plain `up`, which
+// keeps its choices; a node run directly with flags is restarted with them.
+func TestRejoinSteps(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", shortTempDir(t))
 	dir := filepath.Join(shortTempDir(t), "node")
-	service := rejoinSteps(dir, true, true)
-	foreground := rejoinSteps(dir, true, false)
-	direct := rejoinSteps(dir, false, false)
-	for name, tc := range map[string]struct {
-		got        string
-		want, deny []string
-	}{
-		"service":    {service, []string{"up -data-dir " + dir + " -clients none\n", "-clients none -join-code-path <file>"}, []string{"-foreground", " run "}},
-		"foreground": {foreground, []string{"up -data-dir " + dir + " -foreground -clients none\n", "-foreground -clients none -join-code-path <file>", "agentiscaled run -data-dir " + dir}, nil},
-		"direct":     {direct, []string{"original flags", "adding -join-code-path <file>", "-foreground -clients none"}, nil},
-	} {
-		for _, w := range tc.want {
-			if !strings.Contains(tc.got, w) {
-				t.Errorf("%s: missing %q in:\n%s", name, w, tc.got)
-			}
-		}
-		for _, d := range tc.deny {
-			if strings.Contains(tc.got, d) {
-				t.Errorf("%s: unexpected %q in:\n%s", name, d, tc.got)
-			}
+	saved := rejoinSteps(dir, true)
+	for _, w := range []string{"  agentiscaled up -data-dir " + dir + "\n", "agentiscaled up -data-dir " + dir + " -join-code-path <file>"} {
+		if !strings.Contains(saved, w) {
+			t.Errorf("missing %q in:\n%s", w, saved)
 		}
 	}
-}
-
-// A reset that removed the service and then failed is retried: the retry
-// still gives the steps for a background service, not for a foreground node.
-func TestRetriedResetKeepsTheServiceMode(t *testing.T) {
-	dir := shortTempDir(t)
-	_, key, _ := ed25519.GenerateKey(rand.Reader)
-	seedNode(t, dir, "https://old.mesh.test", key)
-	// What the first attempt saved before removing the service.
-	writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", RejoinMode: rejoinService})
-	var out bytes.Buffer
-	if err := runReset(context.Background(), []string{"-data-dir", dir}, &out); err != nil {
-		t.Fatal(err)
+	if strings.Contains(saved, "-clients") || strings.Contains(saved, "-foreground") {
+		t.Errorf("saved node steps repeat saved choices:\n%s", saved)
 	}
-	if strings.Contains(out.String(), "-foreground") || !strings.Contains(out.String(), "-clients none") {
-		t.Fatalf("retried reset steps:\n%s", &out)
-	}
-	if s, _ := loadSettings(dir); s.RejoinMode != rejoinService {
-		t.Fatalf("rejoin mode %q, want %q", s.RejoinMode, rejoinService)
-	}
-	if status := statusOf(t, dir); strings.Contains(status, "-foreground") || !strings.Contains(status, "-clients none") {
-		t.Fatalf("status of the reset node:\n%s", status)
+	direct := rejoinSteps(dir, false)
+	for _, w := range []string{"original flags", "adding -join-code-path <file>", "-foreground -clients none"} {
+		if !strings.Contains(direct, w) {
+			t.Errorf("missing %q in:\n%s", w, direct)
+		}
 	}
 }
