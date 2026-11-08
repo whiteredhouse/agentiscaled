@@ -154,8 +154,10 @@ func TestUpPreservesDefaultOwnerConfig(t *testing.T) {
 }
 
 // `up` keeps the owner's choice of agent clients and of the foreground: a
-// plain `up` later, as after `down` or `reset`, neither connects clients the
-// owner left out nor installs a login service for a foreground node.
+// flag given replaces the saved choice, and a plain `up` later, as after
+// `down` or `reset`, neither connects clients the owner left out nor
+// installs a login service for a foreground node. No client is connected
+// here, so the test never touches a real client configuration.
 func TestUpKeepsClientsAndForeground(t *testing.T) {
 	dir := withDefaultDataDir(t)
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -163,9 +165,12 @@ func TestUpKeepsClientsAndForeground(t *testing.T) {
 	}
 	mesh := newStandInMesh(t, "fine")
 	pid := seedNode(t, dir, mesh.srv.URL, mesh.key)
-	writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", PeerID: pid, MeshURL: mesh.srv.URL})
+	writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", Clients: "codex", PeerID: pid, MeshURL: mesh.srv.URL})
 	if err := runUp(context.Background(), []string{"-y", "-foreground", "-clients", "none"}, io.Discard); err != nil {
 		t.Fatal(err)
+	}
+	if got, _ := loadSettings(dir); got.Clients != "none" || !got.Foreground {
+		t.Fatalf("flags did not replace the saved choices: clients %q, foreground %t", got.Clients, got.Foreground)
 	}
 	var out bytes.Buffer
 	if err := runUp(context.Background(), []string{"-y"}, &out); err != nil {
@@ -180,12 +185,5 @@ func TestUpKeepsClientsAndForeground(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Run the node with:") || strings.Contains(out.String(), "background service") {
 		t.Fatalf("plain up left the foreground:\n%s", &out)
-	}
-	// Given again, a flag replaces the saved choice.
-	if err := runUp(context.Background(), []string{"-y", "-foreground", "-clients", "codex"}, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := loadSettings(dir); got.Clients != "codex" {
-		t.Fatalf("clients %q, want codex", got.Clients)
 	}
 }
