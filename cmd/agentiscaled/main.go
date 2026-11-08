@@ -79,6 +79,7 @@ Commands:
   run      run the node in the foreground with the settings 'up' saved
   mcp      serve the node's MCP tools on stdio, for agent clients
   tasks    stop, resume or show the agent's task execution
+  account  delete your account and network ('account delete')
 
 Without a command, agentiscaled runs the node in the foreground with the
 flags given (see agentiscaled -h).
@@ -101,6 +102,8 @@ func main() {
 			err = runDown(args, os.Stdout)
 		case "reset":
 			err = runReset(ctx, args, os.Stdout)
+		case "account":
+			err = runAccount(ctx, args, os.Stdin, os.Stdout)
 		case "status":
 			err = runStatus(ctx, args, os.Stdout)
 		case "version":

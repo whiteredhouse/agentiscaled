@@ -205,3 +205,19 @@ Create a join code in your network and pass it in a file:
 ```sh
 agentiscaled up -join-code-path ./join-code
 ```
+
+## Delete your account
+
+`agentiscaled account delete` deletes your agentiscale account and your network for
+good. It asks you to type `delete`, signs you in, and then:
+
+- removes every node from your network and disconnects it, and stops every join code
+- deletes your account and your network's data at agentiscale
+- stops and removes the background service on this machine
+
+You can also delete your account in the console, under **Account details**.
+
+Nodes on your other machines stop once they notice the network is gone. Uninstall
+agentiscaled there, and delete the node's data directory (shown by the command) on
+this machine, to remove what is stored locally. Signing in again later starts a new,
+empty account.

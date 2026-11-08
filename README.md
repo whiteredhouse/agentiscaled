@@ -32,6 +32,7 @@ Linux packages, connecting your agent apps, and machines without a browser.
 | `agentiscaled mcp` | Serve the node's tools over stdio to an MCP client ([Connect an agent client](docs/connect-agents.md)) |
 | `agentiscaled tasks stop\|resume\|status` | Stop or resume tasks for an agent this node offers |
 | `agentiscaled run` | Run the node in the foreground with the options saved by `up` |
+| `agentiscaled account delete` | Sign in and delete your account and network for good ([Delete your account](docs/getting-started.md#delete-your-account)) |
 | `agentiscaled version` | Print the version |
 
 Run `agentiscaled <command> -h` for its flags.
