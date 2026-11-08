@@ -51,6 +51,10 @@ type settings struct {
 	// PATH for the service, captured at `up`, since launchd and systemd
 	// start services with a minimal one and an agent CLI may need more.
 	Path string `json:"path,omitempty"`
+	// The owner's choices of agent clients and of running in the
+	// foreground, which a later `up` keeps unless given again.
+	Clients    string `json:"clients,omitempty"`
+	Foreground bool   `json:"foreground,omitempty"`
 
 	// What the node joined, shown by `status`.
 	PeerID    string `json:"peer_id,omitempty"`
@@ -190,9 +194,11 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 			"agent-dir-instructions": strconv.FormatBool(!saved.AgentIgnoreDirInstructions),
 			"agent-dir-skills":       strconv.FormatBool(!saved.AgentIgnoreDirSkills),
 			"agent-owner-config":     strconv.FormatBool(!saved.AgentOwnConfig),
+			"foreground":             strconv.FormatBool(saved.Foreground),
+			"clients":                saved.Clients,
 		}
 		for name, value := range values {
-			if !set[name] {
+			if !set[name] && !(name == "clients" && value == "") {
 				if err := fs.Set(name, value); err != nil {
 					return err
 				}
@@ -223,7 +229,7 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 	// Gather and validate changes while the existing node remains available.
 	// Runtime login or an invalid workspace must not stop a working service.
 	if ask != nil {
-		if !set["clients"] {
+		if !set["clients"] && (!haveSaved || saved.Clients == "") {
 			if *clients, err = ask.chooseClients(installedClients()); err != nil {
 				return err
 			}
@@ -309,6 +315,8 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 		AgentOwnConfig:             !c.agentPolicy.OwnerConfig,
 		AgentEnv:                   c.agentEnv,
 		Path:                       os.Getenv("PATH"),
+		Clients:                    *clients,
+		Foreground:                 *noService,
 		PeerID:                     joined.peerID,
 		NetworkID:                  joined.networkID,
 		MeshURL:                    joined.meshURL,
@@ -439,6 +447,9 @@ func checkAgent(c *config, service bool) error {
 	return nil
 }
 
+// enrollNew enrolls the node with its new key; tests stand in for the mesh.
+var enrollNew = enrollOnly
+
 type joinedNode struct {
 	peerID    string
 	networkID string
@@ -487,7 +498,14 @@ func ensureJoined(ctx context.Context, c *config, auth authConfig, out io.Writer
 		c.signInToken = token
 		defer func() { c.signInToken = "" }()
 	}
-	network, err := enrollOnly(ctx, *c)
+	// A stop recorded for an identity the node no longer has, as after
+	// `reset`, does not apply to the new one. Clear it before enrolling: an
+	// enrollment that saves its credential and then fails to reach a router
+	// is retried as an already joined node, which a stale stop would block.
+	if err := os.Remove(filepath.Join(c.dataDir, haltFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return joinedNode{}, err
+	}
+	network, err := enrollNew(ctx, *c)
 	if err != nil {
 		return joinedNode{}, err
 	}
@@ -574,9 +592,14 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 	} else if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Node:     %s (%s)\n", s.PeerID, s.MachineName)
-	fmt.Fprintf(out, "Network:  %s\n", s.network())
-	fmt.Fprintf(out, "Mesh:     %s\n", s.MeshURL)
+	if s.PeerID == "" {
+		fmt.Fprintf(out, "Node:     not joined (%s)\n", s.MachineName)
+		fmt.Fprint(out, rejoinSteps(dir, true))
+	} else {
+		fmt.Fprintf(out, "Node:     %s (%s)\n", s.PeerID, s.MachineName)
+		fmt.Fprintf(out, "Network:  %s\n", s.network())
+		fmt.Fprintf(out, "Mesh:     %s\n", s.MeshURL)
+	}
 	if s.Agent != "" {
 		fmt.Fprintf(out, "Agent:    %s in %s\n", s.Agent, s.AgentDir)
 	}

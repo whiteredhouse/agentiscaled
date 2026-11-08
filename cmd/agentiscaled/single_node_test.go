@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -27,6 +28,7 @@ func TestUpPreservesHostedAgent(t *testing.T) {
 	write(t, filepath.Join(dir, "codex", "auth.json"), "{}")
 	want := settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "debug", Agent: "codex", AgentDir: t.TempDir(), AgentCommand: command, AgentName: "helper", AgentDescription: "Helps", AgentOwnConfig: true, AgentIgnoreDirSkills: true, AgentEnv: []string{"CODEX_HOME=/saved/config"}, PeerID: pid, NetworkID: "saved-network", MeshURL: mesh.srv.URL}
 	writeSettings(t, dir, want)
+	want.Clients, want.Foreground = "none", true // the choices this up is given
 	var out bytes.Buffer
 	for i := 0; i < 2; i++ {
 		if err := runUp(context.Background(), []string{"-y", "-foreground", "-clients", "none"}, &out); err != nil {
@@ -148,5 +150,40 @@ func TestUpPreservesDefaultOwnerConfig(t *testing.T) {
 	}
 	if got.Agent != "" || got.BindAddr != "" || !got.AgentIgnoreDirInstructions || got.AgentDir != original.AgentDir {
 		t.Fatalf("explicit overrides: %+v", got)
+	}
+}
+
+// `up` keeps the owner's choice of agent clients and of the foreground: a
+// flag given replaces the saved choice, and a plain `up` later, as after
+// `down` or `reset`, neither connects clients the owner left out nor
+// installs a login service for a foreground node. No client is connected
+// here, so the test never touches a real client configuration.
+func TestUpKeepsClientsAndForeground(t *testing.T) {
+	dir := withDefaultDataDir(t)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	mesh := newStandInMesh(t, "fine")
+	pid := seedNode(t, dir, mesh.srv.URL, mesh.key)
+	writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", Clients: "codex", PeerID: pid, MeshURL: mesh.srv.URL})
+	if err := runUp(context.Background(), []string{"-y", "-foreground", "-clients", "none"}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := loadSettings(dir); got.Clients != "none" || !got.Foreground {
+		t.Fatalf("flags did not replace the saved choices: clients %q, foreground %t", got.Clients, got.Foreground)
+	}
+	var out bytes.Buffer
+	if err := runUp(context.Background(), []string{"-y"}, &out); err != nil {
+		t.Fatalf("plain up: %v\n%s", err, &out)
+	}
+	got, err := loadSettings(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Clients != "none" || !got.Foreground {
+		t.Fatalf("plain up dropped the saved choices: clients %q, foreground %t", got.Clients, got.Foreground)
+	}
+	if !strings.Contains(out.String(), "Run the node with:") || strings.Contains(out.String(), "background service") {
+		t.Fatalf("plain up left the foreground:\n%s", &out)
 	}
 }

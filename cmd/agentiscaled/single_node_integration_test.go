@@ -245,8 +245,16 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 	oldEnroll := enrollNew
 	enrollNew = func(context.Context, config) (string, error) { pid = mint(); return uuid.NewString(), nil }
 	t.Cleanup(func() { enrollNew = oldEnroll })
-	auth := newFakeIdP(t, "")
-	if err := runReset(context.Background(), []string{"-data-dir", dir, "-auth-issuer", auth.config().issuer, "-auth-client-id", "CLIENT", "-auth-audience", "https://control.test"}, io.Discard); err != nil {
+	if err := runReset(context.Background(), []string{"-data-dir", dir}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	// `up` joins the reset node again; its part that enrolls is ensureJoined.
+	saved, err := loadSettings(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := saved.config(dir)
+	if _, err := ensureJoined(context.Background(), &c, newFakeIdP(t, "").config(), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	// The control plane's key is unchanged; the node identity has been replaced.

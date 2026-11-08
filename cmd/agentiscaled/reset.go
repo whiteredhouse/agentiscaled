@@ -12,23 +12,18 @@ import (
 	"time"
 
 	meshnode "github.com/google/agentmesh/export/node"
-	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// runReset is `agentiscaled reset`: it gives the node a new identity in the
-// signed-in owner's current network, for a node whose network is gone or no
-// longer admits it. Only the node's key and enrollment, in its store, are
-// replaced: the settings `up` saved, the agent and its own runtime home, the
-// API token and the agent clients' entries, which name the data directory,
-// all stay as they are.
+// runReset is `agentiscaled reset`: it drops the node's identity, for a node
+// whose network is gone or no longer admits it, so that `up` joins it again
+// as a new node, by sign-in or with a join code. It stops and removes the
+// background service, moves the node's store (its key and enrollment) aside
+// and clears the recorded stop. It does not sign in or join. The settings
+// `up` saved, the agent and its own runtime home, the API token and the agent
+// clients' entries, which name the data directory, all stay as they are.
 func runReset(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("reset", flag.ContinueOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node")
-	control := fs.String("control", "", "Control service URL for a foreground node without saved settings (default: the hosted control service)")
-	var auth authConfig
-	fs.StringVar(&auth.issuer, "auth-issuer", defaultAuth.issuer, "OIDC issuer that signs you in")
-	fs.StringVar(&auth.clientID, "auth-client-id", defaultAuth.clientID, "Public client ID agentiscaled signs in with")
-	fs.StringVar(&auth.audience, "auth-audience", defaultAuth.audience, "API audience the sign-in is for")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -41,65 +36,33 @@ func runReset(ctx context.Context, args []string, out io.Writer) error {
 	}
 	s, err := loadSettings(dir)
 	savedSettings := err == nil
-	if errors.Is(err, os.ErrNotExist) {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if !savedSettings {
 		// A node run directly with flags has a store but no saved settings.
-		// Use temporary enrollment options, then let it resume with those
-		// original flags rather than inventing a service configuration.
 		if _, err := os.Stat(filepath.Join(dir, meshnode.StoreFile)); errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("no node set up in %s: run 'agentiscaled up'", dir)
 		} else if err != nil {
 			return err
 		}
-		s = settings{Listen: "/ip4/0.0.0.0/tcp/0", LogLevel: "info", MachineName: defaultMachineName()}
-	} else if err != nil {
-		return err
 	}
-	c := s.config(dir)
-	if *control != "" {
-		if savedSettings {
-			return errors.New("-control is only for a foreground node without saved settings; reset keeps the saved control service URL")
-		}
-		c.control = *control
-	}
-	if c.control == "" {
-		c.control = defaultControl
-	}
-
-	// Signing in comes first: a sign-in that fails or is abandoned leaves
-	// the node as it was.
-	token, err := deviceLogin(ctx, auth, out)
-	if err != nil {
-		return err
-	}
-	c.signInToken = token
 
 	svc := newService(dir)
-	installed := svc != nil && svc.installed()
-	if svc != nil {
-		if err := svc.stop(); err != nil {
+	if svc != nil && svc.installed() {
+		// Removed, not only stopped: a service left installed would start
+		// a node with no identity at the next login.
+		if err := svc.remove(); err != nil {
 			return err
 		}
+		fmt.Fprintf(out, "Stopped and removed %s.\n", svc.name())
 	}
 	aside, err := moveIdentityAside(dir)
 	if err != nil {
 		return err
 	}
-	network, err := enrollNew(ctx, c)
-	if err != nil {
-		return fmt.Errorf("join your network: %w\nThe node's previous identity is in %s; run 'agentiscaled reset' again", err, aside)
-	}
-	store, err := meshnode.NewStore(dir)
-	if err != nil {
-		return fmt.Errorf("open store: %w", err)
-	}
-	meshURL, _ := store.LoadControlPlaneURL()
-	pid, err := peer.IDFromPrivateKey(meshnode.GetOrGenerateKey(store))
-	store.Close()
-	if err != nil {
-		return err
-	}
-	s.PeerID, s.NetworkID, s.MeshURL = pid.String(), network, meshURL
 	if savedSettings {
+		s.PeerID, s.NetworkID, s.MeshURL = "", "", ""
 		if err := saveSettings(dir, s); err != nil {
 			return fmt.Errorf("save settings: %w", err)
 		}
@@ -107,38 +70,26 @@ func runReset(ctx context.Context, args []string, out io.Writer) error {
 	if err := os.Remove(filepath.Join(dir, haltFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	fmt.Fprintf(out, "This node is now %s in network %s; its settings and agent clients are unchanged.\n", s.PeerID, s.NetworkID)
 	if aside != "" {
-		fmt.Fprintf(out, "Its previous identity is in %s.\n", aside)
-	}
-	if !savedSettings {
-		fmt.Fprintf(out, "Restart the foreground node with its original flags and -data-dir %s.\n", shellQuote(dir))
-		return nil
-	}
-
-	exe, err := stableExecutable()
-	if err != nil {
-		return err
-	}
-	if !installed {
-		fmt.Fprintln(out, "Run the node with:")
-		fmt.Fprintf(out, "  %s run -data-dir %s\n", shellQuote(exe), shellQuote(dir))
-		return nil
-	}
-	if err := svc.start(serviceSpec{exe: exe, dataDir: dir, path: s.Path}); err != nil {
-		return fmt.Errorf("start the background service: %w", err)
-	}
-	fmt.Fprintf(out, "Started the background service %s again.\n", svc.name())
-	if err := waitReady(ctx, dir, 30*time.Second); err != nil {
-		fmt.Fprintf(out, "The node has not connected to the mesh yet (%v). See 'agentiscaled status' and %s.\n", err, filepath.Join(dir, logFile))
+		fmt.Fprintf(out, "The node's identity is reset; its previous identity is in %s.\n", aside)
 	} else {
-		fmt.Fprintln(out, "Connected to the mesh.")
+		fmt.Fprintln(out, "The node had no identity; nothing to move aside.")
 	}
+	fmt.Fprint(out, rejoinSteps(dir, savedSettings))
 	return nil
 }
 
-// enrollNew enrolls the node with its new key; tests stand in for the mesh.
-var enrollNew = enrollOnly
+// rejoinSteps tells the owner how to join a reset node again. `up` keeps
+// the node's saved settings, its choice of agent clients and of running in
+// the foreground included. A node run directly with flags has none, so it
+// is restarted with them.
+func rejoinSteps(dir string, savedSettings bool) string {
+	up := upCommand(dir)
+	if !savedSettings {
+		return fmt.Sprintf("To join your network as a new node, restart the foreground node with its original flags and -data-dir %s, adding -join-code-path <file>, or run '%s -foreground -clients none' to join by signing in.\n", shellQuote(dir), up)
+	}
+	return fmt.Sprintf("Its settings and agent clients are unchanged. To join your network as a new node, run:\n  %[1]s\nor, on a machine where nobody can sign in:\n  %[1]s -join-code-path <file>\n", up)
+}
 
 // moveIdentityAside renames the node's store, which holds only its key and
 // its enrollment (credential, trusted keys, routers, mesh URL), so that the

@@ -75,7 +75,7 @@ Commands:
   down     stop the node's background service; its identity stays
   status   show the node's service, network and mesh connection
   version  print the version
-  reset    give the node a new identity in your current network; its settings stay
+  reset    drop the node's identity so 'up' joins it again as a new node; its settings stay
   run      run the node in the foreground with the settings 'up' saved
   mcp      serve the node's MCP tools on stdio, for agent clients
   tasks    stop, resume or show the agent's task execution
@@ -124,8 +124,14 @@ func main() {
 	nodeFlags(fs, &c)
 	fs.StringVar(&c.controlPlane, "control-plane", "", "https URL of the network's mesh (agentmesh-one)")
 	fs.StringVar(&c.bootstrapTokenPath, "bootstrap-token-path", "", "File holding the bootstrap token; used only when the node has no identity yet")
-	fs.StringVar(&c.control, "control", "", "URL of the agentiscale control service, used with --join-code-path")
+	fs.StringVar(&c.control, "control", "", "URL of the agentiscale control service (default with --join-code-path: "+defaultControl+")")
 	flag.Parse()
+	// A join code is redeemed at a control service, the hosted one unless
+	// told otherwise. Without one, a node given --control-plane and
+	// --bootstrap-token-path talks to its mesh alone.
+	if c.control == "" && c.joinCodePath != "" {
+		c.control = defaultControl
+	}
 	if err := run(ctx, c); err != nil {
 		log.Fatal(err)
 	}
