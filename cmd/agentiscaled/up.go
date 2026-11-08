@@ -512,6 +512,10 @@ func enrollSignedIn(ctx context.Context, control, token, peerID, machineName str
 	told := false
 	for {
 		answer, status, err := postJoin(ctx, strings.TrimSuffix(control, "/")+"/v1/enroll", token, body)
+		if status == http.StatusForbidden && err != nil && strings.Contains(err.Error(), "scheduled for deletion") {
+			// Account management is in the console, not in agentiscaled.
+			return answer, fmt.Errorf("%w; restore your account in the console (%s), then run 'agentiscaled up' again", err, consoleURL)
+		}
 		if status != http.StatusServiceUnavailable || time.Now().After(deadline) {
 			return answer, err
 		}
@@ -526,6 +530,9 @@ func enrollSignedIn(ctx context.Context, control, token, peerID, machineName str
 		}
 	}
 }
+
+// consoleURL is where owners manage their account and network.
+const consoleURL = "https://console.agentiscale.net"
 
 var (
 	enrollWait  = 5 * time.Minute

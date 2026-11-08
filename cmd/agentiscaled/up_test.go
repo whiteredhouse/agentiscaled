@@ -355,3 +355,17 @@ func TestServiceStateSaysWhetherItRuns(t *testing.T) {
 		}
 	}
 }
+
+// A network whose account is scheduled for deletion refuses enrollment, and
+// up points to the console, where the account is restored.
+func TestEnrollPointsToConsoleWhenDeletionIsScheduled(t *testing.T) {
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"network's account is scheduled for deletion; restore the account to add nodes"}`))
+	}))
+	defer control.Close()
+	_, err := enrollSignedIn(context.Background(), control.URL, "T", "peer", "")
+	if err == nil || !strings.Contains(err.Error(), consoleURL) || !strings.Contains(err.Error(), "scheduled for deletion") {
+		t.Fatalf("enroll: %v", err)
+	}
+}
