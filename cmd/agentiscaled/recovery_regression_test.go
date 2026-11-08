@@ -281,3 +281,26 @@ func TestRejoinStepsKeepTheNodeShape(t *testing.T) {
 		}
 	}
 }
+
+// A reset that removed the service and then failed is retried: the retry
+// still gives the steps for a background service, not for a foreground node.
+func TestRetriedResetKeepsTheServiceMode(t *testing.T) {
+	dir := shortTempDir(t)
+	_, key, _ := ed25519.GenerateKey(rand.Reader)
+	seedNode(t, dir, "https://old.mesh.test", key)
+	// What the first attempt saved before removing the service.
+	writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", RejoinMode: rejoinService})
+	var out bytes.Buffer
+	if err := runReset(context.Background(), []string{"-data-dir", dir}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "-foreground") || !strings.Contains(out.String(), "-clients none") {
+		t.Fatalf("retried reset steps:\n%s", &out)
+	}
+	if s, _ := loadSettings(dir); s.RejoinMode != rejoinService {
+		t.Fatalf("rejoin mode %q, want %q", s.RejoinMode, rejoinService)
+	}
+	if status := statusOf(t, dir); strings.Contains(status, "-foreground") || !strings.Contains(status, "-clients none") {
+		t.Fatalf("status of the reset node:\n%s", status)
+	}
+}

@@ -50,7 +50,21 @@ func runReset(ctx context.Context, args []string, out io.Writer) error {
 
 	svc := newService(dir)
 	installed := svc != nil && svc.installed()
-	if installed {
+	if savedSettings {
+		// Record how the node ran before removing its service, so that a
+		// reset retried after a failure still knows.
+		if s.RejoinMode == "" {
+			s.RejoinMode = rejoinForeground
+			if installed {
+				s.RejoinMode = rejoinService
+			}
+			if err := saveSettings(dir, s); err != nil {
+				return fmt.Errorf("save settings: %w", err)
+			}
+		}
+		installed = s.RejoinMode == rejoinService
+	}
+	if svc != nil && svc.installed() {
 		// Removed, not only stopped: a service left installed would start
 		// a node with no identity at the next login.
 		if err := svc.remove(); err != nil {
@@ -79,6 +93,11 @@ func runReset(ctx context.Context, args []string, out io.Writer) error {
 	fmt.Fprint(out, rejoinSteps(dir, savedSettings, installed))
 	return nil
 }
+
+const (
+	rejoinService    = "service"
+	rejoinForeground = "foreground"
+)
 
 // rejoinSteps tells the owner how to join a reset node again, in the same
 // shape it ran before: a background service, a foreground node with saved

@@ -59,7 +59,9 @@ log in. Your sign-in is used once and not stored on the machine.
 A node keeps trying to reach its network through an outage. If the network is gone
 for good, because it was deleted, the node was removed from it, or the network no
 longer accepts the node's credential, the node stops trying and says so in one line,
-in `agentiscaled status` and in its log. That line names the fix:
+in `agentiscaled status` and in its log. That line names the fix: run `reset`, then
+the commands it prints, which `status` also shows until the node joins again. For a
+background service they are:
 
 ```sh
 agentiscaled reset

@@ -56,6 +56,10 @@ type settings struct {
 	PeerID    string `json:"peer_id,omitempty"`
 	NetworkID string `json:"network_id,omitempty"`
 	MeshURL   string `json:"mesh_url,omitempty"`
+	// RejoinMode is how a reset node ran before, "service" or "foreground",
+	// so that reset, status and a retried reset give the same steps to join
+	// again. `up` drops it when the node joins.
+	RejoinMode string `json:"rejoin_mode,omitempty"`
 }
 
 const settingsFile = "agentiscaled.json"
@@ -585,7 +589,8 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	if s.PeerID == "" {
-		fmt.Fprintf(out, "Node:     not joined (%s); run '%s' to join your network\n", s.MachineName, upCommand(dir))
+		fmt.Fprintf(out, "Node:     not joined (%s)\n", s.MachineName)
+		fmt.Fprint(out, rejoinSteps(dir, true, s.RejoinMode != rejoinForeground))
 	} else {
 		fmt.Fprintf(out, "Node:     %s (%s)\n", s.PeerID, s.MachineName)
 		fmt.Fprintf(out, "Network:  %s\n", s.network())

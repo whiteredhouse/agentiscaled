@@ -71,7 +71,7 @@ func saveHalt(dataDir string, h nodeHalt) error {
 
 // newHalt is a halt with its one line, which names the fix.
 func newHalt(reason, network, dataDir string) nodeHalt {
-	fix := fmt.Sprintf("Run '%s', then '%s',", resetCommand(dataDir), upCommand(dataDir))
+	fix := fmt.Sprintf("Run '%s' and follow the steps it prints", resetCommand(dataDir))
 	name := "network " + network
 	if network == "" {
 		name = "its network"

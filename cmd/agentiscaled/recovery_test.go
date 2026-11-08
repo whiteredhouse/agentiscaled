@@ -317,8 +317,8 @@ func TestNodeStopsWhenItsNetworkNoLongerAdmitsIt(t *testing.T) {
 
 			node := startNode(t, dir)
 			line := node.waitLog(t, "This node stopped", 30*time.Second)
-			if !strings.Contains(line, tc.want) || !strings.Contains(line, network) || !strings.Contains(line, "agentiscaled reset -data-dir "+dir) || !strings.Contains(line, "then 'agentiscaled up -data-dir "+dir) {
-				t.Fatalf("stop line %q, want it to say %q about network %s and name reset, then up", line, tc.want, network)
+			if !strings.Contains(line, tc.want) || !strings.Contains(line, network) || !strings.Contains(line, "agentiscaled reset -data-dir "+dir) || !strings.Contains(line, "follow the steps it prints") {
+				t.Fatalf("stop line %q, want it to say %q about network %s and point to reset's steps", line, tc.want, network)
 			}
 			status := statusOf(t, dir)
 			if !strings.Contains(status, "Mesh connection: "+strings.TrimSpace(line[strings.Index(line, "This node stopped"):])) {
@@ -464,6 +464,7 @@ func TestResetKeepsEverythingButTheIdentity(t *testing.T) {
 	}
 	want := before
 	want.PeerID, want.NetworkID, want.MeshURL = "", "", ""
+	want.RejoinMode = rejoinForeground // no service was installed
 	if !reflect.DeepEqual(after, want) {
 		t.Errorf("settings changed beyond the identity:\n got %+v\nwant %+v", after, want)
 	}
@@ -482,7 +483,7 @@ func TestResetKeepsEverythingButTheIdentity(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, meshnode.StoreFile)); !os.IsNotExist(err) {
 		t.Fatalf("reset left a store: %v", err)
 	}
-	if status := statusOf(t, dir); strings.Contains(status, "stopped") || strings.Contains(status, oldPeer) || !strings.Contains(status, "not joined") {
+	if status := statusOf(t, dir); strings.Contains(status, "stopped") || strings.Contains(status, oldPeer) || !strings.Contains(status, "not joined") || !strings.Contains(status, "-foreground -clients none") {
 		t.Errorf("status after reset:\n%s", status)
 	}
 
