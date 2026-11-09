@@ -216,3 +216,19 @@ after `reset`:
 ```sh
 agentiscaled up -join-code-path ./join-code
 ```
+
+## Delete your account
+
+Delete your account and network in the console, under **Account details > Delete
+account**. Every node is removed from your network and disconnected at once, and every
+join code stops working. Nodes notice they were removed and stop; `agentiscaled down`
+stops the one on this machine.
+
+For 30 days you can sign in to the console and choose **Restore account**. Your
+network comes back with its name and history, but its machines were removed: run
+`agentiscaled reset` on each to join it again. Until you restore it, `agentiscaled up`
+can't add a machine and says so.
+
+After 30 days, agentiscale deletes your account and your network's data for good, and
+signing in again starts a new, empty account. Uninstall agentiscaled on your machines,
+and delete the node's data directory, to remove what is stored locally.
