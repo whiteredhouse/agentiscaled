@@ -185,9 +185,10 @@ func TestUpUsesShellCodexHomeForClientSetup(t *testing.T) {
 			dir, saved := seededUpSettings(t)
 			installTestSupervisor(t, dir, false)
 			savedHome := filepath.Join(os.Getenv("HOME"), ".codex")
+			var savedEnv []string
 			if savedOverride {
 				savedHome = filepath.Join(t.TempDir(), "hosted-config")
-				saved.AgentEnv = []string{"CODEX_HOME=" + savedHome}
+				savedEnv = []string{"CODEX_HOME=" + savedHome}
 			}
 			write(t, filepath.Join(savedHome, "auth.json"), "{}")
 			clientHome := filepath.Join(t.TempDir(), "client-config")
@@ -200,7 +201,7 @@ func TestUpUsesShellCodexHomeForClientSetup(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-			saved.Agent, saved.AgentDir, saved.AgentCommand = "codex", t.TempDir(), command
+			saved.Agents = []agentConfig{{Runtime: "codex", Name: "codex", Dir: t.TempDir(), Command: command, Env: savedEnv}}
 			writeSettings(t, dir, saved)
 			var output bytes.Buffer
 			if err := runUp(context.Background(), []string{"-y", "-foreground", "-clients", "codex"}, &output); err != nil {

@@ -224,7 +224,7 @@ func TestWizardOfferOverridesSavedAnswers(t *testing.T) {
 			t.Setenv("CODEX_HOME", t.TempDir())
 			write(t, filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"), "{}")
 			write(t, filepath.Join(dir, "codex", "auth.json"), "{}")
-			writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", AgentDir: workspace, AgentCommand: command, AgentName: "old-helper", AgentDescription: "Old description", AgentOwnConfig: defaults, AgentIgnoreDirInstructions: defaults, AgentIgnoreDirSkills: defaults, PeerID: pid, NetworkID: "saved-network", MeshURL: mesh.srv.URL})
+			writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", PeerID: pid, NetworkID: "saved-network", MeshURL: mesh.srv.URL})
 			input := "y\n\n\n" + workspace + "\n\n\n\n"
 			if !defaults {
 				input = "y\nnew-helper\nNew description\n" + workspace + "\nn\nn\nn\n"
@@ -262,8 +262,11 @@ func TestWizardOfferOverridesSavedAnswers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.PeerID != pid || got.AgentName != offer.name || got.AgentDescription != offer.description || got.AgentOwnConfig != !offer.policy.OwnerConfig || got.AgentIgnoreDirInstructions != !offer.policy.DirInstructions || got.AgentIgnoreDirSkills != !offer.policy.DirSkills {
-				t.Fatalf("saved answers: name=%q description=%q ownerConfig=%v instructions=%v skills=%v; want name=%q description=%q policy=%+v", got.AgentName, got.AgentDescription, !got.AgentOwnConfig, !got.AgentIgnoreDirInstructions, !got.AgentIgnoreDirSkills, offer.name, offer.description, offer.policy)
+			if len(got.Agents) != 1 {
+				t.Fatalf("saved agents: %+v", got.Agents)
+			}
+			if a := got.Agents[0]; got.PeerID != pid || a.Name != offer.name || a.Description != offer.description || a.policy() != offer.policy {
+				t.Fatalf("saved answers: %+v; want name=%q description=%q policy=%+v", a, offer.name, offer.description, offer.policy)
 			}
 		})
 	}

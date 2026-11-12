@@ -46,15 +46,9 @@ type config struct {
 	apiTokenPath       string
 	listen             string
 	logLevel           string
-	agent              string
-	agentDir           string
-	agentCommand       string
-	agentName          string
-	agentDescription   string
-	agentPolicy        agentPolicy
-	// agentEnv is set in the node's environment before the agent's
-	// runtime starts (agentOwnerEnv).
-	agentEnv    []string
+	// agents are the agents the node offers to the network, each under
+	// its own name.
+	agents      []agentConfig
 	machineName string
 	// networkID is the network the node joined, which it asks the control
 	// service about when it cannot reach it.
@@ -128,11 +122,14 @@ func main() {
 	var c config
 	fs := flag.CommandLine
 	nodeFlags(fs, &c)
-	agentFlags(fs, &c)
+	agent := agentFlags(fs)
 	fs.StringVar(&c.controlPlane, "control-plane", "", "https URL of the network's mesh (agentmesh-one)")
 	fs.StringVar(&c.bootstrapTokenPath, "bootstrap-token-path", "", "File holding the bootstrap token; used only when the node has no identity yet")
 	fs.StringVar(&c.control, "control", "", "URL of the agentiscale control service (default with --join-code-path: "+defaultControl+")")
 	flag.Parse()
+	if a := agent(); a != nil {
+		c.agents = []agentConfig{*a}
+	}
 	// A join code is redeemed at a control service, the hosted one unless
 	// told otherwise. Without one, a node given --control-plane and
 	// --bootstrap-token-path talks to its mesh alone.
@@ -157,17 +154,62 @@ func nodeFlags(fs *flag.FlagSet, c *config) {
 	fs.StringVar(&c.machineName, "hostname", defaultMachineName(), "Name of this machine in your network's member list")
 }
 
-// agentFlags are the flags of the agent a node offers, which `agent add`
-// sets and `up` keeps as saved.
-func agentFlags(fs *flag.FlagSet, c *config) {
-	fs.StringVar(&c.agent, "agent", "", "Serve an A2A agent to the network, run by this runtime ("+strings.Join(runtimeNames(), ", ")+"); empty serves none")
-	fs.StringVar(&c.agentDir, "agent-dir", "", "Directory the agent works in")
-	fs.StringVar(&c.agentCommand, "agent-command", "", "Command of the agent CLI (default: the runtime's, e.g. codex)")
-	fs.StringVar(&c.agentName, "agent-name", "", "Service name of the agent in the network (default: the runtime's)")
-	fs.StringVar(&c.agentDescription, "agent-description", "", "What the agent does, as other agents see it on its card (default: the runtime's)")
-	fs.BoolVar(&c.agentPolicy.DirInstructions, "agent-dir-instructions", true, "Let the agent load the instruction files (AGENTS.md, CLAUDE.md) of -agent-dir; =false ignores them")
-	fs.BoolVar(&c.agentPolicy.DirSkills, "agent-dir-skills", true, "Let the agent load the skills of -agent-dir; =false turns them off")
-	fs.BoolVar(&c.agentPolicy.OwnerConfig, "agent-owner-config", true, "Run the agent with your own configuration of its runtime (sign-in, skills, plugins, MCP servers, settings and permissions); =false uses an isolated read-only configuration in -data-dir")
+// agentConfig is an agent the node offers: what `agent add` saves for it.
+type agentConfig struct {
+	// Runtime runs the agent's tasks (codex, claude).
+	Runtime string `json:"runtime"`
+	// Name is the agent's service name in the network, a2a://<name>.
+	Name string `json:"name"`
+	// Dir is the directory the agent works in.
+	Dir string `json:"dir"`
+	// Command is the agent CLI, as an absolute path once checked.
+	Command string `json:"command,omitempty"`
+	// Description replaces the runtime's on the agent's card.
+	Description string `json:"description,omitempty"`
+	// What the agent may not take from Dir or the owner; it takes all when
+	// these are unset (agentPolicy).
+	IgnoreDirInstructions bool `json:"ignore_dir_instructions,omitempty"`
+	IgnoreDirSkills       bool `json:"ignore_dir_skills,omitempty"`
+	OwnConfig             bool `json:"own_config,omitempty"`
+	// Env locates the owner's configuration of the agent's runtime, such
+	// as CODEX_HOME, as `agent add` found it (agentOwnerEnv).
+	Env []string `json:"env,omitempty"`
+}
+
+func (a agentConfig) policy() agentPolicy {
+	return agentPolicy{DirInstructions: !a.IgnoreDirInstructions, DirSkills: !a.IgnoreDirSkills, OwnerConfig: !a.OwnConfig}
+}
+
+func (a *agentConfig) setPolicy(p agentPolicy) {
+	a.IgnoreDirInstructions, a.IgnoreDirSkills, a.OwnConfig = !p.DirInstructions, !p.DirSkills, !p.OwnerConfig
+}
+
+// agentFlags are the flags of the one agent a node run in the foreground
+// without `up` may offer. The returned function gives that agent after the
+// flags are parsed, or nil without -agent.
+func agentFlags(fs *flag.FlagSet) func() *agentConfig {
+	var a agentConfig
+	var policy agentPolicy
+	fs.StringVar(&a.Runtime, "agent", "", "Serve an A2A agent to the network, run by this runtime ("+strings.Join(runtimeNames(), ", ")+"); empty serves none")
+	fs.StringVar(&a.Dir, "agent-dir", "", "Directory the agent works in")
+	fs.StringVar(&a.Command, "agent-command", "", "Command of the agent CLI (default: the runtime's, e.g. codex)")
+	fs.StringVar(&a.Name, "agent-name", "", "Service name of the agent in the network (default: the runtime's)")
+	fs.StringVar(&a.Description, "agent-description", "", "What the agent does, as other agents see it on its card (default: the runtime's)")
+	fs.BoolVar(&policy.DirInstructions, "agent-dir-instructions", true, "Let the agent load the instruction files (AGENTS.md, CLAUDE.md) of -agent-dir; =false ignores them")
+	fs.BoolVar(&policy.DirSkills, "agent-dir-skills", true, "Let the agent load the skills of -agent-dir; =false turns them off")
+	fs.BoolVar(&policy.OwnerConfig, "agent-owner-config", true, "Run the agent with your own configuration of its runtime (sign-in, skills, plugins, MCP servers, settings and permissions); =false uses an isolated read-only configuration in -data-dir")
+	return func() *agentConfig {
+		if a.Runtime == "" {
+			return nil
+		}
+		a.setPolicy(policy)
+		if a.Name == "" {
+			if spec, ok := runtimes[a.Runtime]; ok {
+				a.Name = spec.defaultName
+			}
+		}
+		return &a
+	}
 }
 
 // defaultMachineName is the host name, without macOS's ".local".
@@ -215,50 +257,95 @@ func within(path, dir string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// newAgent checks the agent's configuration before the node starts: a
-// callable service needs a runtime that can run.
-func newAgent(c *config) (*agentService, error) {
-	spec, ok := runtimes[c.agent]
-	if !ok {
-		return nil, fmt.Errorf("-agent %q: unknown runtime (have %s)", c.agent, strings.Join(runtimeNames(), ", "))
+// hostedAgent is an agent the node serves, with where it serves it.
+type hostedAgent struct {
+	agentConfig
+	svc    *agentService
+	target string
+}
+
+// newAgents checks the agents' configuration before the node starts: each
+// callable service needs a runtime that can run and a name of its own.
+func newAgents(c *config) ([]*hostedAgent, error) {
+	if len(c.agents) == 0 {
+		return nil, nil
 	}
-	if c.agentDir == "" {
-		return nil, fmt.Errorf("-agent %s needs -agent-dir", c.agent)
+	// The runtimes read the owner's configuration from the node's own
+	// environment, which all its agents share.
+	env := map[string]string{}
+	ownerConfig := false
+	names := map[string]bool{}
+	for _, a := range c.agents {
+		if names[a.Name] {
+			return nil, fmt.Errorf("two agents are named %q; each agent needs a name of its own", a.Name)
+		}
+		names[a.Name] = true
+		ownerConfig = ownerConfig || a.policy().OwnerConfig
+		for _, kv := range a.Env {
+			name, value, _ := strings.Cut(kv, "=")
+			if prev, ok := env[name]; ok && prev != value {
+				return nil, fmt.Errorf("this node's agents disagree on %s (%s and %s); add them again with 'agentiscaled agent add' from the same shell", name, prev, value)
+			}
+			env[name] = value
+		}
 	}
-	dir, err := filepath.Abs(c.agentDir)
-	if err != nil {
-		return nil, err
-	}
-	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return nil, fmt.Errorf("-agent-dir %s is not a directory", dir)
-	}
-	if err := agentDirApart(dir, c.dataDir); err != nil {
-		return nil, err
-	}
-	for _, kv := range c.agentEnv {
-		name, value, _ := strings.Cut(kv, "=")
+	for name, value := range env {
 		if err := os.Setenv(name, value); err != nil {
 			return nil, err
 		}
 	}
-	if c.agentPolicy.OwnerConfig {
+	if ownerConfig {
 		if err := ownerEnv(context.Background(), c.dataDir); err != nil {
 			return nil, err
 		}
 	}
-	rt, err := spec.new(c.agentCommand, c.dataDir, c.agentPolicy)
+	var agents []*hostedAgent
+	for i := range c.agents {
+		svc, err := newAgent(&c.agents[i], c.dataDir)
+		if err != nil {
+			return nil, err
+		}
+		agents = append(agents, &hostedAgent{agentConfig: c.agents[i], svc: svc})
+	}
+	return agents, nil
+}
+
+// newAgent makes the service of one agent, whose runtime must be able to
+// run. The node's environment is set up already (newAgents).
+func newAgent(a *agentConfig, dataDir string) (*agentService, error) {
+	spec, ok := runtimes[a.Runtime]
+	if !ok {
+		return nil, fmt.Errorf("agent %s: unknown runtime %q (have %s)", a.Name, a.Runtime, strings.Join(runtimeNames(), ", "))
+	}
+	if a.Name == "" {
+		a.Name = spec.defaultName
+	}
+	if err := agentNameError(a.Name); err != nil {
+		return nil, err
+	}
+	if a.Dir == "" {
+		return nil, fmt.Errorf("agent %s has no directory to work in", a.Name)
+	}
+	dir, err := filepath.Abs(a.Dir)
 	if err != nil {
 		return nil, err
 	}
-	if c.agentName == "" {
-		c.agentName = spec.defaultName
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return nil, fmt.Errorf("agent %s: %s is not a directory", a.Name, dir)
 	}
-	c.agentDir = dir
-	s, err := newAgentService(dir, rt, c.dataDir)
+	if err := agentDirApart(dir, dataDir); err != nil {
+		return nil, err
+	}
+	rt, err := spec.new(a.Command, dataDir, a.policy())
+	if err != nil {
+		return nil, fmt.Errorf("agent %s: %w", a.Name, err)
+	}
+	a.Dir = dir
+	s, err := newAgentService(dir, rt, dataDir, a.Name)
 	if err != nil {
 		return nil, err
 	}
-	s.description = c.agentDescription
+	s.description = a.Description
 	return s, nil
 }
 
@@ -296,11 +383,9 @@ func run(ctx context.Context, c config) error {
 	}
 	defer store.Close()
 
-	var agent *agentService
-	if c.agent != "" {
-		if agent, err = newAgent(&c); err != nil {
-			return err
-		}
+	agents, err := newAgents(&c)
+	if err != nil {
+		return err
 	}
 
 	nodeConfig, err := meshnode.LoadNodeConfig(c.configFile)
@@ -376,21 +461,24 @@ func run(ctx context.Context, c config) error {
 			return fmt.Errorf("register services: %w", err)
 		}
 	}
-	var agentTarget string
-	if agent != nil {
-		target, err := serveAgent(nodeCtx, agent, c.agentName)
-		if err != nil {
-			return fmt.Errorf("start agent %s: %w", c.agentName, err)
+	if len(agents) > 0 {
+		var services []api.ServiceConfig
+		for _, a := range agents {
+			target, err := serveAgent(nodeCtx, a.svc, a.Name)
+			if err != nil {
+				return fmt.Errorf("start agent %s: %w", a.Name, err)
+			}
+			a.target = target
+			services = append(services, api.ServiceConfig{
+				Type:        api.ServiceTypeStringA2A,
+				Name:        a.Name,
+				Description: a.svc.card(a.Name).Description,
+				TargetURL:   target,
+			})
 		}
-		if err := node.RegisterStaticServices(ctx, []api.ServiceConfig{{
-			Type:        api.ServiceTypeStringA2A,
-			Name:        c.agentName,
-			Description: agent.card(c.agentName).Description,
-			TargetURL:   target,
-		}}); err != nil {
-			return fmt.Errorf("register agent %s: %w", c.agentName, err)
+		if err := node.RegisterStaticServices(ctx, services); err != nil {
+			return fmt.Errorf("register agents: %w", err)
 		}
-		agentTarget = target
 	}
 	node.StartRenewalLoop(nodeCtx, "", "", "", "")
 
@@ -399,16 +487,22 @@ func run(ctx context.Context, c config) error {
 		return fmt.Errorf("start node API: %w", err)
 	}
 	defer srv.Close()
-	if agent != nil {
-		localAPI, err := serveLocalAgent(nodeCtx, node, nodeConfig, c.agentName, agentTarget, c.dataDir)
+	if len(agents) > 0 {
+		targets := map[string]string{}
+		for _, a := range agents {
+			targets[a.Name] = a.target
+		}
+		localAPI, err := serveLocalAgent(nodeCtx, node, nodeConfig, targets, c.dataDir)
 		if err != nil {
 			return fmt.Errorf("start local agent API: %w", err)
 		}
 		defer localAPI.Close()
-		log.Printf("serving a2a://%s: %s agent in %s", c.agentName, c.agent, c.agentDir)
-		go warnDuplicateAgent(nodeCtx, node.Host.ID().String(), c.agentName, func(ctx context.Context) ([]*api.DiscoveredProvider, error) {
-			return node.DiscoverRemoteServices(ctx, api.ServiceType_SERVICE_TYPE_A2A, c.agentName)
-		})
+		for _, a := range agents {
+			log.Printf("serving a2a://%s: %s agent in %s", a.Name, a.Runtime, a.Dir)
+			go warnDuplicateAgent(nodeCtx, node.Host.ID().String(), a.Name, func(ctx context.Context) ([]*api.DiscoveredProvider, error) {
+				return node.DiscoverRemoteServices(ctx, api.ServiceType_SERVICE_TYPE_A2A, a.Name)
+			})
+		}
 	}
 	log.Printf("agentiscaled running")
 
@@ -439,7 +533,7 @@ func startNodeAPI(node *meshnode.AgentMeshNode, c config, token string) (*http.S
 	if err != nil {
 		return nil, err
 	}
-	if c.agent != "" && node.BoundSocketPath != socket {
+	if len(c.agents) > 0 && node.BoundSocketPath != socket {
 		server.Close()
 		return nil, fmt.Errorf("hosted agent requires the node API Unix socket at %s", socket)
 	}

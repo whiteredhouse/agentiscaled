@@ -80,7 +80,7 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 		return pid
 	}
 	pid := mint()
-	writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "error", Agent: "codex", AgentDir: t.TempDir(), AgentName: "helper", AgentOwnConfig: true, PeerID: pid, NetworkID: uuid.NewString(), MeshURL: mesh.srv.URL})
+	writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "error", Agents: []agentConfig{{Runtime: "codex", Dir: t.TempDir(), Name: "helper", OwnConfig: true}}, PeerID: pid, NetworkID: uuid.NewString(), MeshURL: mesh.srv.URL})
 	spec := runtimes["codex"]
 	old := spec
 	fix := newFixture()
@@ -96,7 +96,8 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 			t.Fatal(err)
 		}
 		c := saved.config(dir)
-		agent, err := newAgent(&c)
+		a := &c.agents[0]
+		agent, err := newAgent(a, dir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -113,11 +114,11 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 		if err := node.Start(ctx); err != nil {
 			t.Fatal(err)
 		}
-		targetURL, err := serveAgent(ctx, agent, c.agentName)
+		targetURL, err := serveAgent(ctx, agent, a.Name)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := node.RegisterService(ctx, &api.RegisterServiceRequest{Service: &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_A2A, Name: c.agentName}, Backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: targetURL}}); err != nil {
+		if err := node.RegisterService(ctx, &api.RegisterServiceRequest{Service: &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_A2A, Name: a.Name}, Backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: targetURL}}); err != nil {
 			t.Fatal(err)
 		}
 		sidecar, err := meshnode.StartSidecarServer(node, "", filepath.Join(dir, meshnode.DefaultSocketName), "", "", "", "")
@@ -176,7 +177,7 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 		if len(services) != 1 || services[0].Name != "helper" {
 			t.Fatalf("local services: %+v", services)
 		}
-		localAPI, err := serveLocalAgent(ctx, node, &meshnode.NodeConfigComplete{}, c.agentName, targetURL, dir)
+		localAPI, err := serveLocalAgent(ctx, node, &meshnode.NodeConfigComplete{}, map[string]string{a.Name: targetURL}, dir)
 		if err != nil {
 			t.Fatal(err)
 		}

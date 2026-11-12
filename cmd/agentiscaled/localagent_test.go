@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,6 +26,13 @@ import (
 )
 
 func localAgentFixture(t *testing.T, role *api.PolicyRole, expiry time.Time, cfg *meshnode.NodeConfigComplete) (*meshnode.AgentMeshNode, *fixture, *a2aTasks, string) {
+	t.Helper()
+	n, fixes, tasks, dir := localAgentsFixture(t, role, expiry, cfg, "helper")
+	return n, fixes["helper"], tasks, dir
+}
+
+// localAgentsFixture is a node that serves an agent under each of names.
+func localAgentsFixture(t *testing.T, role *api.PolicyRole, expiry time.Time, cfg *meshnode.NodeConfigComplete, names ...string) (*meshnode.AgentMeshNode, map[string]*fixture, *a2aTasks, string) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -57,22 +65,26 @@ func localAgentFixture(t *testing.T, role *api.PolicyRole, expiry time.Time, cfg
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { sidecar.Close() })
-	fix := newFixture()
-	agent, err := newAgentService(t.TempDir(), fix, dir)
-	if err != nil {
-		t.Fatal(err)
+	fixes, targets := map[string]*fixture{}, map[string]string{}
+	for _, name := range names {
+		fix := newFixture()
+		agent, err := newAgentService(t.TempDir(), fix, dir, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target, err := serveAgent(ctx, agent, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixes[name], targets[name] = fix, target
 	}
-	target, err := serveAgent(ctx, agent, "helper")
-	if err != nil {
-		t.Fatal(err)
-	}
-	server, err := serveLocalAgent(ctx, n, cfg, "helper", target, dir)
+	server, err := serveLocalAgent(ctx, n, cfg, targets, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { server.Close() })
 	tasks := &a2aTasks{http: &http.Client{}, base: "http://remote-must-not-be-used.invalid", local: socketClient(filepath.Join(dir, localAgentSocketName))}
-	return n, fix, tasks, dir
+	return n, fixes, tasks, dir
 }
 
 func localAgentRole() *api.PolicyRole {
@@ -110,6 +122,35 @@ func TestLocalTaskAdapter(t *testing.T) {
 		}
 	}
 
+}
+
+// A node with several agents serves each under its own name on the owner's
+// socket, and each task reaches the runtime of the agent it names.
+func TestLocalTasksReachEachAgent(t *testing.T) {
+	role := &api.PolicyRole{Name: api.RoleNode, AllowedServices: []string{"a2a://helper", "a2a://writer"}, AllowedTargets: []string{"*"}, AllowedPublish: []string{"a2a://helper", "a2a://writer"}}
+	_, fixes, tasks, _ := localAgentsFixture(t, role, time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{}, "helper", "writer")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	info, err := tasks.localInfo(ctx)
+	if err != nil || !slices.Equal(info.Services, []string{"helper", "writer"}) {
+		t.Fatalf("local info: %+v %v", info, err)
+	}
+	for _, name := range []string{"writer", "helper"} {
+		fixes[name].release <- "answer from " + name
+		target := taskTarget{Service: name}
+		_, sent, err := tasks.send(ctx, nil, sendTaskIn{taskTarget: target, Text: "work"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		<-fixes[name].prompts
+		_, got, err := tasks.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: target, TaskID: sent.TaskID}, WaitSeconds: 5})
+		if err != nil || got.Result != "answer from "+name {
+			t.Fatalf("task for %s: %+v %v", name, got, err)
+		}
+	}
+	if _, _, err := tasks.send(ctx, nil, sendTaskIn{taskTarget: taskTarget{Service: "other"}, Text: "work"}); err == nil || !strings.Contains(err.Error(), "does not host") {
+		t.Fatalf("task for an agent the node does not host: %v", err)
+	}
 }
 
 func TestLocalTaskAuthorization(t *testing.T) {
@@ -284,7 +325,7 @@ func TestLocalAgentTransportStreamsAndRejectsTCP(t *testing.T) {
 	if err := os.Symlink(filepath.Join(authDir, meshnode.DefaultSocketName), filepath.Join(dir, meshnode.DefaultSocketName)); err != nil {
 		t.Fatal(err)
 	}
-	server, err := serveLocalAgent(ctx, n, &meshnode.NodeConfigComplete{}, "helper", target, dir)
+	server, err := serveLocalAgent(ctx, n, &meshnode.NodeConfigComplete{}, map[string]string{"helper": target}, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +538,7 @@ func TestNodeAPIRequiresSocketForHostedAgent(t *testing.T) {
 			}
 			c := config{dataDir: dir, bindAddr: "127.0.0.1:0"}
 			if hosted {
-				c.agent = "codex"
+				c.agents = []agentConfig{{Runtime: "codex", Name: "codex"}}
 			}
 			server, err := startNodeAPI(n, c, "test-owner-token")
 			if server != nil {

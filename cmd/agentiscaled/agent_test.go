@@ -77,7 +77,7 @@ func newAgentHarness(t *testing.T, sender string) *agentHarness {
 func newAgentHarnessIn(t *testing.T, sender, dir string) *agentHarness {
 	t.Helper()
 	fix := newFixture()
-	svc, err := newAgentService(dir, fix, dir)
+	svc, err := newAgentService(dir, fix, dir, "helper")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -647,24 +647,26 @@ func TestCodexAPIKeyWithTheOwnersConfig(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	c := config{dataDir: t.TempDir(), agent: "codex", agentDir: repo, agentCommand: codex, agentPolicy: owner}
-	if err := checkAgent(&c, false); err != nil {
+	dataDir := t.TempDir()
+	c := agentConfig{Runtime: "codex", Dir: repo, Command: codex}
+	c.setPolicy(owner)
+	if err := checkAgent(&c, dataDir, false); err != nil {
 		t.Errorf("foreground: %v", err)
 	}
-	if err := checkAgent(&c, true); err == nil || !strings.Contains(err.Error(), "login --with-api-key") {
+	if err := checkAgent(&c, dataDir, true); err == nil || !strings.Contains(err.Error(), "login --with-api-key") {
 		t.Errorf("service without a stored sign-in: %v", err)
 	}
 	write(t, filepath.Join(home, ".codex", "auth.json"), "{}")
-	if err := checkAgent(&c, true); err != nil {
+	if err := checkAgent(&c, dataDir, true); err != nil {
 		t.Errorf("service with a stored sign-in: %v", err)
 	}
 	// The name is checked before anything is set up, by the registry's rule.
-	c.agentName = strings.Repeat("a", 64)
-	if err := checkAgent(&c, true); err == nil || !strings.Contains(err.Error(), "-agent-name") {
+	c.Name = strings.Repeat("a", 64)
+	if err := checkAgent(&c, dataDir, true); err == nil || !strings.Contains(err.Error(), "agent name") {
 		t.Errorf("a 64-character name: %v", err)
 	}
-	c.agentName = strings.Repeat("a", 63)
-	if err := checkAgent(&c, true); err != nil {
+	c.Name = strings.Repeat("a", 63)
+	if err := checkAgent(&c, dataDir, true); err != nil {
 		t.Errorf("a 63-character name: %v", err)
 	}
 }
@@ -678,5 +680,36 @@ func TestCardDescription(t *testing.T) {
 	s.description = "Answers questions about the code"
 	if got := s.card("codex"); got.Description != s.description || got.Name != "codex" {
 		t.Errorf("owner's description: %+v", got)
+	}
+}
+
+// Each agent of a node needs a name of its own, and the node's agents share
+// one environment, so they must agree on the owner's configuration.
+func TestNewAgentsRefusesClashes(t *testing.T) {
+	dir := t.TempDir()
+	same := config{dataDir: dir, agents: []agentConfig{{Runtime: "codex", Name: "helper", Dir: t.TempDir()}, {Runtime: "claude", Name: "helper", Dir: t.TempDir()}}}
+	if _, err := newAgents(&same); err == nil || !strings.Contains(err.Error(), "name of its own") {
+		t.Fatalf("two agents named helper: %v", err)
+	}
+	env := config{dataDir: dir, agents: []agentConfig{
+		{Runtime: "codex", Name: "one", Dir: t.TempDir(), Env: []string{"CODEX_HOME=/a"}},
+		{Runtime: "codex", Name: "two", Dir: t.TempDir(), Env: []string{"CODEX_HOME=/b"}},
+	}}
+	if _, err := newAgents(&env); err == nil || !strings.Contains(err.Error(), "disagree on CODEX_HOME") {
+		t.Fatalf("agents with different CODEX_HOME: %v", err)
+	}
+}
+
+// Each agent keeps its own state, such as its delivery record, in a
+// directory of its own under the node's.
+func TestAgentsKeepDeliveriesApart(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"helper", "writer"} {
+		if _, err := newAgentService(t.TempDir(), newFixture(), dir, name); err != nil {
+			t.Fatal(err)
+		}
+		if fi, err := os.Stat(filepath.Join(dir, "agents", name)); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+			t.Fatalf("state of %s: %v %v", name, fi, err)
+		}
 	}
 }

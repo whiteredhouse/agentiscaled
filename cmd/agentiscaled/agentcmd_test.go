@@ -89,8 +89,8 @@ func TestUpHasNoAgentFlags(t *testing.T) {
 	}
 }
 
-// `agent add` puts the first agent on this machine's node and a second one,
-// under another name, on a node of its own; `agent remove` takes each off.
+// `agent add` puts every agent on this machine's one node, and `agent
+// remove` takes each off it; no other node is set up.
 func TestAgentAddListRemove(t *testing.T) {
 	def := withDefaultDataDir(t)
 	mesh := newStandInMesh(t, "fine")
@@ -101,17 +101,11 @@ func TestAgentAddListRemove(t *testing.T) {
 	}
 	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "owner-codex"))
 	write(t, filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"), "{}")
-	extra := extraNodeDir("second")
-	for _, dir := range []string{def, extra} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		pid := seedNode(t, dir, mesh.srv.URL, mesh.key)
-		// The extra node is joined already, so the test signs nothing in.
-		if dir == def {
-			writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", Clients: "none", Foreground: true, PeerID: pid, MeshURL: mesh.srv.URL})
-		}
+	if err := os.MkdirAll(def, 0o700); err != nil {
+		t.Fatal(err)
 	}
+	pid := seedNode(t, def, mesh.srv.URL, mesh.key)
+	writeSettings(t, def, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", Clients: "none", Foreground: true, PeerID: pid, MeshURL: mesh.srv.URL})
 	ctx := context.Background()
 	work := t.TempDir()
 	var out bytes.Buffer
@@ -119,33 +113,26 @@ func TestAgentAddListRemove(t *testing.T) {
 		t.Fatalf("add: %v\n%s", err, &out)
 	}
 	s, _ := loadSettings(def)
-	if s.Agent != "codex" || s.AgentName != "helper" || s.AgentDir != work || !s.Foreground || s.Clients != "none" {
+	if len(s.Agents) != 1 || s.Agents[0].Runtime != "codex" || s.Agents[0].Name != "helper" || s.Agents[0].Dir != work || !s.Foreground || s.Clients != "none" || s.PeerID != pid {
 		t.Fatalf("first agent: %+v", s)
 	}
 	// Adding the same name again changes it in place.
 	if err := runAgent(ctx, []string{"add", "codex", "-y", "-name", "helper", "-dir", work, "-command", command, "-dir-skills=false"}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ = loadSettings(def); s.AgentName != "helper" || !s.AgentIgnoreDirSkills {
+	if s, _ = loadSettings(def); len(s.Agents) != 1 || !s.Agents[0].IgnoreDirSkills {
 		t.Fatalf("changed agent: %+v", s)
 	}
-	out.Reset()
-	if err := runAgent(ctx, []string{"add", "codex", "-y", "-name", "second", "-dir", t.TempDir(), "-command", command}, &out); err != nil {
+	// Another name joins it on the same node, which keeps its identity.
+	second := t.TempDir()
+	if err := runAgent(ctx, []string{"add", "codex", "-y", "-name", "second", "-dir", second, "-command", command}, &out); err != nil {
 		t.Fatalf("second add: %v\n%s", err, &out)
 	}
-	if !strings.Contains(out.String(), "a node of its own") {
-		t.Fatalf("second add output:\n%s", &out)
+	if s, _ = loadSettings(def); len(s.Agents) != 2 || s.Agents[0].Name != "helper" || s.Agents[1].Name != "second" || s.Agents[1].Dir != second || s.PeerID != pid {
+		t.Fatalf("second agent: %+v", s)
 	}
-	x, _ := loadSettings(extra)
-	if x.AgentName != "second" || x.Clients != "none" || !x.Foreground || !strings.HasSuffix(x.MachineName, "-second") {
-		t.Fatalf("second agent: %+v", x)
-	}
-	if s, _ = loadSettings(def); s.AgentName != "helper" {
-		t.Fatalf("second add changed the first node: %+v", s)
-	}
-	// A name in use on another node is refused.
-	if err := runAgent(ctx, []string{"add", "codex", "-y", "-name", "second", "-dir", work, "-command", command, "-data-dir", def}, io.Discard); err == nil {
-		t.Fatal("added a second agent to a node that offers one")
+	if extra, _ := filepath.Glob(filepath.Join(filepath.Dir(def), "agentiscale-*")); len(extra) != 0 {
+		t.Fatalf("add set up another node: %v", extra)
 	}
 
 	out.Reset()
@@ -158,20 +145,19 @@ func TestAgentAddListRemove(t *testing.T) {
 	if err := runAgent(ctx, []string{"remove"}, io.Discard); err == nil || !strings.Contains(err.Error(), "helper, second") {
 		t.Fatalf("remove without a name among two: %v", err)
 	}
-	out.Reset()
-	if err := runAgent(ctx, []string{"remove", "second"}, &out); err != nil {
+	if err := runAgent(ctx, []string{"remove", "third"}, io.Discard); err == nil || !strings.Contains(err.Error(), "no agent named") {
+		t.Fatalf("remove an unknown agent: %v", err)
+	}
+	if err := runAgent(ctx, []string{"remove", "second"}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if x, _ = loadSettings(extra); x.Agent != "" || x.PeerID == "" {
-		t.Fatalf("removed agent's node: %+v", x)
-	}
-	if !strings.Contains(out.String(), "console") {
-		t.Fatalf("remove output:\n%s", &out)
+	if s, _ = loadSettings(def); len(s.Agents) != 1 || s.Agents[0].Name != "helper" {
+		t.Fatalf("after removing second: %+v", s)
 	}
 	if err := runAgent(ctx, []string{"remove"}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ = loadSettings(def); s.Agent != "" || s.AgentName != "" || s.AgentIgnoreDirSkills || s.PeerID == "" {
+	if s, _ = loadSettings(def); len(s.Agents) != 0 || s.PeerID == "" {
 		t.Fatalf("after remove: %+v", s)
 	}
 	out.Reset()

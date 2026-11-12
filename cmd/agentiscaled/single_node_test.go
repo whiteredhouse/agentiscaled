@@ -26,7 +26,7 @@ func TestUpPreservesHostedAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(dir, "codex", "auth.json"), "{}")
-	want := settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "debug", Agent: "codex", AgentDir: t.TempDir(), AgentCommand: command, AgentName: "helper", AgentDescription: "Helps", AgentOwnConfig: true, AgentIgnoreDirSkills: true, AgentEnv: []string{"CODEX_HOME=/saved/config"}, PeerID: pid, NetworkID: "saved-network", MeshURL: mesh.srv.URL}
+	want := settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "debug", Agents: []agentConfig{{Runtime: "codex", Dir: t.TempDir(), Command: command, Name: "helper", Description: "Helps", OwnConfig: true, IgnoreDirSkills: true, Env: []string{"CODEX_HOME=/saved/config"}}}, PeerID: pid, NetworkID: "saved-network", MeshURL: mesh.srv.URL}
 	writeSettings(t, dir, want)
 	want.Clients, want.Foreground = "none", true // the choices this up is given
 	var out bytes.Buffer
@@ -102,7 +102,7 @@ func TestWizardHostsAgentOnSelectedNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.PeerID != pid || got.Agent != "codex" || got.AgentDir != workspace || got.AgentName != "codex" || got.AgentOwnConfig {
+	if got.PeerID != pid || len(got.Agents) != 1 || got.Agents[0].Runtime != "codex" || got.Agents[0].Dir != workspace || got.Agents[0].Name != "codex" || got.Agents[0].OwnConfig {
 		t.Fatalf("selected node settings: %+v", got)
 	}
 	legacy, err := os.ReadFile(filepath.Join(oldDir, settingsFile))
@@ -127,7 +127,7 @@ func TestUpPreservesDefaultOwnerConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(os.Getenv("HOME"), ".codex", "auth.json"), "{}")
-	original := settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", Agent: "codex", AgentDir: t.TempDir(), AgentCommand: command, AgentName: "helper", PeerID: pid, MeshURL: mesh.srv.URL}
+	original := settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", Agents: []agentConfig{{Runtime: "codex", Dir: t.TempDir(), Command: command, Name: "helper"}}, PeerID: pid, MeshURL: mesh.srv.URL}
 	writeSettings(t, dir, original)
 	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "different-owner"))
 	if err := runUp(context.Background(), []string{"-y", "-foreground", "-clients", "none"}, io.Discard); err != nil {
@@ -137,22 +137,22 @@ func TestUpPreservesDefaultOwnerConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.AgentEnv) != 0 {
-		t.Fatalf("captured another owner configuration: %v", got.AgentEnv)
+	if len(got.Agents) != 1 || len(got.Agents[0].Env) != 0 {
+		t.Fatalf("captured another owner configuration: %+v", got.Agents)
 	}
 	// up leaves the agent to `agent add` and `agent remove`.
 	if err := runUp(context.Background(), []string{"-y", "-foreground", "-clients", "none", "-agent="}, io.Discard); err == nil || !strings.Contains(err.Error(), "not defined") {
 		t.Fatalf("up took -agent: %v", err)
 	}
 	// Explicit values still override the saved values, including false and empty.
-	if err := bringUp(context.Background(), []string{"-y", "-foreground", "-clients", "none", "-agent=", "-bind-addr=", "-agent-dir-instructions=false"}, io.Discard, upOptions{agentFlags: true}); err != nil {
+	if err := runUp(context.Background(), []string{"-y", "-foreground", "-clients", "none", "-bind-addr="}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	got, err = loadSettings(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Agent != "" || got.BindAddr != "" || !got.AgentIgnoreDirInstructions || got.AgentDir != original.AgentDir {
+	if got.BindAddr != "" || !reflect.DeepEqual(got.Agents, original.Agents) {
 		t.Fatalf("explicit overrides: %+v", got)
 	}
 }
