@@ -166,9 +166,10 @@ unmodified Claude Code CLI signed in through its own `claude auth login`. The no
 never reads or stores that sign-in. With your configuration (the default) it runs as
 your own Claude Code does: your sign-in, settings, permissions, skills, plugins and
 MCP servers. Nothing can prompt for approval, so anything that would prompt is
-denied. With `-owner-config=false` it uses its own `CLAUDE_CONFIG_DIR`
+denied (`--permission-prompts none`, or the print mode's own denial on a Claude Code
+too old for that flag). With `-owner-config=false` it uses its own `CLAUDE_CONFIG_DIR`
 (`<data-dir>/claude`, signed in with `CLAUDE_CONFIG_DIR=<data-dir>/claude claude auth login`)
-and runs `--restricted` with only the Read, Grep and Glob tools, confined to the
+and runs `--restricted` (a Claude Code without it is refused: update it with `claude update`) with only the Read, Grep and Glob tools, confined to the
 agent's directory, no MCP servers, and none of your credentials from the environment
 (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`). `-dir-instructions=false`
 stops `CLAUDE.md` files from loading. `-dir-skills=false` turns off every

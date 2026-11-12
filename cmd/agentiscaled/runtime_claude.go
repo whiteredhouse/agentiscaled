@@ -31,6 +31,10 @@ type claudeRuntime struct {
 	policy agentPolicy
 	// def, when set, is the agent's definition (-definition).
 	def *agentDefinition
+	// noPermissionPrompts is set for a Claude Code without
+	// --permission-prompts, whose print mode denies what would prompt
+	// without being told.
+	noPermissionPrompts bool
 	// extra goes before the prompt; tests use it.
 	extra []string
 }
@@ -53,7 +57,21 @@ func newClaudeRuntime(command, dataDir string, policy agentPolicy) (runtime, err
 	if err != nil {
 		return nil, fmt.Errorf("%s --version: %w", path, err)
 	}
-	log.Printf("claude runtime uses %s", strings.TrimSpace(string(out)))
+	version := strings.TrimSpace(string(out))
+	log.Printf("claude runtime uses %s", version)
+	help, err := exec.Command(path, "--help").Output()
+	if err != nil {
+		return nil, fmt.Errorf("%s --help: %w", path, err)
+	}
+	// The isolated configuration depends on --restricted; no run goes
+	// without it.
+	if !policy.OwnerConfig && !bytes.Contains(help, []byte("--restricted")) {
+		return nil, fmt.Errorf("Claude Code %s has no --restricted, which -owner-config=false needs: update it with\n  %s update", version, path)
+	}
+	noPrompts := !bytes.Contains(help, []byte("--permission-prompts"))
+	if noPrompts {
+		log.Printf("claude runtime: %s has no --permission-prompts; its print mode denies what would prompt", version)
+	}
 	config, err := claudeConfigDir(dataDir, policy)
 	if err != nil {
 		return nil, err
@@ -70,7 +88,7 @@ func newClaudeRuntime(command, dataDir string, policy agentPolicy) (runtime, err
 			return nil, fmt.Errorf("the agent's Claude Code is not signed in. With -agent-owner-config=false it signs in apart from your own Claude Code, so that a remote request cannot reach your Claude Code skills, plugins or settings: run\n  CLAUDE_CONFIG_DIR=%s %s auth login", config, path)
 		}
 	}
-	return &claudeRuntime{command: path, config: config, policy: policy}, nil
+	return &claudeRuntime{command: path, config: config, policy: policy, noPermissionPrompts: noPrompts}, nil
 }
 
 // claudeConfigDir is the run's CLAUDE_CONFIG_DIR: empty with
@@ -175,8 +193,10 @@ func (r *claudeRuntime) Describe(card *a2a.AgentCard) {
 func (r *claudeRuntime) Run(ctx context.Context, dir string, req taskRequest) (string, error) {
 	args := []string{"-p",
 		"--output-format", "json",
-		"--no-session-persistence",
-		"--permission-prompts", "none"}
+		"--no-session-persistence"}
+	if !r.noPermissionPrompts {
+		args = append(args, "--permission-prompts", "none")
+	}
 	var allowed []string
 	if !r.policy.OwnerConfig {
 		allowed = []string{"Read", "Grep", "Glob"}

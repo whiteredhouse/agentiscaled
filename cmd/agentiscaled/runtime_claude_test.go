@@ -112,3 +112,51 @@ func TestClaudeRuntimeFailure(t *testing.T) {
 		t.Fatalf("err = %v, want the result's failure", err)
 	}
 }
+
+// fakeClaudeCLI writes a claude that signs in, prints help, and records the
+// arguments of a run.
+func fakeClaudeCLI(t *testing.T, help string) (command, record string) {
+	t.Helper()
+	dir := t.TempDir()
+	record = filepath.Join(dir, "args")
+	command = filepath.Join(dir, "claude")
+	script := "#!/bin/sh\ncase \"$1\" in\n--version) echo '9.9.9 (Claude Code)';;\n--help) printf '%s\\n' '" + help + "';;\n" +
+		"auth) echo '{\"loggedIn\":true}';;\n*) printf '%s\\n' \"$@\" > " + record + "; cat > /dev/null; echo '{\"result\":\"ok\",\"is_error\":false}';;\nesac\n"
+	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return command, record
+}
+
+// A Claude Code without --permission-prompts runs without it; the
+// isolated configuration needs --restricted.
+func TestClaudeRuntimeOlderCLI(t *testing.T) {
+	owner := agentPolicy{OwnerConfig: true, DirInstructions: true, DirSkills: true}
+	command, record := fakeClaudeCLI(t, "  --restricted  --tools")
+	rt, err := newClaudeRuntime(command, t.TempDir(), owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Run(context.Background(), t.TempDir(), taskRequest{Sender: testSender, Text: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if args := readRecord(t, record); strings.Contains(args, "--permission-prompts") || !strings.Contains(args, "-p\n") {
+		t.Errorf("arguments for a CLI without --permission-prompts: %q", args)
+	}
+
+	command, record = fakeClaudeCLI(t, "  --restricted  --permission-prompts <target>")
+	if rt, err = newClaudeRuntime(command, t.TempDir(), owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Run(context.Background(), t.TempDir(), taskRequest{Sender: testSender, Text: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if args := readRecord(t, record); !strings.Contains(args, "--permission-prompts\nnone\n") {
+		t.Errorf("arguments for a current CLI: %q", args)
+	}
+
+	command, _ = fakeClaudeCLI(t, "  --permission-prompts <target>")
+	if _, err := newClaudeRuntime(command, t.TempDir(), agentPolicy{}); err == nil || !strings.Contains(err.Error(), "update") {
+		t.Errorf("isolated runtime without --restricted: %v", err)
+	}
+}
