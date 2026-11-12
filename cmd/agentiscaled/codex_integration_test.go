@@ -158,10 +158,14 @@ func codexOnHostileCheckout(t *testing.T, command string, policy agentPolicy, wr
 	}
 
 	request := "Review main.go using $evil-agents, $evil-codex, $evil-group, $evil-linked, $evil-global and $evil-codex-home"
-	out, err := codex.Run(context.Background(), repo, taskRequest{Sender: testSender, Text: request})
+	var steps []string
+	out, err := codex.Run(context.Background(), repo, taskRequest{Sender: testSender, Text: request, Progress: func(s string) { steps = append(steps, s) }})
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The steps depend on how this Codex reports its tools; they are
+	// shown, not checked.
+	t.Logf("steps reported: %q", steps)
 	if out.Text != "No findings" {
 		t.Fatalf("answer %q", out.Text)
 	}

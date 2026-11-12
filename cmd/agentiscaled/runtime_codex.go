@@ -315,17 +315,29 @@ func (r *codexRuntime) Run(ctx context.Context, dir string, req taskRequest) (tu
 		cmd.Env = codexEnv(os.Environ(), r.home)
 	}
 	cmd.Stdin = strings.NewReader(taskPrompt(req))
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	// Its events stream on stdout: each step goes to req.Progress as it
+	// happens, and thread.started names the session.
+	var thread string
+	stdout := &lineWriter{line: func(line []byte) {
+		if t := codexThread(line); t != "" && thread == "" {
+			thread = t
+		} else if p := codexProgress(line); p != "" {
+			req.progress(p)
+		}
+	}}
+	var stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = stdout, &stderr
 	// Codex starts helpers; end the whole process group with it.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 5 * time.Second
-	if err := cmd.Run(); err != nil {
+	runErr := cmd.Run()
+	stdout.Close()
+	if runErr != nil {
 		if ctx.Err() != nil {
 			return turnResult{}, ctx.Err()
 		}
-		return turnResult{}, fmt.Errorf("codex exec: %v: %s", err, failureLines(stderr.String(), 3))
+		return turnResult{}, fmt.Errorf("codex exec: %v: %s", runErr, failureLines(stderr.String(), 3))
 	}
 	b, err := os.ReadFile(last)
 	if err != nil {
@@ -333,7 +345,7 @@ func (r *codexRuntime) Run(ctx context.Context, dir string, req taskRequest) (tu
 	}
 	session := req.Session
 	if session == "" {
-		session = codexThread(stdout.Bytes())
+		session = thread
 	}
 	return parseTurn(string(b), session)
 }

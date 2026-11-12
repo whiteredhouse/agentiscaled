@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -195,9 +196,12 @@ func (r *claudeRuntime) Describe(card *a2a.AgentCard) {
 //     like any other, whose id the node chooses (--session-id). The run
 //     ends with an answer in turnSchema, and the caller's answer to a
 //     question resumes the session (--resume).
+//   - Its events stream (--output-format stream-json): each step it takes
+//     goes to req.Progress as it happens, and the last event is the
+//     result.
 func (r *claudeRuntime) Run(ctx context.Context, dir string, req taskRequest) (turnResult, error) {
 	args := []string{"-p",
-		"--output-format", "json",
+		"--output-format", "stream-json", "--verbose",
 		"--json-schema", turnSchema}
 	session := req.Session
 	if session == "" {
@@ -252,23 +256,44 @@ func (r *claudeRuntime) Run(ctx context.Context, dir string, req taskRequest) (t
 		cmd.Env = append(cmd.Env, "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1")
 	}
 	cmd.Stdin = strings.NewReader(taskPrompt(req))
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	// The result, a failure included, is the last event on stdout,
+	// whatever the exit status.
+	var resultEvent []byte
+	stdout := &lineWriter{line: func(line []byte) {
+		var ev struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(line, &ev) != nil {
+			return
+		}
+		if ev.Type == "result" {
+			resultEvent = bytes.Clone(line)
+		} else if p := claudeProgress(line); p != "" {
+			req.progress(p)
+		}
+	}}
+	var stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = stdout, &stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 5 * time.Second
 	runErr := cmd.Run()
+	stdout.Close()
 	if ctx.Err() != nil {
 		return turnResult{}, ctx.Err()
 	}
-	// The result, a failure included, is in the JSON on stdout, whatever
-	// the exit status.
 	var result struct {
 		Result     string      `json:"result"`
 		IsError    bool        `json:"is_error"`
 		Structured *turnAnswer `json:"structured_output"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+	if resultEvent == nil {
+		if runErr != nil {
+			return turnResult{}, fmt.Errorf("claude -p: %v: %s", runErr, failureLines(stderr.String(), 3))
+		}
+		return turnResult{}, errors.New("claude -p: no result")
+	}
+	if err := json.Unmarshal(resultEvent, &result); err != nil {
 		if runErr != nil {
 			return turnResult{}, fmt.Errorf("claude -p: %v: %s", runErr, failureLines(stderr.String(), 3))
 		}

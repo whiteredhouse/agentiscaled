@@ -18,7 +18,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const a2aInstructions = `agentiscale: use list_local_services (type "a2a") to find agents hosted on this node; read their card with get_agent_card and call send_task with their name as service, omitting peer_id in both calls. Use discover_remote_services (type "a2a") to find agents on other nodes; inspect their current card with get_agent_card using peer_id and srv_name as service, then call send_task with the same target. Follow tasks with get_task until terminal (completed, rejected, cancelled, timeout or failed); cancel_task stops them. A task in state input_required waits for your answer to the agent's question (its message): answer with send_task, giving the task's task_id and your answer as text, then follow the task again. Use the same target for send/get/cancel. Do not use the a2a CLI or hand-written requests. An offline remote node cannot be reached and nothing is queued.`
+const a2aInstructions = `agentiscale: use list_local_services (type "a2a") to find agents hosted on this node; read their card with get_agent_card and call send_task with their name as service, omitting peer_id in both calls. Use discover_remote_services (type "a2a") to find agents on other nodes; inspect their current card with get_agent_card using peer_id and srv_name as service, then call send_task with the same target. Follow tasks with get_task until terminal (completed, rejected, cancelled, timeout or failed); while a task is working, its message is the agent's latest step. cancel_task stops them. A task in state input_required waits for your answer to the agent's question (its message): answer with send_task, giving the task's task_id and your answer as text, then follow the task again. Use the same target for send/get/cancel. Do not use the a2a CLI or hand-written requests. An offline remote node cannot be reached and nothing is queued.`
 
 // maxWait bounds how long get_task holds one tool call, below the timeouts
 // MCP clients put on a call.
@@ -84,7 +84,7 @@ func addA2ATools(server *mcp.Server, t *a2aTasks) {
 	}, t.send)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_task",
-		Description: "Get the state and result of a task sent with send_task, optionally waiting for it to end or to ask you a question (state input_required, the question in message).",
+		Description: "Get the state and result of a task sent with send_task, optionally waiting for it to end or to ask you a question (state input_required, the question in message). While the task is working, message is the agent's latest step, such as a command it runs or a file it changes.",
 	}, t.get)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "cancel_task",
@@ -227,20 +227,40 @@ func (t *a2aTasks) send(ctx context.Context, _ *mcp.CallToolRequest, in sendTask
 	return toolResult(describeTask(task))
 }
 
-func (t *a2aTasks) get(ctx context.Context, _ *mcp.CallToolRequest, in getTaskIn) (*mcp.CallToolResult, taskOut, error) {
+// get reads a task, waiting as asked. While it waits, each new step of
+// the agent goes to the client as a progress notification, for clients that
+// asked for them (a progress token) and show them.
+func (t *a2aTasks) get(ctx context.Context, req *mcp.CallToolRequest, in getTaskIn) (*mcp.CallToolResult, taskOut, error) {
 	c, err := t.client(ctx, in.taskTarget)
 	if err != nil {
 		return nil, taskOut{}, err
 	}
+	var notify func(string)
+	if req != nil && req.Session != nil && req.Params != nil {
+		if token := req.Params.GetProgressToken(); token != nil {
+			n := 0
+			notify = func(step string) {
+				n++
+				_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{ProgressToken: token, Progress: float64(n), Message: step})
+			}
+		}
+	}
 	wait := min(time.Duration(max(in.WaitSeconds, 0))*time.Second, maxWait)
 	deadline := time.Now().Add(wait)
+	// The task's history holds every step; only its status is read.
+	none := 0
+	var step string
 	for {
-		task, err := c.GetTask(ctx, &a2a.GetTaskRequest{ID: a2a.TaskID(in.TaskID)})
+		task, err := c.GetTask(ctx, &a2a.GetTaskRequest{ID: a2a.TaskID(in.TaskID), HistoryLength: &none})
 		if err != nil {
 			return nil, taskOut{}, unreachable(in.taskTarget, err)
 		}
 		if task.Status.State.Terminal() || task.Status.State == a2a.TaskStateInputRequired || !time.Now().Before(deadline) {
 			return toolResult(describeTask(task))
+		}
+		if out := describeTask(task); notify != nil && out.Message != "" && out.Message != step {
+			step = out.Message
+			notify(step)
 		}
 		select {
 		case <-ctx.Done():

@@ -213,7 +213,12 @@ in that list are not built-in and are left out. A Codex agent's `model` and
 your configuration read-only; other sandbox modes are ignored.
 
 Each task starts a fresh session with none of the caller's conversation, so it
-suits a task you can describe in one message. When the agent cannot go on
+suits a task you can describe in one message. While it works, the task's
+message is the agent's latest step, such as a command it runs or a file it
+changes (at most one every 3 seconds, cut to 200 characters), so the caller
+sees what it is doing when it follows the task with `get_task`; a client that
+shows MCP progress notifications also gets each step while `get_task` waits.
+The steps can name commands and paths on the agent's machine. When the agent cannot go on
 without something only the caller knows, it asks one question: the task waits
 in state `input_required` with the question as its message, and the caller
 answers with `send_task` giving the task's `task_id`. The agent then carries on
