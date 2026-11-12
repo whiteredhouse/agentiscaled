@@ -50,7 +50,7 @@ func TestLoadDefinition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Runtime != "claude" || d.Name != "security-reviewer" || d.Description != "Use for security review: auth, input handling and secrets." ||
+	if d.WrittenFor != "claude" || d.Name != "security-reviewer" || d.Description != "Use for security review: auth, input handling and secrets." ||
 		d.Model != "sonnet" || !slices.Equal(d.Tools, []string{"Read", "Grep", "Bash", "mcp__docs__search"}) ||
 		d.Instructions != "# Security reviewer\n\nYou review code for \"security\" bugs." {
 		t.Fatalf("claude definition: %+v", d)
@@ -59,7 +59,7 @@ func TestLoadDefinition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Runtime != "codex" || d.Name != "docs-writer" || d.Model != "gpt-5-codex" || d.ReasoningEffort != "high" || !d.ReadOnly ||
+	if d.WrittenFor != "codex" || d.Name != "docs-writer" || d.Model != "gpt-5-codex" || d.ReasoningEffort != "high" || !d.ReadOnly ||
 		d.Instructions != "# Docs writer\n\nYou write docs. Quote \"exactly\"." {
 		t.Fatalf("codex definition: %+v", d)
 	}
@@ -100,7 +100,7 @@ func TestDefinitionRoot(t *testing.T) {
 // A definition's tools only narrow what the policy allows.
 func TestClaudeTools(t *testing.T) {
 	readOnly := []string{"Read", "Grep", "Glob"}
-	claudeDef := &agentDefinition{Runtime: "claude", Tools: []string{"Read", "Bash", "mcp__docs__search"}}
+	claudeDef := &agentDefinition{WrittenFor: "claude", Tools: []string{"Read", "Bash", "mcp__docs__search"}}
 	for _, tc := range []struct {
 		d       *agentDefinition
 		allowed []string
@@ -111,9 +111,9 @@ func TestClaudeTools(t *testing.T) {
 		{nil, readOnly, "Read,Grep,Glob", true},
 		{claudeDef, nil, "Read,Bash", true},
 		{claudeDef, readOnly, "Read", true},
-		{&agentDefinition{Runtime: "claude", Tools: []string{"Bash"}}, readOnly, "", true},
-		{&agentDefinition{Runtime: "codex"}, readOnly, "Read,Grep,Glob", true},
-		{&agentDefinition{Runtime: "claude"}, nil, "", false},
+		{&agentDefinition{WrittenFor: "claude", Tools: []string{"Bash"}}, readOnly, "", true},
+		{&agentDefinition{WrittenFor: "codex"}, readOnly, "Read,Grep,Glob", true},
+		{&agentDefinition{WrittenFor: "claude"}, nil, "", false},
 	} {
 		got, ok := claudeTools(tc.d, tc.allowed)
 		if got != tc.want || ok != tc.ok {
@@ -226,8 +226,8 @@ func TestTOMLStringRoundTrips(t *testing.T) {
 	}
 }
 
-// `agent add -definition` takes the runtime, name, description and
-// directory from the definition.
+// `agent add -definition` takes the name, description and directory from
+// the definition, never the runtime.
 func TestAgentAddDefinition(t *testing.T) {
 	def := withDefaultDataDir(t)
 	mesh := newStandInMesh(t, "fine")
@@ -245,9 +245,19 @@ func TestAgentAddDefinition(t *testing.T) {
 	writeSettings(t, def, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", Clients: "none", Foreground: true, PeerID: pid, MeshURL: mesh.srv.URL})
 	project := t.TempDir()
 	path := writeDefinition(t, project, ".codex/agents/docs-writer.toml", codexAgentFile)
+	old := interactive
+	interactive = func() bool { return false }
+	t.Cleanup(func() { interactive = old })
+	// The file's format does not pick the runtime.
+	if err := runAgent(context.Background(), []string{"add", "-y", "-definition", path, "-command", command}, io.Discard); err == nil || !strings.Contains(err.Error(), "runtime") {
+		t.Fatalf("add without a runtime: %v", err)
+	}
 	var out bytes.Buffer
-	if err := runAgent(context.Background(), []string{"add", "-y", "-definition", path, "-command", command}, &out); err != nil {
+	if err := runAgent(context.Background(), []string{"add", "codex", "-y", "-definition", path, "-command", command}, &out); err != nil {
 		t.Fatalf("add: %v\n%s", err, &out)
+	}
+	if strings.Contains(out.String(), "ignores") {
+		t.Errorf("a Codex agent file on codex warned:\n%s", &out)
 	}
 	s, _ := loadSettings(def)
 	if len(s.Agents) != 1 {
@@ -266,7 +276,16 @@ func TestAgentAddDefinition(t *testing.T) {
 	if a := s.Agents[1]; a.Name != "writer" || a.Description != "Writes." || a.Dir != other || a.Definition != path {
 		t.Fatalf("agent with flags: %+v", a)
 	}
-	if err := runAgent(context.Background(), []string{"add", "-y", "-definition", filepath.Join(project, "missing.md")}, io.Discard); err == nil {
+	// A Claude Code agent file on codex says what codex ignores.
+	sec := writeDefinition(t, project, ".claude/agents/security-reviewer.md", claudeAgentFile)
+	out.Reset()
+	if err := runAgent(context.Background(), []string{"add", "codex", "-y", "-definition", sec, "-command", command}, &out); err != nil {
+		t.Fatalf("add a Claude Code agent file: %v\n%s", err, &out)
+	}
+	if !strings.Contains(out.String(), "security-reviewer.md is a Claude Code agent file: codex ignores its model, tools") {
+		t.Errorf("no warning:\n%s", &out)
+	}
+	if err := runAgent(context.Background(), []string{"add", "codex", "-y", "-definition", filepath.Join(project, "missing.md")}, io.Discard); err == nil {
 		t.Fatal("add with a missing definition")
 	}
 }

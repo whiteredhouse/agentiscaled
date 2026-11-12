@@ -182,21 +182,21 @@ that any client on any of your machines can call it, Codex calling a Claude Code
 subagent included:
 
 ```sh
-agentiscaled agent add -definition ~/work/my-project/.claude/agents/security-reviewer.md
+agentiscaled agent add codex -definition ~/work/my-project/.claude/agents/security-reviewer.md
 ```
 
-`-definition` reads the file's name, description and instructions. Without other
-flags the agent takes its runtime from the file's format (`claude` for `.md`,
-`codex` for `.toml`), its name and card description from the file, and works in
-the project the file is in (`~/work/my-project`); a runtime argument, `-name`,
-`-description` and `-dir` override each. Either runtime runs either format.
-Each task then runs with the file's instructions added to the system prompt:
+`-definition` reads the file's name, description and instructions. You pick the
+runtime, as with any agent: either runtime runs either format. Without other
+flags the agent takes its name and card description from the file and works in
+the project the file is in (`~/work/my-project`); `-name`, `-description` and
+`-dir` override each. Each task then runs with the file's instructions added to the system prompt:
 `--append-system-prompt` for `claude -p`, `-c developer_instructions=…` for
 `codex exec`. The node reads the file when it starts, so restart it (or run
 `agent add` again) after you change the file.
 
 The rest of the file applies only when the agent's runtime is the one it was
-written for, and never widens the agent's permissions. A Claude Code agent's
+written for, and never widens the agent's permissions; on the other runtime
+`agent add` says which settings it ignores. A Claude Code agent's
 `model` and `disallowedTools` apply, and its `tools` narrows the built-in tools
 (to those of Read, Grep and Glob it names, with `-owner-config=false`); MCP tools
 in that list are not built-in and are left out. A Codex agent's `model` and

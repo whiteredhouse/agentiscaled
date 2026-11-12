@@ -190,7 +190,7 @@ func (r *claudeRuntime) Run(ctx context.Context, dir string, req taskRequest) (s
 	}
 	if d := r.def; d != nil {
 		args = append(args, "--append-system-prompt", d.Instructions)
-		if d.Runtime == "claude" {
+		if d.WrittenFor == "claude" {
 			if len(d.DisallowedTools) > 0 {
 				args = append(args, "--disallowedTools", strings.Join(d.DisallowedTools, ","))
 			}

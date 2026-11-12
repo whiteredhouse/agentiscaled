@@ -263,7 +263,7 @@ func (r *codexRuntime) Run(ctx context.Context, dir string, req taskRequest) (st
 	}
 	if d := r.def; d != nil {
 		args = append(args, "-c", "developer_instructions="+tomlString(d.Instructions))
-		if d.Runtime == "codex" {
+		if d.WrittenFor == "codex" {
 			if d.Model != "" {
 				args = append(args, "-m", d.Model)
 			}

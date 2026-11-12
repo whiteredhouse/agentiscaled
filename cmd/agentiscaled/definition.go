@@ -26,8 +26,9 @@ const maxDefinitionSize = 96 << 10
 // agent's runtime is the one the file was written for, and only ever narrow
 // what the agent's policy allows.
 type agentDefinition struct {
-	// Runtime is the runtime the file was written for: claude or codex.
-	Runtime      string
+	// WrittenFor is the runtime the file was written for, by its format:
+	// claude or codex. It does not pick the agent's runtime.
+	WrittenFor   string
 	Name         string
 	Description  string
 	Instructions string
@@ -101,7 +102,7 @@ func parseClaudeDefinition(b []byte) (*agentDefinition, error) {
 	if err := yaml.Unmarshal(front, &m); err != nil {
 		return nil, fmt.Errorf("front matter: %w", err)
 	}
-	d := &agentDefinition{Runtime: "claude", Name: m.Name, Description: m.Description,
+	d := &agentDefinition{WrittenFor: "claude", Name: m.Name, Description: m.Description,
 		Instructions: strings.TrimSpace(string(body)), Model: m.Model,
 		Tools: m.Tools, DisallowedTools: m.DisallowedTools}
 	if d.Model == "inherit" {
@@ -150,7 +151,7 @@ func parseCodexDefinition(b []byte) (*agentDefinition, error) {
 	if _, err := toml.Decode(string(b), &m); err != nil {
 		return nil, err
 	}
-	return &agentDefinition{Runtime: "codex", Name: m.Name, Description: m.Description,
+	return &agentDefinition{WrittenFor: "codex", Name: m.Name, Description: m.Description,
 		Instructions: strings.TrimSpace(m.DeveloperInstructions), Model: m.Model,
 		ReasoningEffort: m.ModelReasoningEffort, ReadOnly: m.SandboxMode == "read-only"}, nil
 }
@@ -176,7 +177,7 @@ func definitionRoot(path string) string {
 // is set. It is empty, with ok false, when nothing narrows the run.
 func claudeTools(d *agentDefinition, allowed []string) (tools string, ok bool) {
 	var want []string
-	if d != nil && d.Runtime == "claude" && d.Tools != nil {
+	if d != nil && d.WrittenFor == "claude" && d.Tools != nil {
 		for _, t := range d.Tools {
 			// MCP tools are not built-in tools; --tools cannot name them.
 			if !strings.HasPrefix(t, "mcp__") {
@@ -214,4 +215,29 @@ func applyDefinition(rt runtime, path string) error {
 	}
 	dr.setDefinition(d)
 	return nil
+}
+
+// ignoredOn names the settings of d that runtime rt ignores because d was
+// written for another runtime; empty when it ignores none.
+func (d *agentDefinition) ignoredOn(rt string) []string {
+	if d.WrittenFor == rt {
+		return nil
+	}
+	var names []string
+	if d.Model != "" {
+		names = append(names, "model")
+	}
+	if d.Tools != nil {
+		names = append(names, "tools")
+	}
+	if len(d.DisallowedTools) > 0 {
+		names = append(names, "disallowedTools")
+	}
+	if d.ReasoningEffort != "" {
+		names = append(names, "model_reasoning_effort")
+	}
+	if d.ReadOnly {
+		names = append(names, "sandbox_mode")
+	}
+	return names
 }
