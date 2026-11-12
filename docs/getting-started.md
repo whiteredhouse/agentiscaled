@@ -226,8 +226,8 @@ stops the one on this machine.
 
 For 30 days you can sign in to the console and choose **Restore account**. Your
 network comes back with its name and history, but its machines were removed: run
-`agentiscaled reset` on each to join it again. Until you restore it, `agentiscaled up`
-can't add a machine and says so.
+`agentiscaled reset` and then `agentiscaled up` on each to join it again. Until you
+restore it, `agentiscaled up` can't add a machine and says so.
 
 After 30 days, agentiscale deletes your account and your network's data for good, and
 signing in again starts a new, empty account. Uninstall agentiscaled on your machines,
