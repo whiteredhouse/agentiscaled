@@ -451,7 +451,13 @@ def exercise(payloads, root, report, installation):
             "-auth-audience", "ci-control", env=env, timeout=150)
         if running(supervisor, new_image, data, new[0], report, since_us, previous) != old_peer:
             raise ValueError("product up after down changed the enrolled peer identity")
-        if json.loads(settings.read_text()) != saved_settings:
+        # Since 0.4.0, up records the -clients choice it is given, so a node
+        # first set up by an older release gains exactly that one option.
+        expected_settings = dict(saved_settings)
+        resumed_settings = json.loads(settings.read_text())
+        if "clients" not in saved_settings and resumed_settings.get("clients") == "none":
+            expected_settings["clients"] = "none"
+        if resumed_settings != expected_settings:
             raise ValueError("product up after down changed the saved options")
         report["product_lifecycle"]["resumed_status"] = check_status(stable, data, env, supervisor, saved_settings, True)
         report["stage"] = "native headless join-code, running option update and independent services"
