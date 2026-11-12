@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -49,6 +50,20 @@ func TestLineWriterSkipsOverlongLines(t *testing.T) {
 	}
 }
 
+// The bound holds for a line whose last chunk comes with its newline.
+func TestLineWriterBoundsLineEndingInChunk(t *testing.T) {
+	var lines []int
+	w := &lineWriter{line: func(b []byte) { lines = append(lines, len(b)) }}
+	w.Write(make([]byte, maxRuntimeLine))
+	w.Write([]byte("x\nok\n"))
+	w.Write(append(make([]byte, maxRuntimeLine), '\n'))
+	w.Write(append(bytes.Repeat([]byte("y"), maxRuntimeLine+1), '\n'))
+	w.Close()
+	if want := []int{2, maxRuntimeLine}; !slices.Equal(lines, want) {
+		t.Fatalf("line lengths %v, want %v", lines, want)
+	}
+}
+
 func TestProgressLineIsOneShortLine(t *testing.T) {
 	if got := progressLine("go test \\\n  ./...\t-run X"); got != "go test \\ ./... -run X" {
 		t.Fatalf("one line: %q", got)
@@ -61,16 +76,19 @@ func TestProgressLineIsOneShortLine(t *testing.T) {
 
 func TestClaudeProgress(t *testing.T) {
 	for event, want := range map[string]string{
-		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"go test ./...","description":"Run tests"}}]}}`:                                                                                                                "Bash: go test ./...",
-		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/w/main.go","old_string":"a"}}]}}`:                                                                                                                          "Edit: /w/main.go",
-		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"TODO"}}]}}`:                                                                                                                                                   "Grep: TODO",
-		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Exotic","input":{"n":1}}]}}`:                                                                                                                                                            "Exotic",
-		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[{"content":"Read code","status":"completed","activeForm":"Reading code"},{"content":"Fix bug","status":"in_progress","activeForm":"Fixing the bug"}]}}]}}`: "Working on: Fixing the bug",
-		`{"type":"assistant","message":{"content":[{"type":"text","text":"\nI'll check the tests first.\nThen fix."}]}}`:                                                                                                                                              "I'll check the tests first.",
-		// The turn's structured answer, results, thinking and other events are not steps.
-		`{"type":"assistant","message":{"content":[{"type":"text","text":"{\"status\":\"done\",\"text\":\"ok\"}"}]}}`: "",
-		`{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm"}]}}`:                           "",
-		`{"type":"user","message":{"content":[{"type":"tool_result","content":"PASS"}]}}`:                             "",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"GITHUB_TOKEN=ghp_secret go test ./...","description":"Run tests"}}]}}`:                                                                         "Running go",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"curl -H 'Authorization: Bearer sk-secret' https://x"}}]}}`:                                                                                     "Running curl",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"$(cat ~/.token) --flag"}}]}}`:                                                                                                                  "Running a command",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/home/me/w/main.go","old_string":"a"}}]}}`:                                                                                                   "Editing main.go",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/key with spaces.pem"}}]}}`:                                                                                                              "Reading a file",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"sk-live-123"}}]}}`:                                                                                                                             "Searching files",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"WebFetch","input":{"url":"https://s3.example/x?X-Amz-Signature=abc"}}]}}`:                                                                                                "Fetching a web page",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__docs__search","input":{"q":"secret"}}]}}`:                                                                                                                           "Using mcp__docs__search",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[{"content":"Read code","status":"completed"},{"content":"Rotate key sk-1","status":"in_progress"},{"content":"c","status":"pending"}]}}]}}`: "Working on step 2 of 3",
+		// What the agent says, its structured answer, results, thinking and other events are not steps.
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"The token is sk-secret"}]}}`: "",
+		`{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm"}]}}`:            "",
+		`{"type":"user","message":{"content":[{"type":"tool_result","content":"PASS"}]}}`:              "",
 		`{"type":"result","result":"ok"}`:    "",
 		`{"type":"system","subtype":"init"}`: "",
 		`not json`:                           "",
@@ -83,18 +101,21 @@ func TestClaudeProgress(t *testing.T) {
 
 func TestCodexProgress(t *testing.T) {
 	for event, want := range map[string]string{
-		`{"type":"item.started","item":{"id":"1","type":"command_execution","command":"bash -lc 'go test ./...'","status":"in_progress"}}`:          "Running: bash -lc 'go test ./...'",
-		`{"type":"item.completed","item":{"id":"2","type":"file_change","changes":[{"path":"a.go","kind":"update"},{"path":"b.go","kind":"add"}]}}`: "Changed a.go, b.go",
-		`{"type":"item.started","item":{"id":"3","type":"mcp_tool_call","server":"docs","tool":"search"}}`:                                          "Tool: docs.search",
-		`{"type":"item.started","item":{"id":"4","type":"web_search","query":"a2a spec"}}`:                                                          "Searching: a2a spec",
-		`{"type":"item.updated","item":{"id":"5","type":"todo_list","items":[{"text":"Read","completed":true},{"text":"Fix","completed":false}]}}`:  "Working on: Fix",
-		`{"type":"item.completed","item":{"id":"6","type":"agent_message","text":"Tests pass; now the docs."}}`:                                     "Tests pass; now the docs.",
-		// The turn's structured answer, finished commands, reasoning and other events are not steps.
-		`{"type":"item.completed","item":{"id":"7","type":"agent_message","text":"{\"status\":\"done\",\"text\":\"ok\"}"}}`: "",
-		`{"type":"item.completed","item":{"id":"1","type":"command_execution","command":"ls","exit_code":0}}`:               "",
-		`{"type":"item.completed","item":{"id":"8","type":"reasoning","text":"hmm"}}`:                                       "",
-		`{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}`:                                      "",
-		`{"type":"turn.completed","usage":{}}`:                                                                              "",
+		`{"type":"item.started","item":{"id":"1","type":"command_execution","command":"bash -lc 'TOKEN=abc go test ./...'","status":"in_progress"}}`:                         "Running go",
+		`{"type":"item.started","item":{"id":"1","type":"command_execution","command":"/usr/bin/git push https://user:pw@host/repo"}}`:                                       "Running git",
+		`{"type":"item.completed","item":{"id":"2","type":"file_change","status":"completed","changes":[{"path":"/w/a.go","kind":"update"},{"path":"b.go","kind":"add"}]}}`:  "Changed a.go, b.go",
+		`{"type":"item.completed","item":{"id":"2","type":"file_change","status":"completed","changes":[{"path":"a"},{"path":"b"},{"path":"c"},{"path":"d"},{"path":"e"}]}}`: "Changed a, b, c, 2 more",
+		// A patch that failed changed nothing.
+		`{"type":"item.completed","item":{"id":"2","type":"file_change","status":"failed","changes":[{"path":"main.go","kind":"update"}]}}`:             "",
+		`{"type":"item.started","item":{"id":"3","type":"mcp_tool_call","server":"docs","tool":"search","arguments":{"q":"secret"}}}`:                   "Using docs.search",
+		`{"type":"item.started","item":{"id":"4","type":"web_search","query":"my private query"}}`:                                                      "Searching the web",
+		`{"type":"item.updated","item":{"id":"5","type":"todo_list","items":[{"text":"Read","completed":true},{"text":"Fix sk-1","completed":false}]}}`: "Working on step 2 of 2",
+		// What the agent says, finished commands, reasoning and other events are not steps.
+		`{"type":"item.completed","item":{"id":"6","type":"agent_message","text":"Tests pass; token sk-1."}}`: "",
+		`{"type":"item.completed","item":{"id":"1","type":"command_execution","command":"ls","exit_code":0}}`: "",
+		`{"type":"item.completed","item":{"id":"8","type":"reasoning","text":"hmm"}}`:                         "",
+		`{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}`:                        "",
+		`{"type":"turn.completed","usage":{}}`:                                                                "",
 	} {
 		if got := codexProgress([]byte(event)); got != want {
 			t.Errorf("%s: %q, want %q", event, got, want)
@@ -110,7 +131,7 @@ func TestCodexRuntimeReportsSteps(t *testing.T) {
 	script := "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --output-last-message ] && out=$2; shift; done\ncat > /dev/null\n" +
 		"echo '{\"type\":\"thread.started\",\"thread_id\":\"0199a213-81c0-7800-8aa1-bbab2a035a53\"}'\n" +
 		"echo '{\"type\":\"item.started\",\"item\":{\"id\":\"1\",\"type\":\"command_execution\",\"command\":\"go vet\"}}'\n" +
-		"echo '{\"type\":\"item.completed\",\"item\":{\"id\":\"2\",\"type\":\"file_change\",\"changes\":[{\"path\":\"main.go\",\"kind\":\"update\"}]}}'\n" +
+		"echo '{\"type\":\"item.completed\",\"item\":{\"id\":\"2\",\"type\":\"file_change\",\"status\":\"completed\",\"changes\":[{\"path\":\"main.go\",\"kind\":\"update\"}]}}'\n" +
 		"printf '{\"status\":\"done\",\"text\":\"Fixed\"}' > \"$out\"\n"
 	if err := os.WriteFile(codex, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -121,7 +142,7 @@ func TestCodexRuntimeReportsSteps(t *testing.T) {
 	if err != nil || out.Text != "Fixed" || out.Session != "0199a213-81c0-7800-8aa1-bbab2a035a53" {
 		t.Fatalf("run: %+v %v", out, err)
 	}
-	if want := []string{"Running: go vet", "Changed main.go"}; !slices.Equal(steps, want) {
+	if want := []string{"Running go", "Changed main.go"}; !slices.Equal(steps, want) {
 		t.Fatalf("steps %q, want %q", steps, want)
 	}
 }
@@ -212,7 +233,9 @@ func TestGetTaskNotifiesProgress(t *testing.T) {
 	go func() {
 		h.fix.steps <- "Bash: go test ./..."
 		time.Sleep(1500 * time.Millisecond)
-		h.fix.steps <- "Edit: a.go"
+		h.fix.steps <- "Using docs.search"
+		time.Sleep(1500 * time.Millisecond)
+		h.fix.steps <- "Using docs.search"
 		time.Sleep(1500 * time.Millisecond)
 		h.fix.release <- "fixed"
 	}()
@@ -229,7 +252,8 @@ func TestGetTaskNotifiesProgress(t *testing.T) {
 	for len(notes) > 0 {
 		seen = append(seen, <-notes)
 	}
-	if want := []string{"Bash: go test ./...", "Edit: a.go"}; !slices.Equal(seen, want) {
+	// Two steps that read the same are still two steps.
+	if want := []string{"Bash: go test ./...", "Using docs.search", "Using docs.search"}; !slices.Equal(seen, want) {
 		t.Fatalf("progress notifications %q, want %q", seen, want)
 	}
 }

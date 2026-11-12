@@ -54,7 +54,7 @@ func TestClaudeRuntimeIsolatedIsRestrictedReadOnly(t *testing.T) {
 	if err != nil || out.Text != "No findings" {
 		t.Fatalf("run: %q, %v", out.Text, err)
 	}
-	if !slices.Equal(steps, []string{"Read: main.go"}) {
+	if !slices.Equal(steps, []string{"Reading main.go"}) {
 		t.Errorf("steps: %q", steps)
 	}
 	args := " " + strings.ReplaceAll(readRecord(t, record+".args"), "\n", " ")

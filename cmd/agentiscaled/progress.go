@@ -3,14 +3,24 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
 
 // A task's progress reaches its caller as short lines, each the agent's
-// latest step ("Bash: go test ./...", "Edit main.go"), sent as the message
-// of the task's working status. The caller sees the latest one when it
-// follows the task (get_task).
+// latest step ("Running go", "Editing main.go", "Working on step 2 of 5"),
+// sent as the message of the task's working status. The caller sees the
+// latest one when it follows the task (get_task).
+//
+// A step goes to another node and stays in the task's history, so it is a
+// fixed summary of the activity: a command's program, a file's base name, a
+// tool's name, a todo item's position. Never a command line, path, URL,
+// search, todo text or what the agent says, any of which can carry a
+// credential or other private value of the agent's machine.
 
 // maxProgressLine bounds one progress line, in characters.
 const maxProgressLine = 200
@@ -32,17 +42,21 @@ func (w *lineWriter) Write(p []byte) (int, error) {
 	n := len(p)
 	for len(p) > 0 {
 		i := bytes.IndexByte(p, '\n')
+		chunk := p
+		if i >= 0 {
+			chunk = p[:i]
+		}
+		if !w.skip && len(w.partial)+len(chunk) > maxRuntimeLine {
+			w.partial, w.skip = nil, true
+		}
+		if !w.skip {
+			w.partial = append(w.partial, chunk...)
+		}
 		if i < 0 {
-			if !w.skip {
-				w.partial = append(w.partial, p...)
-				if len(w.partial) > maxRuntimeLine {
-					w.partial, w.skip = nil, true
-				}
-			}
 			break
 		}
 		if !w.skip {
-			w.line(append(w.partial, p[:i]...))
+			w.line(w.partial)
 		}
 		w.partial, w.skip = w.partial[:0], false
 		p = p[i+1:]
@@ -68,26 +82,57 @@ func progressLine(s string) string {
 	return string(r[:maxProgressLine-1]) + "…"
 }
 
-// firstLine is the first non-empty line of s.
-func firstLine(s string) string {
-	for _, l := range strings.Split(s, "\n") {
-		if l = strings.TrimSpace(l); l != "" {
-			return l
+// plainName is a name that is safe to show as it is: a program, a file's
+// base name or a tool, with no spaces, quotes, slashes or other syntax a
+// value could hide in.
+var plainName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
+
+// fileName is the base name of path, or "a file" when that is not a plain
+// name.
+func fileName(path string) string {
+	if name := filepath.Base(strings.TrimSpace(path)); plainName.MatchString(name) {
+		return name
+	}
+	return "a file"
+}
+
+// commandStep names the program a command line runs, looking through
+// variable assignments and a shell's -c, and never shows its arguments.
+func commandStep(command string) string {
+	fields := strings.Fields(command)
+	for len(fields) > 0 && strings.Contains(fields[0], "=") {
+		fields = fields[1:]
+	}
+	if len(fields) >= 3 && slices.Contains([]string{"bash", "sh", "zsh"}, filepath.Base(fields[0])) && slices.Contains([]string{"-c", "-lc"}, fields[1]) {
+		return commandStep(strings.Trim(strings.Join(fields[2:], " "), `'"`))
+	}
+	if len(fields) > 0 {
+		if prog := filepath.Base(fields[0]); plainName.MatchString(prog) {
+			return "Running " + prog
+		}
+	}
+	return "Running a command"
+}
+
+// todoStep is the position of the first unfinished item of a todo list.
+func todoStep(done []bool) string {
+	for i, d := range done {
+		if !d {
+			return fmt.Sprintf("Working on step %d of %d", i+1, len(done))
 		}
 	}
 	return ""
 }
 
 // claudeProgress is the progress line of one event of `claude -p
-// --output-format stream-json`, or "" for an event that is not a step:
-// a tool the agent calls, its todo list, or what it says between tools.
+// --output-format stream-json`, or "" for an event that is not a step: a
+// tool the agent calls or its todo list.
 func claudeProgress(event []byte) string {
 	var ev struct {
 		Type    string `json:"type"`
 		Message struct {
 			Content []struct {
 				Type  string          `json:"type"`
-				Text  string          `json:"text"`
 				Name  string          `json:"name"`
 				Input json.RawMessage `json:"input"`
 			} `json:"content"`
@@ -98,15 +143,9 @@ func claudeProgress(event []byte) string {
 	}
 	var line string
 	for _, c := range ev.Message.Content {
-		switch c.Type {
-		case "tool_use":
+		if c.Type == "tool_use" {
 			if s := claudeToolStep(c.Name, c.Input); s != "" {
 				line = s
-			}
-		case "text":
-			// The structured answer that ends the turn is not a step.
-			if t := firstLine(c.Text); t != "" && !strings.HasPrefix(t, "{") {
-				line = t
 			}
 		}
 	}
@@ -115,56 +154,66 @@ func claudeProgress(event []byte) string {
 
 // claudeToolStep says what a Claude Code tool call does.
 func claudeToolStep(name string, input json.RawMessage) string {
-	if name == "" {
-		return ""
+	var in struct {
+		Command      string `json:"command"`
+		FilePath     string `json:"file_path"`
+		NotebookPath string `json:"notebook_path"`
+		Todos        []struct {
+			Status string `json:"status"`
+		} `json:"todos"`
 	}
-	if name == "TodoWrite" {
-		var in struct {
-			Todos []struct {
-				Content    string `json:"content"`
-				Status     string `json:"status"`
-				ActiveForm string `json:"activeForm"`
-			} `json:"todos"`
-		}
-		if json.Unmarshal(input, &in) == nil {
-			for _, t := range in.Todos {
-				if step := firstNonEmpty(t.ActiveForm, t.Content); t.Status == "in_progress" && step != "" {
-					return "Working on: " + step
-				}
-			}
-		}
-		return ""
-	}
-	var in map[string]any
 	_ = json.Unmarshal(input, &in)
-	for _, key := range []string{"command", "file_path", "notebook_path", "pattern", "url", "query", "description"} {
-		if v, ok := in[key].(string); ok && strings.TrimSpace(v) != "" {
-			return name + ": " + v
+	switch name {
+	case "":
+		return ""
+	case "Bash":
+		return commandStep(in.Command)
+	case "Read":
+		return "Reading " + fileName(in.FilePath)
+	case "Edit", "MultiEdit":
+		return "Editing " + fileName(in.FilePath)
+	case "Write":
+		return "Writing " + fileName(in.FilePath)
+	case "NotebookEdit":
+		return "Editing " + fileName(in.NotebookPath)
+	case "Grep", "Glob":
+		return "Searching files"
+	case "WebFetch":
+		return "Fetching a web page"
+	case "WebSearch":
+		return "Searching the web"
+	case "Task", "Agent":
+		return "Running a subagent"
+	case "TodoWrite":
+		var done []bool
+		for _, t := range in.Todos {
+			done = append(done, t.Status == "completed")
 		}
+		return todoStep(done)
 	}
-	return name
+	if plainName.MatchString(name) {
+		return "Using " + name
+	}
+	return "Using a tool"
 }
 
 // codexProgress is the progress line of one event of `codex exec --json`,
-// or "" for an event that is not a step: a command, a file change, a tool
-// call, a search, its todo list, or what it says between them.
+// or "" for an event that is not a step: a command, an applied file change,
+// a tool call, a search or its todo list.
 func codexProgress(event []byte) string {
 	var ev struct {
 		Type string `json:"type"`
 		Item struct {
 			Type    string `json:"type"`
-			Text    string `json:"text"`
+			Status  string `json:"status"`
 			Command string `json:"command"`
 			Server  string `json:"server"`
 			Tool    string `json:"tool"`
-			Query   string `json:"query"`
 			Changes []struct {
 				Path string `json:"path"`
-				Kind string `json:"kind"`
 			} `json:"changes"`
 			Items []struct {
-				Text      string `json:"text"`
-				Completed bool   `json:"completed"`
+				Completed bool `json:"completed"`
 			} `json:"items"`
 		} `json:"item"`
 	}
@@ -175,40 +224,32 @@ func codexProgress(event []byte) string {
 	var line string
 	switch {
 	case it.Type == "command_execution" && ev.Type == "item.started":
-		line = "Running: " + it.Command
+		line = commandStep(it.Command)
 	case it.Type == "mcp_tool_call" && ev.Type == "item.started":
-		line = "Tool: " + strings.Trim(it.Server+"."+it.Tool, ".")
-	case it.Type == "web_search" && ev.Type == "item.started":
-		line = "Searching: " + it.Query
-	case it.Type == "file_change" && ev.Type == "item.completed":
-		var paths []string
-		for _, c := range it.Changes {
-			paths = append(paths, c.Path)
+		line = "Using a tool"
+		if name := strings.Trim(it.Server+"."+it.Tool, "."); plainName.MatchString(name) {
+			line = "Using " + name
 		}
-		if len(paths) > 0 {
-			line = "Changed " + strings.Join(paths, ", ")
+	case it.Type == "web_search" && ev.Type == "item.started":
+		line = "Searching the web"
+	case it.Type == "file_change" && ev.Type == "item.completed" && it.Status == "completed":
+		// A patch that failed changed nothing.
+		var names []string
+		for _, c := range it.Changes {
+			names = append(names, fileName(c.Path))
+		}
+		if len(names) > 3 {
+			names = append(names[:3], fmt.Sprintf("%d more", len(it.Changes)-3))
+		}
+		if len(names) > 0 {
+			line = "Changed " + strings.Join(names, ", ")
 		}
 	case it.Type == "todo_list":
+		var done []bool
 		for _, t := range it.Items {
-			if !t.Completed && strings.TrimSpace(t.Text) != "" {
-				line = "Working on: " + t.Text
-				break
-			}
+			done = append(done, t.Completed)
 		}
-	case it.Type == "agent_message" && ev.Type == "item.completed":
-		// The structured answer that ends the turn is not a step.
-		if t := firstLine(it.Text); !strings.HasPrefix(t, "{") {
-			line = t
-		}
+		line = todoStep(done)
 	}
 	return progressLine(line)
-}
-
-func firstNonEmpty(s ...string) string {
-	for _, v := range s {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
 }

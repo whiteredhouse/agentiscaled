@@ -84,7 +84,7 @@ func addA2ATools(server *mcp.Server, t *a2aTasks) {
 	}, t.send)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_task",
-		Description: "Get the state and result of a task sent with send_task, optionally waiting for it to end or to ask you a question (state input_required, the question in message). While the task is working, message is the agent's latest step, such as a command it runs or a file it changes.",
+		Description: "Get the state and result of a task sent with send_task, optionally waiting for it to end or to ask you a question (state input_required, the question in message). While the task is working, message is the agent's latest step, such as the program it runs or the file it edits.",
 	}, t.get)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "cancel_task",
@@ -258,9 +258,10 @@ func (t *a2aTasks) get(ctx context.Context, req *mcp.CallToolRequest, in getTask
 		if task.Status.State.Terminal() || task.Status.State == a2a.TaskStateInputRequired || !time.Now().Before(deadline) {
 			return toolResult(describeTask(task))
 		}
-		if out := describeTask(task); notify != nil && out.Message != "" && out.Message != step {
-			step = out.Message
-			notify(step)
+		// Each step is a new status message; two steps can read the same.
+		if m := task.Status.Message; notify != nil && m != nil && task.Status.State == a2a.TaskStateWorking && m.ID != step {
+			step = m.ID
+			notify(messageText(m))
 		}
 		select {
 		case <-ctx.Done():
