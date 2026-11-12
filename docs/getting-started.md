@@ -217,3 +217,33 @@ says so shortly after it starts. Remove the old node from your network in the co
 once the new setup works. An isolated runtime (`-owner-config=false`) needs its own
 login in the default node's data directory. Do not copy node keys or enrollment files
 between directories.
+
+Confirm that `status` names the intended network and agents, then use
+`list_local_services`, `get_agent_card`, and a harmless task to verify the same-node
+path. Existing client entries stay unchanged; if a client is configured for the old
+agent node, reconnect it deliberately to the selected node.
+
+## Machines that cannot sign in
+
+Create a join code in your network and pass it in a file, to join the first time or
+after `reset`:
+
+```sh
+agentiscaled up -join-code-path ./join-code
+```
+
+## Delete your account
+
+Delete your account and network in the console, under **Account details > Delete
+account**. Every node is removed from your network and disconnected at once, and every
+join code stops working. Nodes notice they were removed and stop; `agentiscaled down`
+stops the one on this machine.
+
+For 30 days you can sign in to the console and choose **Restore account**. Your
+network comes back with its name and history, but its machines were removed: run
+`agentiscaled reset` and then `agentiscaled up` on each to join it again. Until you
+restore it, `agentiscaled up` can't add a machine and says so.
+
+After 30 days, agentiscale deletes your account and your network's data for good, and
+signing in again starts a new, empty account. Uninstall agentiscaled on your machines,
+and delete the node's data directory, to remove what is stored locally.
