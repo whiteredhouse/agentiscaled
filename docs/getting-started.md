@@ -190,7 +190,8 @@ The MCP tools preserve Agent Mesh's discovery distinction: `list_local_services`
 with type `a2a` lists this node's hosted agents; `discover_remote_services` lists
 agents on other nodes. For a local agent, read its card with `get_agent_card`,
 then call `send_task`, using its `name` as `service` and omitting `peer_id` for both. For a remote agent, pass its `srv_name` as `service`
-and its `peer_id`. Use the same target with `get_task` and `cancel_task`. A task in
+and its `peer_id`. Use the same target with `get_task` and `cancel_task`. While a
+task works, its message is the agent's latest step. A task in
 state `input_required` waits for your answer to the agent's question: answer
 with `send_task` and the task's `task_id`.
 

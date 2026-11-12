@@ -4,12 +4,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
 // fakeClaude writes a claude script that records its arguments, environment
-// and prompt next to itself and prints result as its JSON result.
+// and prompt next to itself, reports one step, and prints result as its
+// result event.
 func fakeClaude(t *testing.T, dir, result string, isError bool) (command, record string) {
 	t.Helper()
 	record = filepath.Join(dir, "rec")
@@ -19,6 +21,8 @@ func fakeClaude(t *testing.T, dir, result string, isError bool) (command, record
 		errFlag = "true"
 	}
 	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + record + ".args\nenv > " + record + ".env\npwd > " + record + ".pwd\ncat > " + record + ".prompt\n" +
+		"echo '{\"type\":\"system\",\"subtype\":\"init\"}'\n" +
+		"echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"main.go\"}}]}}'\n" +
 		"printf '{\"type\":\"result\",\"is_error\":" + errFlag + ",\"result\":\"%s\"}\\n' '" + result + "'\n"
 	if isError {
 		script += "exit 1\n"
@@ -44,12 +48,17 @@ func TestClaudeRuntimeIsolatedIsRestrictedReadOnly(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "owner-key")
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "owner-token")
 	config := filepath.Join(dir, "agent-claude")
-	out, err := (&claudeRuntime{command: command, config: config}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "Review main.go"})
+	var steps []string
+	out, err := (&claudeRuntime{command: command, config: config}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "Review main.go",
+		Progress: func(step string) { steps = append(steps, step) }})
 	if err != nil || out.Text != "No findings" {
 		t.Fatalf("run: %q, %v", out.Text, err)
 	}
+	if !slices.Equal(steps, []string{"Reading main.go"}) {
+		t.Errorf("steps: %q", steps)
+	}
 	args := " " + strings.ReplaceAll(readRecord(t, record+".args"), "\n", " ")
-	for _, want := range []string{" -p ", " --output-format json ", " --json-schema " + turnSchema + " ", " --session-id ", " --permission-prompts none ",
+	for _, want := range []string{" -p ", " --output-format stream-json --verbose ", " --json-schema " + turnSchema + " ", " --session-id ", " --permission-prompts none ",
 		" --restricted ", " --strict-mcp-config ", " --tools Read,Grep,Glob ", " --permission-mode dontAsk ", " --disable-slash-commands "} {
 		if !strings.Contains(args, want) {
 			t.Errorf("claude arguments %q lack %q", args, want)
@@ -121,7 +130,7 @@ func fakeClaudeCLI(t *testing.T, help string) (command, record string) {
 	record = filepath.Join(dir, "args")
 	command = filepath.Join(dir, "claude")
 	script := "#!/bin/sh\ncase \"$1\" in\n--version) echo '9.9.9 (Claude Code)';;\n--help) printf '%s\\n' '" + help + "';;\n" +
-		"auth) echo '{\"loggedIn\":true}';;\n*) printf '%s\\n' \"$@\" > " + record + "; cat > /dev/null; echo '{\"result\":\"ok\",\"is_error\":false}';;\nesac\n"
+		"auth) echo '{\"loggedIn\":true}';;\n*) printf '%s\\n' \"$@\" > " + record + "; cat > /dev/null; echo '{\"type\":\"result\",\"result\":\"ok\",\"is_error\":false}';;\nesac\n"
 	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

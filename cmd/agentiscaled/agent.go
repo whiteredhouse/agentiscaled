@@ -49,7 +49,10 @@ const (
 	// was cancelled.
 	metaExecutionBegun = "agentiscale.execution_begun"
 	metaSender         = "agentiscale.sender_peer_id"
-	metaDuplicateOf    = "agentiscale.duplicate_of"
+	// metaProgress marks a working status whose message is the agent's
+	// latest step.
+	metaProgress    = "agentiscale.progress"
+	metaDuplicateOf = "agentiscale.duplicate_of"
 )
 
 // runtime runs the tasks of a hosted agent with one agent CLI. The agent
@@ -73,6 +76,16 @@ type taskRequest struct {
 	// ended in a question; Text is then the caller's answer. It is empty
 	// for a new task.
 	Session string
+	// Progress, if set, takes the turn's steps as they happen, as short
+	// lines (progressLine). It is called from one goroutine at a time and
+	// must not block.
+	Progress func(string)
+}
+
+func (r taskRequest) progress(line string) {
+	if r.Progress != nil {
+		r.Progress(line)
+	}
 }
 
 // turnResult is how one turn of a task ended.
@@ -419,7 +432,58 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		run.begun = true
 		s.mu.Unlock()
 		started := time.Now()
-		out, err := s.rt.Run(runCtx, s.dir, taskRequest{Sender: sender, Text: request, Session: prior.session})
+		// The run reports its steps while it works; the latest goes to the
+		// caller as the message of the working status, at most one every
+		// progressEvery and maxProgress in a turn, since each one stays in
+		// the task's history.
+		progress := make(chan string, 1)
+		done := make(chan runOutcome, 1)
+		req := taskRequest{Sender: sender, Text: request, Session: prior.session, Progress: func(line string) {
+			select {
+			case <-progress:
+			default:
+			}
+			progress <- line
+		}}
+		go func() {
+			out, err := s.rt.Run(runCtx, s.dir, req)
+			done <- runOutcome{out, err}
+		}()
+		var res runOutcome
+		var last time.Time
+		sent := 0
+	follow:
+		for {
+			select {
+			case res = <-done:
+				break follow
+			case line := <-progress:
+				if sent >= maxProgress {
+					continue
+				}
+				if wait := progressEvery - time.Since(last); wait > 0 {
+					select {
+					case res = <-done:
+						break follow
+					case <-time.After(wait):
+					}
+					select {
+					case line = <-progress:
+					default:
+					}
+				}
+				last = time.Now()
+				sent++
+				ev := a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateWorking, agentText(execCtx, line))
+				ev.Metadata = map[string]any{metaProgress: true}
+				if !yield(ev, nil) {
+					cancel(nil)
+					<-done
+					return
+				}
+			}
+		}
+		out, err := res.out, res.err
 
 		switch cause := context.Cause(runCtx); {
 		case errors.Is(cause, errCancelledByCaller):
@@ -457,6 +521,17 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		ev.Metadata = map[string]any{metaTerminal: "completed"}
 		yield(ev, nil)
 	}
+}
+
+// progressEvery is the least time between two progress messages of a
+// task, and maxProgress the most in one turn.
+var progressEvery = 3 * time.Second
+
+const maxProgress = 100
+
+type runOutcome struct {
+	out turnResult
+	err error
 }
 
 // waitingFor is the task waiting for an answer under id, if it still

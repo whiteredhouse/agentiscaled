@@ -23,11 +23,13 @@ type fixture struct {
 	prompts chan taskRequest
 	release chan string
 	ask     chan string
-	err     error
+	// steps are progress lines the run reports before it ends.
+	steps chan string
+	err   error
 }
 
 func newFixture() *fixture {
-	return &fixture{prompts: make(chan taskRequest, 4), release: make(chan string, 4), ask: make(chan string, 4)}
+	return &fixture{prompts: make(chan taskRequest, 4), release: make(chan string, 4), ask: make(chan string, 4), steps: make(chan string, 4)}
 }
 
 func (f *fixture) Describe(card *a2a.AgentCard) { card.Description = "fixture" }
@@ -41,13 +43,17 @@ func (f *fixture) Run(ctx context.Context, dir string, req taskRequest) (turnRes
 	if session == "" {
 		session = "session-" + req.Text
 	}
-	select {
-	case out := <-f.release:
-		return turnResult{Text: out, Session: session}, nil
-	case q := <-f.ask:
-		return turnResult{Text: q, Question: true, Session: session}, nil
-	case <-ctx.Done():
-		return turnResult{}, ctx.Err()
+	for {
+		select {
+		case step := <-f.steps:
+			req.progress(step)
+		case out := <-f.release:
+			return turnResult{Text: out, Session: session}, nil
+		case q := <-f.ask:
+			return turnResult{Text: q, Question: true, Session: session}, nil
+		case <-ctx.Done():
+			return turnResult{}, ctx.Err()
+		}
 	}
 }
 
@@ -169,7 +175,7 @@ func TestTaskCompletes(t *testing.T) {
 		t.Fatalf("result: %+v", describeTask(done))
 	}
 	// Provenance survives into the task and to the runtime.
-	if done.Metadata[metaSender] != testSender || req != (taskRequest{Sender: testSender, Text: "Review the uncommitted changes"}) {
+	if done.Metadata[metaSender] != testSender || req.Sender != testSender || req.Text != "Review the uncommitted changes" || req.Session != "" {
 		t.Fatalf("sender or request lost: %v / %+v", done.Metadata, req)
 	}
 }
