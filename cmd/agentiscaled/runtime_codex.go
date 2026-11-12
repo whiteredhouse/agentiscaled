@@ -317,10 +317,12 @@ func (r *codexRuntime) Run(ctx context.Context, dir string, req taskRequest) (tu
 	cmd.Stdin = strings.NewReader(taskPrompt(req))
 	// Its events stream on stdout: each step goes to req.Progress as it
 	// happens, and thread.started names the session.
-	var thread string
+	var thread, failure string
 	stdout := &lineWriter{line: func(line []byte) {
 		if t := codexThread(line); t != "" && thread == "" {
 			thread = t
+		} else if f := codexFailure(line); f != "" {
+			failure = f
 		} else if p := codexProgress(line); p != "" {
 			req.progress(p)
 		}
@@ -337,6 +339,11 @@ func (r *codexRuntime) Run(ctx context.Context, dir string, req taskRequest) (tu
 		if ctx.Err() != nil {
 			return turnResult{}, ctx.Err()
 		}
+		// Why the turn failed, such as a model the account cannot use, is
+		// in the event stream; stderr has only Codex's own warnings then.
+		if failure != "" {
+			return turnResult{}, fmt.Errorf("codex exec: %v: %s", runErr, failure)
+		}
 		return turnResult{}, fmt.Errorf("codex exec: %v: %s", runErr, failureLines(stderr.String(), 3))
 	}
 	b, err := os.ReadFile(last)
@@ -348,6 +355,28 @@ func (r *codexRuntime) Run(ctx context.Context, dir string, req taskRequest) (tu
 		session = thread
 	}
 	return parseTurn(string(b), session)
+}
+
+// codexFailure is the message of a turn.failed or error event of `codex
+// exec --json`, on one line, or "".
+func codexFailure(event []byte) string {
+	var ev struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+		Error   struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(event, &ev) != nil {
+		return ""
+	}
+	switch ev.Type {
+	case "turn.failed":
+		return progressLine(ev.Error.Message)
+	case "error":
+		return progressLine(ev.Message)
+	}
+	return ""
 }
 
 // codexThread is the session id of a `codex exec --json` run, from its

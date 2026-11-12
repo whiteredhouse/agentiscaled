@@ -164,7 +164,9 @@ func claudeToolStep(name string, input json.RawMessage) string {
 	}
 	_ = json.Unmarshal(input, &in)
 	switch name {
-	case "":
+	case "", "StructuredOutput":
+		// StructuredOutput is how the turn's answer (--json-schema) ends
+		// the run, not a step.
 		return ""
 	case "Bash":
 		return commandStep(in.Command)

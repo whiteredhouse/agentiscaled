@@ -85,6 +85,7 @@ func TestClaudeProgress(t *testing.T) {
 		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"WebFetch","input":{"url":"https://s3.example/x?X-Amz-Signature=abc"}}]}}`:                                                                                                "Fetching a web page",
 		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__docs__search","input":{"q":"secret"}}]}}`:                                                                                                                           "Using mcp__docs__search",
 		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[{"content":"Read code","status":"completed"},{"content":"Rotate key sk-1","status":"in_progress"},{"content":"c","status":"pending"}]}}]}}`: "Working on step 2 of 3",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"StructuredOutput","input":{"status":"done","text":"ok"}}]}}`:                                                                                                             "",
 		// What the agent says, its structured answer, results, thinking and other events are not steps.
 		`{"type":"assistant","message":{"content":[{"type":"text","text":"The token is sk-secret"}]}}`: "",
 		`{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm"}]}}`:            "",
@@ -267,4 +268,20 @@ func merge(a, b map[string]any) map[string]any {
 		m[k] = v
 	}
 	return m
+}
+
+// A failed Codex turn says why: the turn.failed event, not stderr's warnings.
+func TestCodexRuntimeFailureNamesTheTurnError(t *testing.T) {
+	dir := t.TempDir()
+	codex := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\ncat > /dev/null\necho 'WARN model cache' >&2\n" +
+		"echo '{\"type\":\"thread.started\",\"thread_id\":\"0199a213-81c0-7800-8aa1-bbab2a035a53\"}'\n" +
+		"echo '{\"type\":\"turn.failed\",\"error\":{\"message\":\"The model is not supported with this account.\"}}'\nexit 1\n"
+	if err := os.WriteFile(codex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := (&codexRuntime{command: codex, home: filepath.Join(dir, "home")}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x"})
+	if err == nil || !strings.Contains(err.Error(), "The model is not supported with this account.") || strings.Contains(err.Error(), "WARN") {
+		t.Fatalf("err = %v", err)
+	}
 }
