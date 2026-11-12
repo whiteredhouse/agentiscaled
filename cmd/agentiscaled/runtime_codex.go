@@ -28,6 +28,8 @@ type codexRuntime struct {
 	// plugin or setting of the owner's Codex reaches a remote request.
 	home   string
 	policy agentPolicy
+	// def, when set, is the agent's definition (-definition).
+	def *agentDefinition
 	// extra goes before the prompt argument; tests point Codex at a fake
 	// model with it.
 	extra []string
@@ -64,6 +66,8 @@ func newCodexRuntime(command, dataDir string, policy agentPolicy) (runtime, erro
 	}
 	return &codexRuntime{command: path, installDir: codexInstallDir(path), home: home, policy: policy}, nil
 }
+
+func (r *codexRuntime) setDefinition(d *agentDefinition) { r.def = d }
 
 // codexHome is the run's CODEX_HOME: with policy.OwnerConfig the owner's,
 // as Codex finds it ($CODEX_HOME, else ~/.codex), else the agent's own in
@@ -204,6 +208,9 @@ func (r *codexRuntime) Describe(card *a2a.AgentCard) {
 //     in it, unless the owner's policy turns them off (agentPolicy): then
 //     no project instruction file is loaded, and every skill in or above the
 //     checkout, and Codex's bundled ones, are disabled.
+//   - With a definition (-definition), its instructions are the run's
+//     developer instructions; a Codex agent file's model and reasoning
+//     effort apply, and its sandbox_mode only when it is read-only.
 //   - Commands Codex runs get only the core environment variables (HOME,
 //     PATH, USER and the like), not the owner's tokens and keys.
 //   - With the owner's configuration, its filesystem/network permissions
@@ -253,6 +260,21 @@ func (r *codexRuntime) Run(ctx context.Context, dir string, req taskRequest) (st
 	if !r.policy.OwnerConfig {
 		args = append(args, "-c", `default_permissions="agentiscale-read-only"`,
 			"-c", "permissions.agentiscale-read-only="+r.permissions())
+	}
+	if d := r.def; d != nil {
+		args = append(args, "-c", "developer_instructions="+tomlString(d.Instructions))
+		if d.WrittenFor == "codex" {
+			if d.Model != "" {
+				args = append(args, "-m", d.Model)
+			}
+			if d.ReasoningEffort != "" {
+				args = append(args, "-c", "model_reasoning_effort="+tomlString(d.ReasoningEffort))
+			}
+			// The isolated configuration is read-only already.
+			if d.ReadOnly && r.policy.OwnerConfig {
+				args = append(args, "-s", "read-only")
+			}
+		}
 	}
 	args = append(args, "-C", dir, "--output-last-message", out.Name())
 	args = append(append(args, r.extra...), "-")
@@ -403,8 +425,27 @@ func (r *codexRuntime) permissions() string {
 	return `{extends=":read-only", filesystem={` + fs + `}}`
 }
 
+// tomlString quotes s as a TOML basic string.
 func tomlString(s string) string {
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, c := range s {
+		switch {
+		case c == '"' || c == '\\':
+			b.WriteByte('\\')
+			b.WriteRune(c)
+		case c == '\n':
+			b.WriteString(`\n`)
+		case c == '\t':
+			b.WriteString(`\t`)
+		case c < 0x20 || c == 0x7f:
+			fmt.Fprintf(&b, `\u%04X`, c)
+		default:
+			b.WriteRune(c)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // taskPrompt frames the remote request as untrusted data. The owner's local

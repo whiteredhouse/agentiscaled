@@ -167,7 +167,9 @@ agentiscaled agent add codex -dir ~/work/my-project
 ```
 
 Add `-name <name>` for a name other than the default, or `-description "<text>"` for
-your own description; `-dir` defaults to the agent's own workspace. Running
+your own description; `-dir` defaults to the agent's own workspace. `-definition <file>`
+gives the agent the role of a project's subagent definition (`.claude/agents/<name>.md`
+or `.codex/agents/<name>.toml`); see [Give an agent a subagent's role](connect-agents.md#give-an-agent-a-subagents-role). Running
 `agent add` again with the same name changes that agent, and `agent add` with
 another name offers one more agent from the same node, next to the first: there
 is no second sign-in, node or service. `agent list` shows the agents this machine
