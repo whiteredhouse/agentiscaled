@@ -180,8 +180,16 @@ type agentOffer struct {
 	name        string
 	description string // empty for the runtime's
 	agentDir    string
+	command     string // empty for the runtime's
 	dataDir     string
 	policy      agentPolicy
+}
+
+// config is the offered agent as the node keeps it.
+func (o *agentOffer) config() agentConfig {
+	a := agentConfig{Runtime: o.runtime, Name: o.name, Dir: o.agentDir, Command: o.command, Description: o.description}
+	a.setPolicy(o.policy)
+	return a
 }
 
 // offerAgent asks whether to offer an agent from this machine and, on yes,

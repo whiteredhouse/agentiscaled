@@ -429,9 +429,9 @@ func TestResetKeepsEverythingButTheIdentity(t *testing.T) {
 	oldPeer := seedNode(t, dir, "https://old.mesh.test", oldKey)
 	before := settings{
 		Control: "https://control.test", BindAddr: "", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "debug",
-		Agent: "codex", AgentDir: agentDir, AgentCommand: codex, AgentName: "helper", AgentDescription: "Answers questions",
-		AgentIgnoreDirInstructions: true, AgentIgnoreDirSkills: true, AgentOwnConfig: true,
-		AgentEnv: []string{"SOME_VAR=1"}, MachineName: "laptop", Path: "/usr/bin:/bin",
+		Agents: []agentConfig{{Runtime: "codex", Dir: agentDir, Command: codex, Name: "helper", Description: "Answers questions",
+			IgnoreDirInstructions: true, IgnoreDirSkills: true, OwnConfig: true, Env: []string{"SOME_VAR=1"}}},
+		MachineName: "laptop", Path: "/usr/bin:/bin",
 		PeerID: oldPeer, NetworkID: uuid.NewString(), MeshURL: "https://old.mesh.test",
 	}
 	writeSettings(t, dir, before)
@@ -488,11 +488,11 @@ func TestResetKeepsEverythingButTheIdentity(t *testing.T) {
 
 	// The agent, signed in on its own, takes a task with no new sign-in.
 	c := after.config(dir)
-	agent, err := newAgent(&c)
+	agent, err := newAgent(&c.agents[0], dir)
 	if err != nil {
 		t.Fatalf("agent after reset: %v", err)
 	}
-	srv := httptest.NewServer(agent.handler(c.agentName, "secret"))
+	srv := httptest.NewServer(agent.handler(c.agents[0].Name, "secret"))
 	t.Cleanup(srv.Close)
 	h := &agentHarness{svc: agent, url: srv.URL, dir: agentDir, client: a2aClient(t, srv.URL, meshHeaders{"secret", testSender})}
 	task := h.await(t, h.send(t, "", "What changed?", nil).ID, a2a.TaskStateCompleted)

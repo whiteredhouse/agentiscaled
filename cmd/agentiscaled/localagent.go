@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -27,49 +28,62 @@ import (
 
 const localAgentSocketName = "agent.sock"
 
+// localAgentInfo is what the local agent API says about the node: its peer
+// ID and the names of the agents it serves.
 type localAgentInfo struct {
-	PeerID  string `json:"peer_id"`
-	Service string `json:"service"`
+	PeerID   string   `json:"peer_id"`
+	Services []string `json:"services"`
 }
 
 type agentSocketContextKey struct{}
 
 // serveLocalAgent is agentiscaled's owner API, separate from Agent Mesh's
 // network routes. Both paths proxy to the same agent handler and task store.
-func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, name, target, dataDir string) (*http.Server, error) {
-	backend, err := url.Parse(target)
-	if err != nil || backend == nil || backend.User == nil {
-		return nil, fmt.Errorf("invalid local agent backend")
+// targets maps each agent's name to where serveAgent serves it.
+func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, targets map[string]string, dataDir string) (*http.Server, error) {
+	proxies := map[string]*httputil.ReverseProxy{}
+	for name, target := range targets {
+		backend, err := url.Parse(target)
+		if err != nil || backend == nil || backend.User == nil {
+			return nil, fmt.Errorf("invalid local agent backend for %s", name)
+		}
+		token, ok := backend.User.Password()
+		if !ok || token == "" {
+			return nil, fmt.Errorf("local agent backend for %s has no credential", name)
+		}
+		backend.User = nil
+		proxies[name] = &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(backend)
+			pr.Out.Header.Set("Authorization", "Bearer "+token)
+		}}
 	}
-	token, ok := backend.User.Password()
-	if !ok || token == "" {
-		return nil, fmt.Errorf("local agent backend has no credential")
-	}
-	backend.User = nil
+	names := slices.Sorted(maps.Keys(proxies))
 	authorization := socketClient(filepath.Join(dataDir, meshnode.DefaultSocketName))
 	authorization.Timeout = 5 * time.Second
 	authorization.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	go func() { <-ctx.Done(); authorization.CloseIdleConnections() }()
-	proxy := &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) {
-		pr.SetURL(backend)
-		pr.Out.Header.Set("Authorization", "Bearer "+token)
-	}}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if local, _ := r.Context().Value(agentSocketContextKey{}).(bool); !local {
 			http.Error(w, "Unix socket required", http.StatusForbidden)
 			return
 		}
-		info := localAgentInfo{PeerID: node.Host.ID().String(), Service: name}
+		info := localAgentInfo{PeerID: node.Host.ID().String(), Services: names}
 		if r.Method == http.MethodGet && r.URL.Path == "/info" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(info)
 			return
 		}
-		prefix := "/a2a/" + info.PeerID + "/" + name
+		// /a2a/<peer>/<name>[/.well-known/agent-card.json]
+		rest, ok := strings.CutPrefix(r.URL.Path, "/a2a/"+info.PeerID+"/")
+		name, sub, _ := strings.Cut(rest, "/")
+		proxy := proxies[name]
 		backendPath, allowedMethod := "/", http.MethodPost
-		switch r.URL.Path {
-		case prefix, prefix + "/":
-		case prefix + "/.well-known/agent-card.json":
+		switch {
+		case !ok || proxy == nil:
+			http.NotFound(w, r)
+			return
+		case sub == "":
+		case sub == ".well-known/agent-card.json":
 			backendPath, allowedMethod = "/.well-known/agent-card.json", http.MethodGet
 		default:
 			http.NotFound(w, r)
@@ -251,7 +265,7 @@ func warnDuplicateAgent(ctx context.Context, self, name string, discover func(co
 			}
 		}
 		if len(others) > 0 {
-			log.Printf("warning: another node on your network also serves a2a://%s (peer %s); stop it with 'agentiscaled down -data-dir <its directory>' or give this agent another -agent-name", name, strings.Join(others, ", "))
+			log.Printf("warning: another node on your network also serves a2a://%s (peer %s); stop it with 'agentiscaled down -data-dir <its directory>' or offer this agent under another name with 'agentiscaled agent add -name'", name, strings.Join(others, ", "))
 			return
 		}
 	}

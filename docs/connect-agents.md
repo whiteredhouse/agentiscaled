@@ -106,8 +106,8 @@ agentiscaled agent add codex \
 ```
 
 `agent add` signs in once more for node B, joins it to the same network and runs it as
-its own background service. When node A already offers an agent, `agent add` with
-another `-name` sets up such a node by itself, without `-data-dir`. The first argument picks the runtime that does the work:
+its own background service; node A offers more agents with plain `agent add`, with
+no node of their own. The first argument picks the runtime that does the work:
 `codex` (the Codex CLI) or `claude` (Claude Code, see
 [Claude Code as the agent](#claude-code-as-the-agent)). Node B checks that `codex` runs (`-command` takes another path), then
 serves the A2A 1.0 agent `a2a://codex` to the other nodes of your network.
@@ -184,7 +184,7 @@ its task is running is rejected by the same one-task-at-a-time gate. That gate i
 not a general delegation boundary: outgoing `send_task` calls use depth zero;
 the hosted runtime's delegation provenance is not automatically propagated.
 A repeated message ID from the same node is refused instead of run
-again, also after node B restarts (`<data-dir>/tasks-delivered.jsonl`). Incomplete
+again, also after node B restarts (`<data-dir>/agents/<name>/tasks-delivered.jsonl`). Incomplete
 final log writes are repaired before new tasks start. A malformed completed
 record prevents the service from starting because its duplicate history cannot
 be trusted. Preserve that file and restore a verified complete copy or reconcile its

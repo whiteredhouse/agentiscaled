@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -110,7 +111,7 @@ func (t *a2aTasks) route(ctx context.Context, target taskTarget) (string, *http.
 	if t.local != nil {
 		info, err := t.localInfo(ctx)
 		if err == nil && (target.PeerID == "" || target.PeerID == info.PeerID) {
-			if target.Service != info.Service {
+			if !slices.Contains(info.Services, target.Service) {
 				return "", nil, fmt.Errorf("this node does not host agent %q", target.Service)
 			}
 			return fmt.Sprintf("http://agentiscaled/a2a/%s/%s", info.PeerID, target.Service), t.local, nil
@@ -149,8 +150,10 @@ func (t *a2aTasks) localInfo(ctx context.Context) (localAgentInfo, error) {
 	if _, err := peer.Decode(info.PeerID); err != nil {
 		return info, fmt.Errorf("invalid local peer ID: %w", err)
 	}
-	if !serviceName.MatchString(info.Service) {
-		return info, errors.New("invalid local service name")
+	for _, name := range info.Services {
+		if !serviceName.MatchString(name) {
+			return info, errors.New("invalid local service name")
+		}
 	}
 	return info, nil
 }

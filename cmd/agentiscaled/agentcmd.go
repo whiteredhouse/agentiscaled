@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 )
@@ -40,55 +39,9 @@ func runAgent(ctx context.Context, args []string, out io.Writer) error {
 	return fmt.Errorf("unknown agent command %q\n%s", args[0], agentUsage)
 }
 
-// agentNode is a node on this machine and its saved settings.
-type agentNode struct {
-	dir string
-	s   settings
-}
-
-// agentName is the name of the agent a node offers in the network.
-func (n agentNode) agentName() string {
-	if n.s.AgentName != "" {
-		return n.s.AgentName
-	}
-	return runtimes[n.s.Agent].defaultName
-}
-
-// extraNodeDir is the data directory of the node that `agent add` sets up
-// for an agent when the default node already offers another one: one node
-// offers one agent.
-func extraNodeDir(name string) string {
-	return filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-"+name)
-}
-
-// localNodes are the nodes set up on this machine where `agent` looks for
-// them: the default node, the nodes `agent add` set up next to it, and the
-// one in dir, if given.
-func localNodes(dir string) []agentNode {
-	dirs := []string{defaultDataDir()}
-	extra, _ := filepath.Glob(filepath.Join(filepath.Dir(defaultDataDir()), "agentiscale-*"))
-	slices.Sort(extra)
-	dirs = append(dirs, extra...)
-	if dir != "" {
-		dirs = append(dirs, dir)
-	}
-	var nodes []agentNode
-	seen := map[string]bool{}
-	for _, d := range dirs {
-		if seen[realAbs(d)] {
-			continue
-		}
-		seen[realAbs(d)] = true
-		if s, err := loadSettings(d); err == nil {
-			nodes = append(nodes, agentNode{dir: d, s: s})
-		}
-	}
-	return nodes
-}
-
 func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("agent add", flag.ContinueOnError)
-	dataDir := fs.String("data-dir", "", "Data directory of the node that offers the agent (default: this machine's node, or a new node of the agent's own when that one offers another agent)")
+	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node that offers the agent")
 	dir := fs.String("dir", "", "Directory the agent works in (default: a new workspace of its own)")
 	name := fs.String("name", "", "Name of the agent in your network (default: the runtime's)")
 	description := fs.String("description", "", "What the agent does, as other agents see it on its card (default: the runtime's)")
@@ -152,80 +105,45 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 		return fmt.Errorf("name the agent's runtime: agentiscaled agent add %s [-dir DIR]", strings.Join(runtimeNames(), "|"))
 	}
 
+	offer.command = *command
 	if fi, err := os.Stat(offer.agentDir); err != nil || !fi.IsDir() {
 		return fmt.Errorf("-dir %s is not a directory", offer.agentDir)
 	}
 	if offer.agentDir, err = filepath.Abs(offer.agentDir); err != nil {
 		return err
 	}
-
-	// Pick the node: one node offers one agent.
-	def := defaultDataDir()
-	defSettings, defErr := loadSettings(def)
-	target, extra := *dataDir, false
-	if target == "" {
-		target = def
-		if defErr == nil && defSettings.Agent != "" && (agentNode{dir: def, s: defSettings}).agentName() != offer.name {
-			target, extra = extraNodeDir(offer.name), true
-		}
-	}
-	if target, err = filepath.Abs(target); err != nil {
+	if offer.dataDir, err = filepath.Abs(*dataDir); err != nil {
 		return err
 	}
-	if s, err := loadSettings(target); err == nil {
-		if n := (agentNode{dir: target, s: s}); s.Agent != "" && n.agentName() != offer.name {
-			return fmt.Errorf("the node in %s already offers %q; one node offers one agent. Remove it first with 'agentiscaled agent remove %s', or give another -data-dir", target, n.agentName(), n.agentName())
-		}
-		extra = false
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("load settings: %w", err)
+	if a, d := realAbs(offer.agentDir), realAbs(offer.dataDir); within(d, a) || within(a, d) {
+		return fmt.Errorf("the agent's directory %s and the node's data directory %s overlap: the agent could read the node's key and its own sign-in. Pick a -dir outside the data directory", offer.agentDir, offer.dataDir)
 	}
-	if a, d := realAbs(offer.agentDir), realAbs(target); within(d, a) || within(a, d) {
-		return fmt.Errorf("the agent's directory %s and the node's data directory %s overlap: the agent could read the node's key and its own sign-in. Pick a -dir outside the data directory", offer.agentDir, target)
-	}
-	for _, n := range localNodes(target) {
-		if realAbs(n.dir) != realAbs(target) && n.s.Agent != "" && n.agentName() == offer.name {
-			return fmt.Errorf("the node in %s already offers an agent named %q; remove it first ('agentiscaled agent remove %s') or pick another -name", n.dir, offer.name, offer.name)
-		}
-	}
-	if extra {
-		fmt.Fprintf(out, "This machine's node offers %q already, and one node offers one agent, so %q gets a node of its own in %s, which joins your network.\n", (agentNode{dir: def, s: defSettings}).agentName(), offer.name, homeRelative(target))
-	}
-	offer.dataDir = target
 	if ask != nil {
 		if err := ask.prepareAgent(ctx, offer); err != nil {
 			return err
 		}
 	}
-
-	up := []string{
-		"-data-dir", target, "-y",
-		"-agent", offer.runtime, "-agent-dir", offer.agentDir, "-agent-name", offer.name,
-		"-agent-description", offer.description,
-		"-agent-dir-instructions=" + strconv.FormatBool(offer.policy.DirInstructions),
-		"-agent-dir-skills=" + strconv.FormatBool(offer.policy.DirSkills),
-		"-agent-owner-config=" + strconv.FormatBool(offer.policy.OwnerConfig),
+	replaced := false
+	if s, err := loadSettings(offer.dataDir); err == nil {
+		replaced = slices.ContainsFunc(s.Agents, func(a agentConfig) bool { return a.Name == offer.name })
 	}
-	if *command != "" {
-		up = append(up, "-agent-command", *command)
-	}
-	if extra {
-		// The clients reach this agent through the node they use already.
-		up = append(up, "-clients", "none", "-hostname", defaultMachineName()+"-"+offer.name)
-		if defErr == nil && defSettings.Foreground {
-			up = append(up, "-foreground")
-		}
-	}
-	if err := bringUp(ctx, up, out, upOptions{agentFlags: true}); err != nil {
+	// The node signs in and joins first if it has not; a node that runs
+	// restarts to serve the agent next to the ones it offers already.
+	add := offer.config()
+	if err := bringUp(ctx, []string{"-data-dir", offer.dataDir, "-y"}, out, upOptions{addAgent: &add}); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "\nYour network has the agent %q from this machine. 'agentiscaled agent list' shows this machine's agents; 'agentiscaled agent remove %s' stops offering it.\n", offer.name, offer.name)
+	verb := "has"
+	if replaced {
+		verb = "has the changed"
+	}
+	fmt.Fprintf(out, "\nYour network %s agent %q from this machine. 'agentiscaled agent list' shows this machine's agents; 'agentiscaled agent remove %s' stops offering it.\n", verb, offer.name, offer.name)
 	return nil
 }
 
 func runAgentRemove(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("agent remove", flag.ContinueOnError)
-	dataDir := fs.String("data-dir", "", "Data directory of the node that offers the agent")
+	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node that offers the agent")
 	rest, err := parseInterleaved(fs, args)
 	if err != nil {
 		return err
@@ -233,51 +151,39 @@ func runAgentRemove(args []string, out io.Writer) error {
 	if len(rest) > 1 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(rest[1:], " "))
 	}
-	if *dataDir != "" {
-		if *dataDir, err = filepath.Abs(*dataDir); err != nil {
-			return err
-		}
+	dir, err := filepath.Abs(*dataDir)
+	if err != nil {
+		return err
 	}
-	var offering []agentNode
-	for _, n := range localNodes(*dataDir) {
-		if n.s.Agent == "" || *dataDir != "" && realAbs(n.dir) != realAbs(*dataDir) || len(rest) == 1 && n.agentName() != rest[0] {
-			continue
-		}
-		offering = append(offering, n)
+	s, err := loadSettings(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return errors.New("this machine offers no agent")
+	} else if err != nil {
+		return fmt.Errorf("load settings: %w", err)
 	}
 	var names []string
-	for _, n := range offering {
-		names = append(names, n.agentName())
+	for _, a := range s.Agents {
+		names = append(names, a.Name)
 	}
+	var name string
 	switch {
-	case len(offering) == 0 && len(rest) == 1:
+	case len(rest) == 1 && !slices.Contains(names, rest[0]):
 		return fmt.Errorf("this machine offers no agent named %q; see 'agentiscaled agent list'", rest[0])
-	case len(offering) == 0:
+	case len(rest) == 1:
+		name = rest[0]
+	case len(names) == 0:
 		return errors.New("this machine offers no agent")
-	case len(offering) > 1:
+	case len(names) > 1:
 		return fmt.Errorf("name the agent to remove: %s", strings.Join(names, ", "))
+	default:
+		name = names[0]
 	}
-	n := offering[0]
-	name := n.agentName()
-	s := n.s
-	s.Agent, s.AgentDir, s.AgentCommand, s.AgentName, s.AgentDescription, s.AgentEnv = "", "", "", "", "", nil
-	s.AgentIgnoreDirInstructions, s.AgentIgnoreDirSkills, s.AgentOwnConfig = false, false, false
-	if err := saveSettings(n.dir, s); err != nil {
+	s.Agents = slices.DeleteFunc(s.Agents, func(a agentConfig) bool { return a.Name == name })
+	if err := saveSettings(dir, s); err != nil {
 		return fmt.Errorf("save settings: %w", err)
 	}
-	fmt.Fprintf(out, "This machine no longer offers %q; its directory %s stays as it is.\n", name, homeRelative(n.dir))
-	svc := newService(n.dir)
-	// A node `agent add` set up for this agent alone has nothing left to do.
-	if realAbs(n.dir) == realAbs(extraNodeDir(name)) && s.Clients == "none" {
-		if svc != nil && svc.installed() {
-			if err := svc.remove(); err != nil {
-				return err
-			}
-		}
-		fmt.Fprintf(out, "Stopped its node in %s. The node keeps its place in your network until you remove it in the console (%s).\n", homeRelative(n.dir), consoleURL)
-		return nil
-	}
-	return restartNode(n.dir, s, svc, out)
+	fmt.Fprintf(out, "This machine no longer offers %q; its directory stays as it is.\n", name)
+	return restartNode(dir, s, newService(dir), out)
 }
 
 // restartNode restarts a node's background service so that it runs with
@@ -303,39 +209,29 @@ func restartNode(dir string, s settings, svc service, out io.Writer) error {
 
 func runAgentList(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("agent list", flag.ContinueOnError)
-	dataDir := fs.String("data-dir", "", "Also look at the node in this data directory")
+	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	if *dataDir != "" {
-		dir, err := filepath.Abs(*dataDir)
-		if err != nil {
-			return err
-		}
-		*dataDir = dir
+	s, err := loadSettings(*dataDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("load settings: %w", err)
 	}
-	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	any := false
-	for _, n := range localNodes(*dataDir) {
-		if n.s.Agent == "" {
-			continue
-		}
-		if !any {
-			fmt.Fprintln(tw, "NAME\tRUNTIME\tDIRECTORY\tNODE\tTASKS")
-			any = true
-		}
-		tasks := "running"
-		if _, err := os.Stat(stopFilePath(n.dir)); err == nil {
-			tasks = "stopped"
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", n.agentName(), n.s.Agent, homeRelative(n.s.AgentDir), homeRelative(n.dir), tasks)
-	}
-	if !any {
+	if len(s.Agents) == 0 {
 		fmt.Fprintln(out, "This machine offers no agent. Offer one with 'agentiscaled agent add'.")
 		return nil
+	}
+	tasks := "running"
+	if _, err := os.Stat(stopFilePath(*dataDir)); err == nil {
+		tasks = "stopped"
+	}
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tRUNTIME\tDIRECTORY\tTASKS")
+	for _, a := range s.Agents {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Name, a.Runtime, homeRelative(a.Dir), tasks)
 	}
 	return tw.Flush()
 }

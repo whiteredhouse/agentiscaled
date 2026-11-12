@@ -33,7 +33,7 @@ Linux packages, connecting your agent apps, and machines without a browser.
 | `agentiscaled down` | Stop and remove the background service; the node keeps its identity |
 | `agentiscaled reset` | Drop the node's identity so `up` joins it again as a new node; its settings stay |
 | `agentiscaled mcp` | Serve the node's tools over stdio to an MCP client ([Connect an agent client](docs/connect-agents.md)) |
-| `agentiscaled tasks stop\|resume\|status` | Stop or resume tasks for an agent this node offers |
+| `agentiscaled tasks stop\|resume\|status` | Stop or resume tasks for the agents this node offers |
 | `agentiscaled run` | Run the node in the foreground with the options saved by `up` |
 | `agentiscaled version` | Print the version |
 

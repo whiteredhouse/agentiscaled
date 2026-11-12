@@ -168,11 +168,14 @@ agentiscaled agent add codex -dir ~/work/my-project
 
 Add `-name <name>` for a name other than the default, or `-description "<text>"` for
 your own description; `-dir` defaults to the agent's own workspace. Running
-`agent add` again with the same name changes that agent. `agent list` shows the
-agents this machine offers, and `agent remove <name>` stops offering one, leaving its
-directory as it is. `up` keeps the offered agent as it is; it takes no agent flags.
-`status`, `down`, `reset` and `tasks` address this same node. Reset keeps its agent
-configuration and runtime sign-in.
+`agent add` again with the same name changes that agent, and `agent add` with
+another name offers one more agent from the same node, next to the first: there
+is no second sign-in, node or service. `agent list` shows the agents this machine
+offers, and `agent remove <name>` stops offering one, leaving its directory as it
+is; each restarts the node's background service. `up` keeps the offered agents as
+they are; it takes no agent flags. `status`, `down`, `reset` and `tasks` address
+this same node, and `tasks stop` stops the tasks of all its agents. Reset keeps its
+agents' configuration and runtime sign-ins.
 
 Agent questions, runtime login and validation finish before `up` or `agent add` stops an existing
 service. If a later enrollment, save or startup step fails, agentiscaled attempts to restore
@@ -182,7 +185,7 @@ Client setup uses your invoking shell's Codex configuration, even when the hoste
 agent uses a different saved `CODEX_HOME`.
 
 The MCP tools preserve Agent Mesh's discovery distinction: `list_local_services`
-with type `a2a` lists this node's hosted agent; `discover_remote_services` lists
+with type `a2a` lists this node's hosted agents; `discover_remote_services` lists
 agents on other nodes. For a local agent, read its card with `get_agent_card`,
 then call `send_task`, using its `name` as `service` and omitting `peer_id` for both. For a remote agent, pass its `srv_name` as `service`
 and its `peer_id`. Use the same target with `get_task` and `cancel_task`.
@@ -196,65 +199,21 @@ for an example.
 
 ## More than one node on a machine
 
-A node offers one agent. When this machine's node already offers one, `agent add`
-with another name gives the new agent a node of its own, next to the default one
-(`~/Library/Application Support/agentiscale-<name>` on macOS,
-`~/.config/agentiscale-<name>` on Linux). That node signs in and joins your network
-once, runs as its own background service and is not connected to your agent apps,
-which reach its agent through the node they already use:
+One node offers all the agents of a machine, so most machines need no other.
+A node in a data directory of its own, such as one run apart for testing, takes
+`-data-dir` on `up`, `agent`, `clients`, `status`, `down`, `reset`, `tasks` and
+`mcp`, and has its own identity, service and recovery target. Its server in your
+agent apps, if you connect it with `clients connect -data-dir <dir>`, is named after
+the directory, such as `agentiscale-reviewer`.
 
-```sh
-agentiscaled agent add codex -name reviewer -dir ~/work/my-project
-```
-
-`agent remove reviewer` stops that node's service; remove the node from your network
-in the console. Each node has its own data directory, identity, service and recovery
-target. Pass its `-data-dir` to `status`, `down`, `reset`, `tasks` and `mcp`, or to
-`agent add` to pick the directory yourself. Its server in your agent apps, if you
-connect it with `clients connect -data-dir <dir>`, is named after the directory, such
-as `agentiscale-reviewer`.
-
-Nodes created by older versions in directories such as `agentiscale-codex-2` stay
-independent. This version does not move their configuration or remove their services.
-To move an agent onto the default node, explicitly configure its workspace, name and
-runtime policy there. Stop the old node with `down -data-dir <old-directory>` before
-offering the same service name from the default node. If another node on your network still serves that name, the node's log says so
-shortly after it starts. Keep its data directory until
-you have verified the new setup; isolated runtime sign-ins are specific to that directory.
-
-Before configuring the selected node, record the old agent's workspace, name,
-description, and choices for `-owner-config`, `-dir-instructions`, and
-`-dir-skills` of `agent add`. Pass those choices explicitly so consolidation preserves its
-permissions. For an owner-configured runtime, use the same `CODEX_HOME` if one was
-configured. An isolated runtime needs its own login in the selected node's data
-directory. Do not copy node keys or enrollment files between directories.
-
-Confirm that `status` names the intended network and agent, then use
-`list_local_services`, `get_agent_card`, and a harmless task to verify the same-node
-path. Existing client entries stay unchanged; if a client is configured for the old
-agent node, reconnect it deliberately to the selected node.
-
-## Machines that cannot sign in
-
-Create a join code in your network and pass it in a file, to join the first time or
-after `reset`:
-
-```sh
-agentiscaled up -join-code-path ./join-code
-```
-
-## Delete your account
-
-Delete your account and network in the console, under **Account details > Delete
-account**. Every node is removed from your network and disconnected at once, and every
-join code stops working. Nodes notice they were removed and stop; `agentiscaled down`
-stops the one on this machine.
-
-For 30 days you can sign in to the console and choose **Restore account**. Your
-network comes back with its name and history, but its machines were removed: run
-`agentiscaled reset` on each to join it again. Until you restore it, `agentiscaled up`
-can't add a machine and says so.
-
-After 30 days, agentiscale deletes your account and your network's data for good, and
-signing in again starts a new, empty account. Uninstall agentiscaled on your machines,
-and delete the node's data directory, to remove what is stored locally.
+Nodes set up by older versions for one agent each, in directories such as
+`agentiscale-codex-2` or `agentiscale-<name>`, stay independent: this version does not
+move their agents or remove their services. To move such an agent onto the default
+node, record its workspace, name, description, and choices for `-owner-config`,
+`-dir-instructions` and `-dir-skills`, stop the old node with
+`down -data-dir <old-directory>`, then offer the agent again with `agent add` and the
+same choices. If another node on your network still serves that name, the node's log
+says so shortly after it starts. Remove the old node from your network in the console
+once the new setup works. An isolated runtime (`-owner-config=false`) needs its own
+login in the default node's data directory. Do not copy node keys or enrollment files
+between directories.

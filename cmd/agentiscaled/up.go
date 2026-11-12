@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -34,20 +35,10 @@ type settings struct {
 	APITokenPath string `json:"api_token_path,omitempty"`
 	Listen       string `json:"listen"`
 	LogLevel     string `json:"log_level"`
-	Agent        string `json:"agent,omitempty"`
-	AgentDir     string `json:"agent_dir,omitempty"`
-	AgentCommand string `json:"agent_command,omitempty"`
-	AgentName    string `json:"agent_name,omitempty"`
-	// AgentDescription replaces the runtime's description on the card.
-	AgentDescription string `json:"agent_description,omitempty"`
-	// What the agent may not take from AgentDir; it takes all when absent.
-	AgentIgnoreDirInstructions bool `json:"agent_ignore_dir_instructions,omitempty"`
-	AgentIgnoreDirSkills       bool `json:"agent_ignore_dir_skills,omitempty"`
-	AgentOwnConfig             bool `json:"agent_own_config,omitempty"`
-	// AgentEnv locates the owner's configuration of the agent's runtime,
-	// such as CODEX_HOME, as `up` found it (agentOwnerEnv).
-	AgentEnv    []string `json:"agent_env,omitempty"`
-	MachineName string   `json:"machine_name,omitempty"`
+	// Agents are the agents the node offers, which `agent add` and
+	// `agent remove` change.
+	Agents      []agentConfig `json:"agents,omitempty"`
+	MachineName string        `json:"machine_name,omitempty"`
 	// PATH for the service, captured at `up`, since launchd and systemd
 	// start services with a minimal one and an agent CLI may need more.
 	Path string `json:"path,omitempty"`
@@ -88,22 +79,16 @@ func saveSettings(dataDir string, s settings) error {
 
 func (s settings) config(dataDir string) config {
 	return config{
-		control:          s.Control,
-		dataDir:          dataDir,
-		configFile:       s.ConfigFile,
-		bindAddr:         s.BindAddr,
-		apiTokenPath:     s.APITokenPath,
-		listen:           s.Listen,
-		logLevel:         s.LogLevel,
-		agent:            s.Agent,
-		agentDir:         s.AgentDir,
-		agentCommand:     s.AgentCommand,
-		agentName:        s.AgentName,
-		agentDescription: s.AgentDescription,
-		agentPolicy:      agentPolicy{DirInstructions: !s.AgentIgnoreDirInstructions, DirSkills: !s.AgentIgnoreDirSkills, OwnerConfig: !s.AgentOwnConfig},
-		machineName:      s.MachineName,
-		agentEnv:         s.AgentEnv,
-		networkID:        s.network(),
+		control:      s.Control,
+		dataDir:      dataDir,
+		configFile:   s.ConfigFile,
+		bindAddr:     s.BindAddr,
+		apiTokenPath: s.APITokenPath,
+		listen:       s.Listen,
+		logLevel:     s.LogLevel,
+		agents:       s.Agents,
+		machineName:  s.MachineName,
+		networkID:    s.network(),
 	}
 }
 
@@ -159,28 +144,19 @@ func runUp(ctx context.Context, args []string, out io.Writer) error {
 // upOptions are what differs between `up` and the commands that bring a
 // node up on its behalf, such as `agent add`.
 type upOptions struct {
-	// agentFlags accepts the -agent* flags, which `agent add` sets; `up`
-	// keeps the saved agent and changes it only through its wizard.
-	agentFlags bool
+	// addAgent is the agent that `agent add` offers from the node, in
+	// place of a saved one of the same name. `up` keeps the saved agents
+	// and adds one only through its wizard.
+	addAgent *agentConfig
 	// askClients and askAgent let the wizard ask which clients to connect
 	// and whether to offer an agent.
 	askClients, askAgent bool
 }
 
-// isAgentFlag tells the node flags that only `agent add` sets.
-func isAgentFlag(name string) bool { return name == "agent" || strings.HasPrefix(name, "agent-") }
-
 func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) (runErr error) {
 	var c config
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	nodeFlags(fs, &c)
-	// up has no agent flags: it keeps the saved agent, which `agent add`
-	// and `agent remove` change.
-	agentFS := fs
-	if !opts.agentFlags {
-		agentFS = flag.NewFlagSet("saved agent", flag.ContinueOnError)
-	}
-	agentFlags(agentFS, &c)
 	fs.StringVar(&c.control, "control", defaultControl, "URL of the agentiscale control service")
 	var auth authConfig
 	fs.StringVar(&auth.issuer, "auth-issuer", defaultAuth.issuer, "OIDC issuer that signs you in")
@@ -211,33 +187,22 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 		return fmt.Errorf("load settings: %w", err)
 	}
 	haveSaved := err == nil
-	preserveAgentEnv := haveSaved && !set["agent"] && !set["agent-owner-config"]
 	if err == nil {
 		values := map[string]string{
 			"control": saved.Control, "config": saved.ConfigFile, "bind-addr": saved.BindAddr,
 			"api-token-path": saved.APITokenPath, "listen": saved.Listen, "log-level": saved.LogLevel,
-			"agent": saved.Agent, "agent-dir": saved.AgentDir, "agent-command": saved.AgentCommand,
-			"agent-name": saved.AgentName, "agent-description": saved.AgentDescription, "hostname": saved.MachineName,
-			"agent-dir-instructions": strconv.FormatBool(!saved.AgentIgnoreDirInstructions),
-			"agent-dir-skills":       strconv.FormatBool(!saved.AgentIgnoreDirSkills),
-			"agent-owner-config":     strconv.FormatBool(!saved.AgentOwnConfig),
-			"foreground":             strconv.FormatBool(saved.Foreground),
-			"clients":                saved.Clients,
+			"hostname":   saved.MachineName,
+			"foreground": strconv.FormatBool(saved.Foreground),
+			"clients":    saved.Clients,
 		}
 		for name, value := range values {
 			if !set[name] && !(name == "clients" && value == "") {
-				target := fs
-				if isAgentFlag(name) {
-					target = agentFS
-				}
-				if err := target.Set(name, value); err != nil {
+				if err := fs.Set(name, value); err != nil {
 					return err
 				}
 			}
 		}
-		if preserveAgentEnv {
-			c.agentEnv = saved.AgentEnv
-		}
+		c.agents = slices.Clone(saved.Agents)
 	}
 	// A second node on the machine must not take the first one's ports, so
 	// unless told otherwise it listens on free ones and serves its API on its
@@ -250,8 +215,15 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 			c.bindAddr = ""
 		}
 	}
-	if err := checkUpAgent(&c, !*noService, preserveAgentEnv); err != nil {
-		return err
+	for i := range c.agents {
+		if err := checkSavedAgent(&c.agents[i], c.dataDir, !*noService); err != nil {
+			return err
+		}
+	}
+	if opts.addAgent != nil {
+		if err := addAgent(&c, *opts.addAgent, !*noService); err != nil {
+			return err
+		}
 	}
 	if err := checkClients(*clients); err != nil {
 		return err
@@ -265,20 +237,17 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 				return err
 			}
 		}
-		if opts.askAgent && c.agent == "" && !set["agent"] {
+		if opts.askAgent && len(c.agents) == 0 {
 			offer, err := ask.offerAgent()
 			if err != nil {
 				return err
 			}
 			if offer != nil {
-				preserveAgentEnv = false
 				offer.dataDir = c.dataDir
 				if err := ask.prepareAgent(ctx, offer); err != nil {
 					return err
 				}
-				c.agent, c.agentDir, c.agentName, c.agentDescription, c.agentPolicy = offer.runtime, offer.agentDir, offer.name, offer.description, offer.policy
-				c.agentEnv = agentOwnerEnv(c.agent, c.agentPolicy)
-				if err := checkAgent(&c, !*noService); err != nil {
+				if err := addAgent(&c, offer.config(), !*noService); err != nil {
 					return err
 				}
 			}
@@ -324,33 +293,21 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 		return err
 	}
 	fmt.Fprintf(out, "This node is %s in network %s.\n", joined.peerID, joined.networkID)
-	if !preserveAgentEnv {
-		c.agentEnv = agentOwnerEnv(c.agent, c.agentPolicy)
-	}
 	s := settings{
-		Control:          c.control,
-		ConfigFile:       c.configFile,
-		BindAddr:         c.bindAddr,
-		APITokenPath:     c.apiTokenPath,
-		Listen:           c.listen,
-		LogLevel:         c.logLevel,
-		Agent:            c.agent,
-		AgentDir:         c.agentDir,
-		AgentCommand:     c.agentCommand,
-		AgentName:        c.agentName,
-		AgentDescription: c.agentDescription,
-		MachineName:      c.machineName,
-
-		AgentIgnoreDirInstructions: !c.agentPolicy.DirInstructions,
-		AgentIgnoreDirSkills:       !c.agentPolicy.DirSkills,
-		AgentOwnConfig:             !c.agentPolicy.OwnerConfig,
-		AgentEnv:                   c.agentEnv,
-		Path:                       os.Getenv("PATH"),
-		Clients:                    *clients,
-		Foreground:                 *noService,
-		PeerID:                     joined.peerID,
-		NetworkID:                  joined.networkID,
-		MeshURL:                    joined.meshURL,
+		Control:      c.control,
+		ConfigFile:   c.configFile,
+		BindAddr:     c.bindAddr,
+		APITokenPath: c.apiTokenPath,
+		Listen:       c.listen,
+		LogLevel:     c.logLevel,
+		Agents:       c.agents,
+		MachineName:  c.machineName,
+		Path:         os.Getenv("PATH"),
+		Clients:      *clients,
+		Foreground:   *noService,
+		PeerID:       joined.peerID,
+		NetworkID:    joined.networkID,
+		MeshURL:      joined.meshURL,
 	}
 	if err := saveSettings(c.dataDir, s); err != nil {
 		return fmt.Errorf("save settings: %w", err)
@@ -389,11 +346,12 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 	return nil
 }
 
-// checkUpAgent limits the saved runtime environment to validation. Client
-// setup and interactive questions use the invoking shell's configuration.
-func checkUpAgent(c *config, service, preserveEnv bool) error {
-	if preserveEnv && c.agentPolicy.OwnerConfig {
-		for _, name := range runtimes[c.agent].ownerEnv {
+// checkSavedAgent checks a saved agent with the owner's configuration as
+// it was saved, which may differ from this shell's. Client setup and
+// interactive questions use the invoking shell's configuration.
+func checkSavedAgent(a *agentConfig, dataDir string, service bool) error {
+	if a.policy().OwnerConfig {
+		for _, name := range runtimes[a.Runtime].ownerEnv {
 			previous, existed := os.LookupEnv(name)
 			defer func() {
 				if existed {
@@ -403,7 +361,7 @@ func checkUpAgent(c *config, service, preserveEnv bool) error {
 				}
 			}()
 			value := ""
-			for _, kv := range c.agentEnv {
+			for _, kv := range a.Env {
 				key, v, _ := strings.Cut(kv, "=")
 				if key == name {
 					value = v
@@ -415,7 +373,24 @@ func checkUpAgent(c *config, service, preserveEnv bool) error {
 			}
 		}
 	}
-	return checkAgent(c, service)
+	return checkAgent(a, dataDir, service)
+}
+
+// addAgent checks a new agent, with the owner's configuration as this shell
+// has it, and adds it to the node's agents, in place of one of the same name.
+func addAgent(c *config, a agentConfig, service bool) error {
+	if err := checkAgent(&a, c.dataDir, service); err != nil {
+		return err
+	}
+	a.Env = agentOwnerEnv(a.Runtime, a.policy())
+	for i := range c.agents {
+		if c.agents[i].Name == a.Name {
+			c.agents[i] = a
+			return nil
+		}
+	}
+	c.agents = append(c.agents, a)
+	return nil
 }
 
 // nextSteps connects the chosen agent clients to the node, or prints how to.
@@ -431,61 +406,61 @@ func nextSteps(ctx context.Context, out io.Writer, clients string, c config, exe
 		dirFlag = " -data-dir " + shellQuote(c.dataDir)
 	}
 	fmt.Fprintf(out, "\nConnect or disconnect agent clients later with 'agentiscaled clients connect%s' or 'clients disconnect'.\n", dirFlag)
-	if c.agent == "" {
+	if len(c.agents) == 0 {
 		fmt.Fprintln(out, "Offer an agent from this machine with 'agentiscaled agent add'.")
 	}
 }
 
 // checkAgent checks an agent's settings before anything is enrolled or
-// started, so a background service does not restart forever on a bad flag,
-// and fixes the agent command to an absolute path that the service finds.
-func checkAgent(c *config, service bool) error {
-	if c.agent == "" {
-		return nil
-	}
-	spec, ok := runtimes[c.agent]
+// started, so a background service does not restart forever on a bad
+// setting, and fixes its name to the runtime's default when it has none and
+// its command to an absolute path that the service finds.
+func checkAgent(a *agentConfig, dataDir string, service bool) error {
+	spec, ok := runtimes[a.Runtime]
 	if !ok {
-		return fmt.Errorf("-agent %q: unknown runtime (have %s)", c.agent, strings.Join(runtimeNames(), ", "))
+		return fmt.Errorf("agent runtime %q: unknown (have %s)", a.Runtime, strings.Join(runtimeNames(), ", "))
 	}
-	if c.agentDir == "" {
-		return fmt.Errorf("-agent %s needs -agent-dir", c.agent)
+	if a.Name == "" {
+		a.Name = spec.defaultName
 	}
-	if c.agentName != "" {
-		if err := agentNameError(c.agentName); err != nil {
-			return fmt.Errorf("-agent-name: %w", err)
-		}
+	if err := agentNameError(a.Name); err != nil {
+		return err
 	}
-	dir, err := filepath.Abs(c.agentDir)
+	if a.Dir == "" {
+		return fmt.Errorf("agent %s has no directory to work in", a.Name)
+	}
+	dir, err := filepath.Abs(a.Dir)
 	if err != nil {
 		return err
 	}
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return fmt.Errorf("-agent-dir %s is not a directory", dir)
+		return fmt.Errorf("agent %s: %s is not a directory", a.Name, dir)
 	}
-	c.agentDir = dir
-	if err := agentDirApart(dir, c.dataDir); err != nil {
+	a.Dir = dir
+	if err := agentDirApart(dir, dataDir); err != nil {
 		return err
 	}
-	command := c.agentCommand
+	command := a.Command
 	if command == "" {
 		command = spec.defaultCommand
 	}
 	if path, err := exec.LookPath(command); err == nil {
 		if abs, err := filepath.Abs(path); err == nil {
-			c.agentCommand = abs
+			a.Command = abs
 		}
 	} else {
 		return fmt.Errorf("agent command %q not found: %w", command, err)
 	}
+	policy := a.policy()
 	// The runtime checks the rest, such as the agent's own sign-in.
-	if _, err = spec.new(c.agentCommand, c.dataDir, c.agentPolicy); err != nil {
+	if _, err = spec.new(a.Command, dataDir, policy); err != nil {
 		return err
 	}
 	// A credential in this shell's environment does not reach the
 	// background service.
-	if service && spec.signedIn != nil && !spec.signedIn(c.agentCommand, c.dataDir, c.agentPolicy) {
-		_, shown := spec.login(context.Background(), c.agentCommand, c.dataDir, c.agentPolicy)
-		return fmt.Errorf("%s is signed in only through this shell's environment, which the background service does not get: run\n  %s\nor use -foreground and start 'agentiscaled run' from this shell", c.agent, shown)
+	if service && spec.signedIn != nil && !spec.signedIn(a.Command, dataDir, policy) {
+		_, shown := spec.login(context.Background(), a.Command, dataDir, policy)
+		return fmt.Errorf("%s is signed in only through this shell's environment, which the background service does not get: run\n  %s\nor use -foreground and start 'agentiscaled run' from this shell", a.Runtime, shown)
 	}
 	return nil
 }
@@ -650,8 +625,8 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 		fmt.Fprintf(out, "Network:  %s\n", s.network())
 		fmt.Fprintf(out, "Mesh:     %s\n", s.MeshURL)
 	}
-	if s.Agent != "" {
-		fmt.Fprintf(out, "Agent:    %s in %s\n", s.Agent, s.AgentDir)
+	for _, a := range s.Agents {
+		fmt.Fprintf(out, "Agent:    %s (%s) in %s\n", a.Name, a.Runtime, a.Dir)
 	}
 	serviceRuns := false
 	if svc := newService(dir); svc != nil {

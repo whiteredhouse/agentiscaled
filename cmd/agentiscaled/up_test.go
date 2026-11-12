@@ -163,8 +163,9 @@ func TestEnrollSignedInWaitsForTheNetwork(t *testing.T) {
 func TestSettingsRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	want := settings{Control: "https://c", BindAddr: "", Listen: "/ip4/0.0.0.0/tcp/1", LogLevel: "info",
-		Agent: "codex", AgentDir: "/repo", AgentCommand: "/bin/codex", AgentDescription: "Answers questions", MachineName: "mac", AgentEnv: []string{"CODEX_HOME=/codex"},
-		PeerID: "12D3", NetworkID: "af75fb5f-b7ee-4dac-aaab-d88de92dba80", MeshURL: "https://af75fb5f-b7ee-4dac-aaab-d88de92dba80.mesh.agentiscale.net"}
+		Agents:      []agentConfig{{Runtime: "codex", Name: "codex", Dir: "/repo", Command: "/bin/codex", Description: "Answers questions", Env: []string{"CODEX_HOME=/codex"}}, {Runtime: "claude", Name: "writer", Dir: "/docs", OwnConfig: true}},
+		MachineName: "mac",
+		PeerID:      "12D3", NetworkID: "af75fb5f-b7ee-4dac-aaab-d88de92dba80", MeshURL: "https://af75fb5f-b7ee-4dac-aaab-d88de92dba80.mesh.agentiscale.net"}
 	if err := saveSettings(dir, want); err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +178,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("loaded %+v, %v", got, err)
 	}
 	c := got.config(dir)
-	if c.bindAddr != "" || c.agent != "codex" || c.dataDir != dir || c.signInToken != "" || !c.agentPolicy.OwnerConfig || len(c.agentEnv) != 1 {
+	if c.bindAddr != "" || len(c.agents) != 2 || c.agents[0].Runtime != "codex" || c.dataDir != dir || c.signInToken != "" || !c.agents[0].policy().OwnerConfig || c.agents[1].policy().OwnerConfig || len(c.agents[0].Env) != 1 {
 		t.Fatalf("config %+v", c)
 	}
 	if id := networkFromMeshURL(got.MeshURL); id != "af75fb5f-b7ee-4dac-aaab-d88de92dba80" {

@@ -166,10 +166,16 @@ var (
 	errStoppedByOwner    = errors.New("stopped by the owner")
 )
 
-// newAgentService makes the agent service for dir, keeping its state in the
-// node's data directory.
-func newAgentService(dir string, rt runtime, dataDir string) (*agentService, error) {
-	delivered, err := loadDeliveries(filepath.Join(dataDir, "tasks-delivered.jsonl"))
+// newAgentService makes the service of the agent named name, which works in
+// dir, keeping its state in the node's data directory: what is the agent's
+// alone under agents/<name>, and the owner's stop for all of the node's
+// agents.
+func newAgentService(dir string, rt runtime, dataDir, name string) (*agentService, error) {
+	state := filepath.Join(dataDir, "agents", name)
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		return nil, err
+	}
+	delivered, err := loadDeliveries(filepath.Join(state, "tasks-delivered.jsonl"))
 	if err != nil {
 		return nil, err
 	}
