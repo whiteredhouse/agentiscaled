@@ -174,6 +174,13 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 	var c config
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	nodeFlags(fs, &c)
+	// up has no agent flags: it keeps the saved agent, which `agent add`
+	// and `agent remove` change.
+	agentFS := fs
+	if !opts.agentFlags {
+		agentFS = flag.NewFlagSet("saved agent", flag.ContinueOnError)
+	}
+	agentFlags(agentFS, &c)
 	fs.StringVar(&c.control, "control", defaultControl, "URL of the agentiscale control service")
 	var auth authConfig
 	fs.StringVar(&auth.issuer, "auth-issuer", defaultAuth.issuer, "OIDC issuer that signs you in")
@@ -182,19 +189,6 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 	noService := fs.Bool("foreground", false, "Do not install a background service; join and exit, then run 'agentiscaled run' yourself")
 	assumeYes := fs.Bool("y", false, "Ask nothing; take every default, as when 'up' runs without a terminal")
 	clients := fs.String("clients", clientsAuto, "Agent clients to connect to this node: auto (every installed one, including when it hosts an agent), none, or a list of "+strings.Join(clientNames, ","))
-	if !opts.agentFlags {
-		fs.Usage = func() {
-			fmt.Fprintf(fs.Output(), "Usage of up (offer an agent with 'agentiscaled agent add'):\n")
-			shown := flag.NewFlagSet("up", flag.ContinueOnError)
-			shown.SetOutput(fs.Output())
-			fs.VisitAll(func(f *flag.Flag) {
-				if !isAgentFlag(f.Name) {
-					shown.Var(f.Value, f.Name, f.Usage)
-				}
-			})
-			shown.PrintDefaults()
-		}
-	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -203,13 +197,6 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 	}
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-	if !opts.agentFlags {
-		for name := range set {
-			if isAgentFlag(name) {
-				return fmt.Errorf("up takes no -%s: offer, change or remove an agent with 'agentiscaled agent add' and 'agentiscaled agent remove'", name)
-			}
-		}
-	}
 	var ask *wizard
 	if !*assumeYes && interactive() {
 		ask = &wizard{in: bufio.NewReader(os.Stdin), out: out}
@@ -239,7 +226,11 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 		}
 		for name, value := range values {
 			if !set[name] && !(name == "clients" && value == "") {
-				if err := fs.Set(name, value); err != nil {
+				target := fs
+				if isAgentFlag(name) {
+					target = agentFS
+				}
+				if err := target.Set(name, value); err != nil {
 					return err
 				}
 			}

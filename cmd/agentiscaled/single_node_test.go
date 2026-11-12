@@ -141,7 +141,7 @@ func TestUpPreservesDefaultOwnerConfig(t *testing.T) {
 		t.Fatalf("captured another owner configuration: %v", got.AgentEnv)
 	}
 	// up leaves the agent to `agent add` and `agent remove`.
-	if err := runUp(context.Background(), []string{"-y", "-foreground", "-clients", "none", "-agent="}, io.Discard); err == nil || !strings.Contains(err.Error(), "agentiscaled agent add") {
+	if err := runUp(context.Background(), []string{"-y", "-foreground", "-clients", "none", "-agent="}, io.Discard); err == nil || !strings.Contains(err.Error(), "not defined") {
 		t.Fatalf("up took -agent: %v", err)
 	}
 	// Explicit values still override the saved values, including false and empty.

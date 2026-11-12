@@ -79,11 +79,11 @@ func TestClientsNeedANode(t *testing.T) {
 	}
 }
 
-func TestUpRefusesAgentFlags(t *testing.T) {
+func TestUpHasNoAgentFlags(t *testing.T) {
 	withDefaultDataDir(t)
 	for _, flag := range []string{"-agent=codex", "-agent-dir=/tmp", "-agent-owner-config=false"} {
 		err := runUp(context.Background(), []string{"-y", "-foreground", flag}, io.Discard)
-		if err == nil || !strings.Contains(err.Error(), "agentiscaled agent add") {
+		if err == nil || !strings.Contains(err.Error(), "not defined") {
 			t.Errorf("up %s: %v", flag, err)
 		}
 	}
