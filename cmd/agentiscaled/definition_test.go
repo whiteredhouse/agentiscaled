@@ -226,8 +226,8 @@ func TestTOMLStringRoundTrips(t *testing.T) {
 	}
 }
 
-// `agent add -definition` takes the name, description and directory from
-// the definition, never the runtime.
+// `agent add -definition` copies the definition into the agent's state and
+// takes the name and directory from it, never the runtime.
 func TestAgentAddDefinition(t *testing.T) {
 	def := withDefaultDataDir(t)
 	mesh := newStandInMesh(t, "fine")
@@ -264,9 +264,46 @@ func TestAgentAddDefinition(t *testing.T) {
 		t.Fatalf("agents: %+v", s.Agents)
 	}
 	a := s.Agents[0]
-	if a.Runtime != "codex" || a.Name != "docs-writer" || a.Description != "Use to write and edit user docs." || a.Dir != project || a.Definition != path {
+	if a.Runtime != "codex" || a.Name != "docs-writer" || a.Description != "" || a.Dir != project || a.Definition != path || len(a.DefinitionSHA256) != 64 {
 		t.Fatalf("agent: %+v", a)
 	}
+	// The node runs it with its own copy, out of the agent's directory, and
+	// its card has the copy's description.
+	copyPath := filepath.Join(def, "agents", "docs-writer", "definition.toml")
+	if b, err := os.ReadFile(copyPath); err != nil || string(b) != codexAgentFile {
+		t.Fatalf("copy: %q, %v", b, err)
+	}
+	svc, err := newAgent(&a, def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.card(a.Name).Description; got != "Use to write and edit user docs." {
+		t.Errorf("card description %q", got)
+	}
+	if rt := svc.rt.(*codexRuntime); rt.def == nil || rt.def.Name != "docs-writer" {
+		t.Errorf("runtime definition: %+v", rt.def)
+	}
+	// A changed or deleted source changes nothing until the next add, and
+	// agent list says so.
+	write(t, path, strings.Replace(codexAgentFile, "You write docs.", "You write poems.", 1))
+	out.Reset()
+	if err := runAgent(context.Background(), []string{"list"}, &out); err != nil || !strings.Contains(out.String(), "(source changed)") || !strings.Contains(out.String(), "agent add RUNTIME") {
+		t.Fatalf("list after a change: %v\n%s", err, &out)
+	}
+	if d, err := loadDefinition(copyPath); err != nil || strings.Contains(d.Instructions, "poems") {
+		t.Fatalf("copy after a change: %+v, %v", d, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := runAgent(context.Background(), []string{"list"}, &out); err != nil || !strings.Contains(out.String(), "(source gone)") {
+		t.Fatalf("list after a delete: %v\n%s", err, &out)
+	}
+	if _, err := newAgent(&a, def); err != nil {
+		t.Fatalf("agent without its source: %v", err)
+	}
+	write(t, path, codexAgentFile)
 	// Flags win over the definition.
 	other := t.TempDir()
 	if err := runAgent(context.Background(), []string{"add", "codex", "-y", "-definition", path, "-name", "writer", "-description", "Writes.", "-dir", other, "-command", command}, io.Discard); err != nil {
@@ -287,5 +324,18 @@ func TestAgentAddDefinition(t *testing.T) {
 	}
 	if err := runAgent(context.Background(), []string{"add", "codex", "-y", "-definition", filepath.Join(project, "missing.md")}, io.Discard); err == nil {
 		t.Fatal("add with a missing definition")
+	}
+	// Adding it again without a definition, or removing it, drops the copy.
+	if err := runAgent(context.Background(), []string{"add", "codex", "-y", "-name", "writer", "-dir", other, "-command", command}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(def, "agents", "writer", "definition.toml")); !os.IsNotExist(err) {
+		t.Errorf("copy after add without a definition: %v", err)
+	}
+	if err := runAgent(context.Background(), []string{"remove", "docs-writer"}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(copyPath); !os.IsNotExist(err) {
+		t.Errorf("copy after remove: %v", err)
 	}
 }

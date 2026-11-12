@@ -98,9 +98,6 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 			if offer.name == "" {
 				offer.name = def.Name
 			}
-			if offer.description == "" {
-				offer.description = def.Description
-			}
 			if offer.agentDir == "" {
 				offer.agentDir = definitionRoot(defPath)
 			}
@@ -150,6 +147,13 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 			return err
 		}
 	}
+	// The node runs the agent with its own copy of the definition, which
+	// only another `agent add` replaces.
+	if defPath != "" {
+		if offer.definitionSHA256, _, err = copyDefinition(offer.dataDir, offer.name, defPath); err != nil {
+			return err
+		}
+	}
 	replaced := false
 	if s, err := loadSettings(offer.dataDir); err == nil {
 		replaced = slices.ContainsFunc(s.Agents, func(a agentConfig) bool { return a.Name == offer.name })
@@ -159,6 +163,9 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 	add := offer.config()
 	if err := bringUp(ctx, []string{"-data-dir", offer.dataDir, "-y"}, out, upOptions{addAgent: &add}); err != nil {
 		return err
+	}
+	if defPath == "" {
+		removeDefinitionCopies(offer.dataDir, offer.name)
 	}
 	verb := "has"
 	if replaced {
@@ -209,6 +216,7 @@ func runAgentRemove(args []string, out io.Writer) error {
 	if err := saveSettings(dir, s); err != nil {
 		return fmt.Errorf("save settings: %w", err)
 	}
+	removeDefinitionCopies(dir, name)
 	fmt.Fprintf(out, "This machine no longer offers %q; its directory stays as it is.\n", name)
 	return restartNode(dir, s, newService(dir), out)
 }
@@ -255,12 +263,36 @@ func runAgentList(args []string, out io.Writer) error {
 	if _, err := os.Stat(stopFilePath(*dataDir)); err == nil {
 		tasks = "stopped"
 	}
+	defined := slices.ContainsFunc(s.Agents, func(a agentConfig) bool { return a.Definition != "" })
+	drifted := false
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tRUNTIME\tDIRECTORY\tTASKS")
-	for _, a := range s.Agents {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Name, a.Runtime, homeRelative(a.Dir), tasks)
+	if defined {
+		fmt.Fprintln(tw, "NAME\tRUNTIME\tDIRECTORY\tTASKS\tDEFINITION")
+	} else {
+		fmt.Fprintln(tw, "NAME\tRUNTIME\tDIRECTORY\tTASKS")
 	}
-	return tw.Flush()
+	for _, a := range s.Agents {
+		if !defined {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Name, a.Runtime, homeRelative(a.Dir), tasks)
+			continue
+		}
+		def := "-"
+		if a.Definition != "" {
+			def = homeRelative(a.Definition)
+			if drift := definitionDrift(a.Definition, a.DefinitionSHA256); drift != "" {
+				def += " (" + drift + ")"
+				drifted = true
+			}
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", a.Name, a.Runtime, homeRelative(a.Dir), tasks, def)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if drifted {
+		fmt.Fprintln(out, "\nAn agent runs with the copy of its definition taken when it was added. To take the changed one, run its 'agentiscaled agent add RUNTIME -definition FILE ...' again, with the same flags.")
+	}
+	return nil
 }
 
 // runtimeTitle is how a runtime's agent files are called.
