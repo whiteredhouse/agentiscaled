@@ -17,7 +17,7 @@ import (
 // Model the OS supervisor, while retaining the real service config writes.
 // Tests never invoke launchctl/systemctl on the user's machine.
 type testSupervisor struct {
-	running                   bool
+	running, unloaded         bool
 	stops, starts, failStarts int
 	onStop                    func()
 }
@@ -36,6 +36,9 @@ func installTestSupervisor(t *testing.T, dir string, running bool) *testSupervis
 		}
 		switch action {
 		case "print":
+			if state.unloaded {
+				return nil, errors.New("test job not loaded")
+			}
 			if state.running {
 				return []byte("state = running\n"), nil
 			}
@@ -47,6 +50,7 @@ func installTestSupervisor(t *testing.T, dir string, running bool) *testSupervis
 			return []byte("inactive\n"), nil
 		case "bootout", "stop":
 			state.running = false
+			state.unloaded = command == "launchctl"
 			state.stops++
 			if state.onStop != nil {
 				state.onStop()
@@ -58,6 +62,7 @@ func installTestSupervisor(t *testing.T, dir string, running bool) *testSupervis
 				return nil, errors.New("test service start failed")
 			}
 			state.running = true
+			state.unloaded = false
 		}
 		return []byte("yes\n"), nil
 	}
