@@ -13,6 +13,7 @@ import (
 	goruntime "runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The per-user background service that keeps a node running: a
@@ -44,6 +45,12 @@ type service interface {
 	// hint is advice to print after start, if any.
 	hint() string
 }
+
+// launchdWait bounds how long a restart waits for launchd to unload the old
+// job (longer than launchd's default 20 seconds before it kills a job that
+// ignores SIGTERM) and how long it keeps trying to load the new one. Tests
+// shorten it.
+var launchdWait = struct{ unload, load, poll time.Duration }{30 * time.Second, 5 * time.Second, 250 * time.Millisecond}
 
 // commandRunner runs a system command; tests replace it.
 var commandRunner = func(name string, args ...string) ([]byte, error) {
@@ -108,17 +115,45 @@ func (s *launchdService) start(spec serviceSpec) error {
 	if err := os.WriteFile(s.plistPath(), []byte(launchdPlist(s.label, spec)), 0o644); err != nil {
 		return err
 	}
-	_ = s.stop()
-	if out, err := commandRunner("launchctl", "bootstrap", "gui/"+strconv.Itoa(s.uid), s.plistPath()); err != nil {
-		return fmt.Errorf("launchctl bootstrap: %v: %s", err, strings.TrimSpace(string(out)))
+	if err := s.stop(); err != nil {
+		return err
+	}
+	// launchd can still refuse the job for a moment after it is gone, with
+	// the same error 5, so try again until the wait is over.
+	deadline := time.Now().Add(launchdWait.load)
+	for {
+		out, err := commandRunner("launchctl", "bootstrap", "gui/"+strconv.Itoa(s.uid), s.plistPath())
+		if err == nil {
+			return nil
+		}
+		if s.loaded() || time.Now().After(deadline) {
+			return fmt.Errorf("launchctl bootstrap: %v: %s", err, strings.TrimSpace(string(out)))
+		}
+		time.Sleep(launchdWait.poll)
+	}
+}
+
+// stop unloads the job and waits until launchd has let go of it.
+// launchctl bootout can return while the job is still being torn down, and
+// a bootstrap in that window fails with "Bootstrap failed: 5: Input/output
+// error".
+func (s *launchdService) stop() error {
+	// bootout fails when the agent is not loaded, which is fine.
+	_, _ = commandRunner("launchctl", "bootout", s.target())
+	deadline := time.Now().Add(launchdWait.unload)
+	for s.loaded() {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s is still loaded %s after launchctl bootout", s.name(), launchdWait.unload)
+		}
+		time.Sleep(launchdWait.poll)
 	}
 	return nil
 }
 
-func (s *launchdService) stop() error {
-	// bootout fails when the agent is not loaded, which is fine.
-	_, _ = commandRunner("launchctl", "bootout", s.target())
-	return nil
+// loaded says whether launchd knows the job, running or not.
+func (s *launchdService) loaded() bool {
+	_, err := commandRunner("launchctl", "print", s.target())
+	return err == nil
 }
 
 func (s *launchdService) remove() error {
