@@ -17,6 +17,7 @@ import (
 const agentUsage = `usage: agentiscaled agent add|remove|list
 
   add [RUNTIME] [-dir DIR] [-name NAME] ...  offer an agent from this machine to your network
+                                              (-definition FILE gives it a subagent's role)
   remove [NAME]                               stop offering an agent
   list                                        show the agents this machine offers
 
@@ -46,13 +47,14 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 	name := fs.String("name", "", "Name of the agent in your network (default: the runtime's)")
 	description := fs.String("description", "", "What the agent does, as other agents see it on its card (default: the runtime's)")
 	command := fs.String("command", "", "Command of the agent CLI (default: the runtime's, e.g. codex)")
+	definition := fs.String("definition", "", "Subagent definition to give the agent its role: a Claude Code agent file (.claude/agents/NAME.md) or a Codex agent file (.codex/agents/NAME.toml). Its instructions join the system prompt of each task; it also sets the default runtime, name, description and directory (the project it is in)")
 	var policy agentPolicy
 	fs.BoolVar(&policy.DirInstructions, "dir-instructions", true, "Let the agent load the instruction files (AGENTS.md, CLAUDE.md) of its directory; =false ignores them")
 	fs.BoolVar(&policy.DirSkills, "dir-skills", true, "Let the agent load the skills of its directory; =false turns them off")
 	fs.BoolVar(&policy.OwnerConfig, "owner-config", true, "Run the agent with your own configuration of its runtime (sign-in, skills, plugins, MCP servers, settings and permissions); =false uses an isolated read-only configuration in the node's data directory")
 	assumeYes := fs.Bool("y", false, "Ask nothing; take every default")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "usage: agentiscaled agent add [RUNTIME] [flags]\n\nRUNTIME is one of %s; in a terminal, without one, add asks.\n\n", strings.Join(runtimeNames(), ", "))
+		fmt.Fprintf(fs.Output(), "usage: agentiscaled agent add [RUNTIME] [flags]\n\nRUNTIME is one of %s; without one, add takes the -definition file's, or asks in a terminal.\n\n", strings.Join(runtimeNames(), ", "))
 		fs.PrintDefaults()
 	}
 	rest, err := parseInterleaved(fs, args)
@@ -69,15 +71,41 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 	if !*assumeYes && interactive() {
 		ask = &wizard{in: bufio.NewReader(os.Stdin), out: out}
 	}
+	var def *agentDefinition
+	defPath := ""
+	if *definition != "" {
+		if defPath, err = filepath.Abs(*definition); err != nil {
+			return err
+		}
+		if def, err = loadDefinition(defPath); err != nil {
+			return err
+		}
+	}
 	var offer *agentOffer
 	switch {
-	case len(rest) == 1:
-		rt := rest[0]
+	case len(rest) == 1 || def != nil:
+		rt := ""
+		if len(rest) == 1 {
+			rt = rest[0]
+		} else {
+			rt = def.Runtime
+		}
 		spec, ok := runtimes[rt]
 		if !ok {
 			return fmt.Errorf("unknown runtime %q (have %s)", rt, strings.Join(runtimeNames(), ", "))
 		}
-		offer = &agentOffer{runtime: rt, name: *name, description: *description, agentDir: *dir, policy: policy}
+		offer = &agentOffer{runtime: rt, name: *name, description: *description, agentDir: *dir, definition: defPath, policy: policy}
+		if def != nil {
+			if offer.name == "" {
+				offer.name = def.Name
+			}
+			if offer.description == "" {
+				offer.description = def.Description
+			}
+			if offer.agentDir == "" {
+				offer.agentDir = definitionRoot(defPath)
+			}
+		}
 		if offer.name == "" {
 			offer.name = spec.defaultName
 		}

@@ -174,6 +174,40 @@ agent's directory, no MCP servers, and none of your credentials from the environ
 stops `CLAUDE.md` files from loading. `-dir-skills=false` turns off every
 skill and command of the run, since Claude Code cannot turn off only the directory's.
 
+### Give an agent a subagent's role
+
+A project's subagent definitions, Claude Code's `.claude/agents/<name>.md` or
+Codex's `.codex/agents/<name>.toml`, can each become an agent of your network, so
+that any client on any of your machines can call it, Codex calling a Claude Code
+subagent included:
+
+```sh
+agentiscaled agent add -definition ~/work/my-project/.claude/agents/security-reviewer.md
+```
+
+`-definition` reads the file's name, description and instructions. Without other
+flags the agent takes its runtime from the file's format (`claude` for `.md`,
+`codex` for `.toml`), its name and card description from the file, and works in
+the project the file is in (`~/work/my-project`); a runtime argument, `-name`,
+`-description` and `-dir` override each. Either runtime runs either format.
+Each task then runs with the file's instructions added to the system prompt:
+`--append-system-prompt` for `claude -p`, `-c developer_instructions=…` for
+`codex exec`. The node reads the file when it starts, so restart it (or run
+`agent add` again) after you change the file.
+
+The rest of the file applies only when the agent's runtime is the one it was
+written for, and never widens the agent's permissions. A Claude Code agent's
+`model` and `disallowedTools` apply, and its `tools` narrows the built-in tools
+(to those of Read, Grep and Glob it names, with `-owner-config=false`); MCP tools
+in that list are not built-in and are left out. A Codex agent's `model` and
+`model_reasoning_effort` apply, and `sandbox_mode = "read-only"` makes a run with
+your configuration read-only; other sandbox modes are ignored.
+
+Each call is a fresh run with none of the caller's conversation, so it suits a
+task you can describe in one message. Offer the few roles you call from other
+machines or clients rather than every definition in a project: each one is
+another entry in your agents' service list.
+
 Each task belongs to the node that sent it: no other node can read its result or
 cancel it. Limits: one task at a time (others are refused, not
 queued), 15 minutes per task, and a request that says it was delegated is

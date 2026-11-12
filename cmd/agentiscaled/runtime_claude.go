@@ -29,9 +29,13 @@ type claudeRuntime struct {
 	// own sign-in and none of the owner's skills, plugins or settings.
 	config string
 	policy agentPolicy
+	// def, when set, is the agent's definition (-definition).
+	def *agentDefinition
 	// extra goes before the prompt; tests use it.
 	extra []string
 }
+
+func (r *claudeRuntime) setDefinition(d *agentDefinition) { r.def = d }
 
 // claudeEnvCredentials are the variables Claude Code takes a credential
 // from before its sign-in. Only the owner's configuration may use them.
@@ -161,6 +165,9 @@ func (r *claudeRuntime) Describe(card *a2a.AgentCard) {
 //     servers, and only the read-only file tools, confined to the agent's
 //     directory. No credential in the node's environment reaches it
 //     (claudeEnv).
+//   - With a definition (-definition), its instructions are added to the
+//     system prompt; a Claude Code agent file's tools only narrow the run's
+//     built-in tools, and its model and disallowed tools apply.
 //   - The directory's CLAUDE.md files load unless the owner's policy turns
 //     them off, and its skills unless the policy turns them off, which turns
 //     off every skill and command of the run, since Claude Code cannot turn
@@ -170,12 +177,27 @@ func (r *claudeRuntime) Run(ctx context.Context, dir string, req taskRequest) (s
 		"--output-format", "json",
 		"--no-session-persistence",
 		"--permission-prompts", "none"}
+	var allowed []string
 	if !r.policy.OwnerConfig {
+		allowed = []string{"Read", "Grep", "Glob"}
 		args = append(args,
 			"--restricted",
 			"--strict-mcp-config",
-			"--tools", "Read,Grep,Glob",
 			"--permission-mode", "dontAsk")
+	}
+	if tools, ok := claudeTools(r.def, allowed); ok {
+		args = append(args, "--tools", tools)
+	}
+	if d := r.def; d != nil {
+		args = append(args, "--append-system-prompt", d.Instructions)
+		if d.Runtime == "claude" {
+			if len(d.DisallowedTools) > 0 {
+				args = append(args, "--disallowedTools", strings.Join(d.DisallowedTools, ","))
+			}
+			if d.Model != "" {
+				args = append(args, "--model", d.Model)
+			}
+		}
 	}
 	if !r.policy.DirSkills {
 		args = append(args, "--disable-slash-commands")

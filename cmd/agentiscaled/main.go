@@ -166,6 +166,10 @@ type agentConfig struct {
 	Command string `json:"command,omitempty"`
 	// Description replaces the runtime's on the agent's card.
 	Description string `json:"description,omitempty"`
+	// Definition is the absolute path of the subagent definition the agent
+	// takes its instructions from (agentDefinition), read when the node
+	// starts.
+	Definition string `json:"definition,omitempty"`
 	// What the agent may not take from Dir or the owner; it takes all when
 	// these are unset (agentPolicy).
 	IgnoreDirInstructions bool `json:"ignore_dir_instructions,omitempty"`
@@ -338,6 +342,9 @@ func newAgent(a *agentConfig, dataDir string) (*agentService, error) {
 	}
 	rt, err := spec.new(a.Command, dataDir, a.policy())
 	if err != nil {
+		return nil, fmt.Errorf("agent %s: %w", a.Name, err)
+	}
+	if err := applyDefinition(rt, a.Definition); err != nil {
 		return nil, fmt.Errorf("agent %s: %w", a.Name, err)
 	}
 	a.Dir = dir
