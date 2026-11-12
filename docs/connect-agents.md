@@ -212,15 +212,25 @@ in that list are not built-in and are left out. A Codex agent's `model` and
 `model_reasoning_effort` apply, and `sandbox_mode = "read-only"` makes a run with
 your configuration read-only; other sandbox modes are ignored.
 
-Each call is a fresh run with none of the caller's conversation, so it suits a
-task you can describe in one message. Offer the few roles you call from other
+Each task starts a fresh session with none of the caller's conversation, so it
+suits a task you can describe in one message. When the agent cannot go on
+without something only the caller knows, it asks one question: the task waits
+in state `input_required` with the question as its message, and the caller
+answers with `send_task` giving the task's `task_id`. The agent then carries on
+in the same session. The session is kept in the runtime's configuration like
+any other Claude Code or Codex session (yours with your configuration, so it
+shows in your session history). Offer the few roles you call from other
 machines or clients rather than every definition in a project: each one is
 another entry in your agents' service list.
 
-Each task belongs to the node that sent it: no other node can read its result or
-cancel it. Limits: one task at a time (others are refused, not
-queued), 15 minutes per task, and a request that says it was delegated is
-refused. With your configuration the agent can itself send tasks to your other
+Each task belongs to the node that sent it: no other node can read its result,
+answer its question or cancel it. Limits: one task at a time (others are
+refused, not queued; a task waiting for an answer does not count, and an
+answer that comes while another task runs is refused with the question
+repeated, so send it again), 15 minutes of running time per task over all its
+turns, five questions per task, an hour to answer each, and a request that says
+it was delegated is refused. Tasks waiting for answers do not survive a
+restart of the node. With your configuration the agent can itself send tasks to your other
 agents through your agentiscale MCP server; nothing counts those calls as delegation,
 so use `-owner-config=false` where that must not happen. Calling itself while
 its task is running is rejected by the same one-task-at-a-time gate. That gate is

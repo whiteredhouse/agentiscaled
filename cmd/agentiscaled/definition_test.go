@@ -179,8 +179,8 @@ func TestCodexRuntimeDefinition(t *testing.T) {
 		t.Fatal(err)
 	}
 	rt := &codexRuntime{command: command, def: d, policy: agentPolicy{OwnerConfig: true, DirInstructions: true, DirSkills: true}}
-	if out, err := rt.Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x"}); err != nil || out != "done" {
-		t.Fatalf("run: %q, %v", out, err)
+	if out, err := rt.Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x"}); err != nil || out.Text != "done" {
+		t.Fatalf("run: %q, %v", out.Text, err)
 	}
 	args := strings.Split(readRecord(t, record), "\n")
 	var instructions string

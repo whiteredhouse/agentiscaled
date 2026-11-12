@@ -28,7 +28,12 @@ import (
 
 // The bounds on hosted agents' tasks.
 const (
+	// taskDeadline bounds a task's running time, over all its turns.
 	taskDeadline = 15 * time.Minute
+	// maxQuestions bounds the questions the agent may ask in one task.
+	maxQuestions = 5
+	// maxWaiting bounds an agent's tasks that wait for an answer.
+	maxWaiting = 16
 	// A request that was itself delegated is refused: runtimes run with no
 	// agentiscale tools, so nothing they start can delegate further.
 	maxDelegationDepth = 0
@@ -53,9 +58,10 @@ const (
 type runtime interface {
 	// Describe says on the agent card what the agent does.
 	Describe(card *a2a.AgentCard)
-	// Run performs one task in dir and returns the agent's answer. It must
-	// stop when ctx ends.
-	Run(ctx context.Context, dir string, req taskRequest) (string, error)
+	// Run performs one turn of a task in dir: the task itself or, with
+	// req.Session, the caller's answer to the question the turn before it
+	// asked, in that turn's session. It must stop when ctx ends.
+	Run(ctx context.Context, dir string, req taskRequest) (turnResult, error)
 }
 
 // taskRequest is one remote request, as the runtime gets it. Text is
@@ -63,6 +69,21 @@ type runtime interface {
 type taskRequest struct {
 	Sender string // peer ID the mesh authenticated
 	Text   string
+	// Session is the runtime's session of the task's turn before, which
+	// ended in a question; Text is then the caller's answer. It is empty
+	// for a new task.
+	Session string
+}
+
+// turnResult is how one turn of a task ended.
+type turnResult struct {
+	// Text is the agent's result or, with Question, its question to the
+	// caller.
+	Text     string
+	Question bool
+	// Session is the runtime's session of the turn, which the next turn
+	// resumes.
+	Session string
 }
 
 // agentPolicy is what the agent may take from the directory it works in,
@@ -150,6 +171,9 @@ type agentService struct {
 
 	mu      sync.Mutex
 	current *agentRun
+	// waiting holds the tasks whose agent asked the caller a question,
+	// until the answer comes.
+	waiting map[a2a.TaskID]*waitingTask
 	// delivered holds every request that started a task, so that a delivery
 	// retry never runs a task twice.
 	delivered *deliveries
@@ -160,6 +184,23 @@ type agentRun struct {
 	cancel context.CancelCauseFunc
 	begun  bool
 }
+
+// waitingTask is a task that waits for the caller's answer to its agent's
+// question.
+type waitingTask struct {
+	sender   string
+	session  string
+	question string
+	since    time.Time
+	// used is the task's running time so far, and questions the questions
+	// its agent has asked.
+	used      time.Duration
+	questions int
+}
+
+// answerWait is how long a task waits for the caller to answer the agent's
+// question.
+var answerWait = time.Hour
 
 var (
 	errCancelledByCaller = errors.New("cancelled by the caller")
@@ -179,7 +220,7 @@ func newAgentService(dir string, rt runtime, dataDir, name string) (*agentServic
 	if err != nil {
 		return nil, err
 	}
-	return &agentService{dir: dir, rt: rt, deadline: taskDeadline, stopFile: stopFilePath(dataDir), life: context.Background(), delivered: delivered}, nil
+	return &agentService{dir: dir, rt: rt, deadline: taskDeadline, stopFile: stopFilePath(dataDir), life: context.Background(), delivered: delivered, waiting: map[a2a.TaskID]*waitingTask{}}, nil
 }
 
 // deliveries records the requests that started a task, keyed by the sender
@@ -292,42 +333,67 @@ func (s *agentService) stopped() bool {
 	return err == nil
 }
 
+// Execute runs one turn of a task: a new task, or the caller's answer on a
+// task whose agent asked a question (input-required), which carries on in
+// the runtime's session of the turn before.
 func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 	return func(yield func(a2a.Event, error) bool) {
-		task := a2a.NewSubmittedTask(execCtx, execCtx.Message)
 		sender := firstParam(execCtx.ServiceParams, api.HeaderPeerID)
-		if sender != "" {
-			task.SetMeta(metaSender, sender)
+		answer := execCtx.StoredTask != nil
+		if !answer {
+			task := a2a.NewSubmittedTask(execCtx, execCtx.Message)
+			if sender != "" {
+				task.SetMeta(metaSender, sender)
+			}
+			if !yield(task, nil) {
+				return
+			}
 		}
-		if !yield(task, nil) {
-			return
-		}
-		reject := func(reason string, meta map[string]any) {
-			ev := a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateRejected, agentText(execCtx, reason))
-			ev.Metadata = map[string]any{metaTerminal: "rejected"}
+		end := func(state a2a.TaskState, terminal, reason string, meta map[string]any) {
+			ev := a2a.NewStatusUpdateEvent(execCtx, state, agentText(execCtx, reason))
+			ev.Metadata = map[string]any{metaTerminal: terminal}
 			for k, v := range meta {
 				ev.Metadata[k] = v
 			}
 			yield(ev, nil)
 		}
+		var prior waitingTask
+		if answer {
+			w := s.waitingFor(execCtx.TaskID)
+			if w == nil {
+				end(a2a.TaskStateFailed, "timeout", fmt.Sprintf("timed out: no answer came within %s of the question", answerWait), nil)
+				return
+			}
+			prior = *w
+		}
+		// A new task that cannot run is rejected. An answer that cannot be
+		// taken now is refused, and the task waits for one that can.
+		refuse := func(reason string, meta map[string]any) {
+			if answer {
+				yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateInputRequired, agentText(execCtx,
+					reason+"\n\nThe question still waits for your answer: "+prior.question)), nil)
+				return
+			}
+			end(a2a.TaskStateRejected, "rejected", reason, meta)
+		}
 		// The node stamps the authenticated caller on every request it
 		// delivers from the mesh; one without it did not come through the
 		// mesh.
 		if sender == "" {
-			reject("refused: the request carries no authenticated sender", nil)
+			refuse("refused: the request carries no authenticated sender", nil)
 			return
 		}
-		if execCtx.StoredTask != nil {
-			reject("refused: a task takes exactly one message", nil)
+		if answer && prior.sender != sender {
+			refuse("refused: only the task's sender can answer", nil)
 			return
 		}
 		if depth, ok := delegationDepth(execCtx.Message); !ok || depth > maxDelegationDepth {
-			reject(fmt.Sprintf("refused: delegation depth above %d", maxDelegationDepth), nil)
+			refuse(fmt.Sprintf("refused: delegation depth above %d", maxDelegationDepth), nil)
 			return
 		}
 		request := messageText(execCtx.Message)
 		if strings.TrimSpace(request) == "" {
-			reject("refused: the request has no text", nil)
+			refuse("refused: the request has no text", nil)
 			return
 		}
 
@@ -335,9 +401,9 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		// but not the node.
 		runCtx, cancel := context.WithCancelCause(s.life)
 		defer cancel(nil)
-		run, why, meta := s.admit(execCtx, sender, cancel)
+		run, why, meta := s.admit(execCtx, sender, cancel, answer)
 		if run == nil {
-			reject(why, meta)
+			refuse(why, meta)
 			return
 		}
 		defer s.finish(run)
@@ -345,37 +411,44 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		if !yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateWorking, nil), nil) {
 			return
 		}
-		runCtx, stopDeadline := context.WithTimeoutCause(runCtx, s.deadline, context.DeadlineExceeded)
+		runCtx, stopDeadline := context.WithTimeoutCause(runCtx, s.deadline-prior.used, context.DeadlineExceeded)
 		defer stopDeadline()
 		go s.watchStop(runCtx, cancel)
 
 		s.mu.Lock()
 		run.begun = true
 		s.mu.Unlock()
-		out, err := s.rt.Run(runCtx, s.dir, taskRequest{Sender: sender, Text: request})
+		started := time.Now()
+		out, err := s.rt.Run(runCtx, s.dir, taskRequest{Sender: sender, Text: request, Session: prior.session})
 
 		switch cause := context.Cause(runCtx); {
 		case errors.Is(cause, errCancelledByCaller):
 			// Cancel has already ended the task.
 			return
 		case errors.Is(cause, errStoppedByOwner):
-			ev := a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCanceled, agentText(execCtx, "cancelled: the owner stopped task execution on this node"))
-			ev.Metadata = map[string]any{metaTerminal: "cancelled", metaExecutionBegun: true}
-			yield(ev, nil)
+			end(a2a.TaskStateCanceled, "cancelled", "cancelled: the owner stopped task execution on this node", map[string]any{metaExecutionBegun: true})
 			return
 		case errors.Is(cause, context.DeadlineExceeded):
-			ev := a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateFailed, agentText(execCtx, fmt.Sprintf("timed out after %s", s.deadline)))
-			ev.Metadata = map[string]any{metaTerminal: "timeout"}
-			yield(ev, nil)
+			end(a2a.TaskStateFailed, "timeout", fmt.Sprintf("timed out after %s", s.deadline), nil)
 			return
 		}
 		if err != nil {
-			ev := a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateFailed, agentText(execCtx, "task failed: "+err.Error()))
-			ev.Metadata = map[string]any{metaTerminal: "failed"}
-			yield(ev, nil)
+			end(a2a.TaskStateFailed, "failed", "task failed: "+err.Error(), nil)
 			return
 		}
-		artifact := a2a.NewArtifactEvent(execCtx, a2a.NewTextPart(out))
+		if out.Question {
+			if why := s.wait(execCtx.TaskID, waitingTask{sender: sender, session: out.Session, question: out.Text, since: time.Now(),
+				used: prior.used + time.Since(started), questions: prior.questions + 1}); why != "" {
+				end(a2a.TaskStateFailed, "failed", "task failed: "+why, nil)
+				return
+			}
+			// The slot is free before the caller learns of the question,
+			// so that the answer finds it free.
+			s.finish(run)
+			yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateInputRequired, agentText(execCtx, out.Text)), nil)
+			return
+		}
+		artifact := a2a.NewArtifactEvent(execCtx, a2a.NewTextPart(out.Text))
 		artifact.Artifact.Name = "result"
 		if !yield(artifact, nil) {
 			return
@@ -386,8 +459,45 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 	}
 }
 
-// admit takes the one running slot for a task, or says why not.
-func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, sender string, cancel context.CancelCauseFunc) (*agentRun, string, map[string]any) {
+// waitingFor is the task waiting for an answer under id, if it still
+// waits.
+func (s *agentService) waitingFor(id a2a.TaskID) *waitingTask {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w := s.waiting[id]
+	if w == nil || time.Since(w.since) > answerWait {
+		delete(s.waiting, id)
+		return nil
+	}
+	return w
+}
+
+// wait keeps a task whose agent asked a question until the answer comes,
+// or says why it cannot wait.
+func (s *agentService) wait(id a2a.TaskID, w waitingTask) string {
+	switch {
+	case w.session == "":
+		return "the agent asked a question, but its runtime cannot carry on the task"
+	case w.questions > maxQuestions:
+		return fmt.Sprintf("the agent asked more than %d questions", maxQuestions)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for other, o := range s.waiting {
+		if time.Since(o.since) > answerWait {
+			delete(s.waiting, other)
+		}
+	}
+	if len(s.waiting) >= maxWaiting {
+		return fmt.Sprintf("the agent asked a question, but %d tasks already wait for answers", maxWaiting)
+	}
+	s.waiting[id] = &w
+	return ""
+}
+
+// admit takes the one running slot for a turn of a task, or says why not.
+// An answer takes its task out of the waiting ones.
+func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, sender string, cancel context.CancelCauseFunc, answer bool) (*agentRun, string, map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if first, ok := s.delivered.first(sender, execCtx.Message.ID); ok {
@@ -399,12 +509,17 @@ func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, sender string, can
 	if s.current != nil {
 		return nil, "refused: a task is already running; try again when it ends", nil
 	}
+	if answer && s.waiting[execCtx.TaskID] == nil {
+		// Cancelled meanwhile; a cancelled task takes no more messages.
+		return nil, "refused: the task no longer waits for an answer", nil
+	}
 	// Without the record a retry after a restart could run the task again,
 	// so a task that cannot be recorded does not start.
 	if err := s.delivered.record(sender, execCtx.Message.ID, execCtx.TaskID); err != nil {
 		log.Printf("agent service: record delivery: %v", err)
 		return nil, "refused: the node could not record the request", nil
 	}
+	delete(s.waiting, execCtx.TaskID)
 	s.current = &agentRun{taskID: execCtx.TaskID, cancel: cancel}
 	return s.current, "", nil
 }
@@ -441,6 +556,11 @@ func (s *agentService) Cancel(ctx context.Context, execCtx *a2asrv.ExecutorConte
 		if run := s.current; run != nil && run.taskID == execCtx.TaskID {
 			begun = run.begun
 			run.cancel(errCancelledByCaller)
+		}
+		// A task waiting for an answer has run already.
+		if _, ok := s.waiting[execCtx.TaskID]; ok {
+			begun = true
+			delete(s.waiting, execCtx.TaskID)
 		}
 		s.mu.Unlock()
 		text := "cancelled before the task started"

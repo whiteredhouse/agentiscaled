@@ -18,7 +18,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const a2aInstructions = `agentiscale: use list_local_services (type "a2a") to find agents hosted on this node; read their card with get_agent_card and call send_task with their name as service, omitting peer_id in both calls. Use discover_remote_services (type "a2a") to find agents on other nodes; inspect their current card with get_agent_card using peer_id and srv_name as service, then call send_task with the same target. Follow tasks with get_task until terminal (completed, rejected, cancelled, timeout or failed); cancel_task stops them. Use the same target for send/get/cancel. Do not use the a2a CLI or hand-written requests. An offline remote node cannot be reached and nothing is queued.`
+const a2aInstructions = `agentiscale: use list_local_services (type "a2a") to find agents hosted on this node; read their card with get_agent_card and call send_task with their name as service, omitting peer_id in both calls. Use discover_remote_services (type "a2a") to find agents on other nodes; inspect their current card with get_agent_card using peer_id and srv_name as service, then call send_task with the same target. Follow tasks with get_task until terminal (completed, rejected, cancelled, timeout or failed); cancel_task stops them. A task in state input_required waits for your answer to the agent's question (its message): answer with send_task, giving the task's task_id and your answer as text, then follow the task again. Use the same target for send/get/cancel. Do not use the a2a CLI or hand-written requests. An offline remote node cannot be reached and nothing is queued.`
 
 // maxWait bounds how long get_task holds one tool call, below the timeouts
 // MCP clients put on a call.
@@ -45,7 +45,9 @@ type taskTarget struct {
 
 type sendTaskIn struct {
 	taskTarget
-	Text string `json:"text" jsonschema:"the request for the agent: what you want it to do"`
+	Text string `json:"text" jsonschema:"the request for the agent: what you want it to do; or, with task_id, your answer to its question"`
+	// TaskID answers the question of a task in state input_required.
+	TaskID string `json:"task_id,omitempty" jsonschema:"only to answer the question of a task in state input_required: that task's ID. Omit to send a new task."`
 }
 
 type taskIn struct {
@@ -55,7 +57,7 @@ type taskIn struct {
 
 type getTaskIn struct {
 	taskIn
-	WaitSeconds int `json:"wait_seconds,omitempty" jsonschema:"wait up to this many seconds (at most 50) for the task to end; 0 answers at once"`
+	WaitSeconds int `json:"wait_seconds,omitempty" jsonschema:"wait up to this many seconds (at most 50) for the task to end or ask a question; 0 answers at once"`
 }
 
 // taskOut is what the tools return about a task.
@@ -78,11 +80,11 @@ func addA2ATools(server *mcp.Server, t *a2aTasks) {
 	}, t.card)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "send_task",
-		Description: "Send one task to an A2A agent on this node or another node of your agentiscale network. Remote calls use the network's end-to-end encrypted connection. Returns at once with the task ID and state; follow it with get_task.",
+		Description: "Send one task to an A2A agent on this node or another node of your agentiscale network, or with task_id answer the question of a task in state input_required. Remote calls use the network's end-to-end encrypted connection. Returns at once with the task ID and state; follow it with get_task.",
 	}, t.send)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_task",
-		Description: "Get the state and result of a task sent with send_task, optionally waiting for it to end.",
+		Description: "Get the state and result of a task sent with send_task, optionally waiting for it to end or to ask you a question (state input_required, the question in message).",
 	}, t.get)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "cancel_task",
@@ -211,6 +213,7 @@ func (t *a2aTasks) send(ctx context.Context, _ *mcp.CallToolRequest, in sendTask
 		return nil, taskOut{}, err
 	}
 	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(in.Text))
+	msg.TaskID = a2a.TaskID(in.TaskID)
 	// The sender is a person's agent, not a delegated one.
 	msg.SetMeta(metaDelegationDepth, 0)
 	res, err := c.SendMessage(ctx, &a2a.SendMessageRequest{Message: msg, Config: &a2a.SendMessageConfig{ReturnImmediately: true}})
@@ -236,7 +239,7 @@ func (t *a2aTasks) get(ctx context.Context, _ *mcp.CallToolRequest, in getTaskIn
 		if err != nil {
 			return nil, taskOut{}, unreachable(in.taskTarget, err)
 		}
-		if task.Status.State.Terminal() || !time.Now().Before(deadline) {
+		if task.Status.State.Terminal() || task.Status.State == a2a.TaskStateInputRequired || !time.Now().Before(deadline) {
 			return toolResult(describeTask(task))
 		}
 		select {

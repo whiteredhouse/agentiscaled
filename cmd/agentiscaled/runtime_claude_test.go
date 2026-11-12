@@ -45,11 +45,11 @@ func TestClaudeRuntimeIsolatedIsRestrictedReadOnly(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "owner-token")
 	config := filepath.Join(dir, "agent-claude")
 	out, err := (&claudeRuntime{command: command, config: config}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "Review main.go"})
-	if err != nil || out != "No findings" {
-		t.Fatalf("run: %q, %v", out, err)
+	if err != nil || out.Text != "No findings" {
+		t.Fatalf("run: %q, %v", out.Text, err)
 	}
 	args := " " + strings.ReplaceAll(readRecord(t, record+".args"), "\n", " ")
-	for _, want := range []string{" -p ", " --output-format json ", " --no-session-persistence ", " --permission-prompts none ",
+	for _, want := range []string{" -p ", " --output-format json ", " --json-schema " + turnSchema + " ", " --session-id ", " --permission-prompts none ",
 		" --restricted ", " --strict-mcp-config ", " --tools Read,Grep,Glob ", " --permission-mode dontAsk ", " --disable-slash-commands "} {
 		if !strings.Contains(args, want) {
 			t.Errorf("claude arguments %q lack %q", args, want)
@@ -158,5 +158,38 @@ func TestClaudeRuntimeOlderCLI(t *testing.T) {
 	command, _ = fakeClaudeCLI(t, "  --permission-prompts <target>")
 	if _, err := newClaudeRuntime(command, t.TempDir(), agentPolicy{}); err == nil || !strings.Contains(err.Error(), "update") {
 		t.Errorf("isolated runtime without --restricted: %v", err)
+	}
+}
+
+// A turn that asks a question names its session, and the answer resumes it.
+func TestClaudeRuntimeAsksAndResumes(t *testing.T) {
+	dir := t.TempDir()
+	record := filepath.Join(dir, "rec")
+	command := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + record + ".args\ncat > " + record + ".prompt\n" +
+		"echo '{\"type\":\"result\",\"is_error\":false,\"result\":\"\",\"structured_output\":{\"status\":\"needs_input\",\"text\":\"Which file?\"}}'\n"
+	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rt := &claudeRuntime{command: command, policy: agentPolicy{OwnerConfig: true}}
+	first, err := rt.Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "Review a file"})
+	if err != nil || !first.Question || first.Text != "Which file?" {
+		t.Fatalf("first turn: %+v %v", first, err)
+	}
+	if args := readRecord(t, record+".args"); !strings.Contains(args, "--session-id\n"+first.Session+"\n") || strings.Contains(args, "--resume") {
+		t.Fatalf("first turn arguments: %q", args)
+	}
+	if _, err := rt.Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "main.go", Session: first.Session}); err != nil {
+		t.Fatal(err)
+	}
+	if args := readRecord(t, record+".args"); !strings.Contains(args, "--resume\n"+first.Session+"\n") || strings.Contains(args, "--session-id") {
+		t.Fatalf("answer's arguments: %q", args)
+	}
+	if p := readRecord(t, record+".prompt"); !strings.Contains(p, "<answer>\nmain.go\n</answer>") || !strings.Contains(p, "node "+testSender) {
+		t.Fatalf("answer's prompt: %q", p)
+	}
+	// A session the node did not make is not passed on.
+	if _, err := rt.Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x", Session: "--dangerously-skip-permissions"}); err == nil {
+		t.Fatal("ran with a session that is not a session ID")
 	}
 }

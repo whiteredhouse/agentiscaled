@@ -207,6 +207,28 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 		if err != nil || got.Terminal != "completed" || got.Result != "completed locally" {
 			t.Fatalf("task: %+v %v", got, err)
 		}
+		// The agent's question and the answer go through the same tools.
+		fix.ask <- "Which file?"
+		_, asking, err := tasks.send(ctx, nil, sendTaskIn{taskTarget: target, Text: "review a file"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		<-fix.prompts
+		_, asked, err := tasks.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: target, TaskID: asking.TaskID}, WaitSeconds: 5})
+		if err != nil || asked.State != "input_required" || asked.Message != "Which file?" || asked.Terminal != "" {
+			t.Fatalf("question: %+v %v", asked, err)
+		}
+		fix.release <- "reviewed main.go"
+		if _, _, err := tasks.send(ctx, nil, sendTaskIn{taskTarget: target, Text: "main.go", TaskID: asking.TaskID}); err != nil {
+			t.Fatal(err)
+		}
+		if p := <-fix.prompts; p.Session != "session-review a file" || p.Text != "main.go" {
+			t.Fatalf("answer reached the runtime as %+v", p)
+		}
+		_, answered, err := tasks.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: target, TaskID: asking.TaskID}, WaitSeconds: 5})
+		if err != nil || answered.Terminal != "completed" || answered.Result != "reviewed main.go" {
+			t.Fatalf("answered task: %+v %v", answered, err)
+		}
 		// Local task controls and delegation limits use the ordinary agent handler.
 		a2aClient, err := tasks.client(ctx, target)
 		if err != nil {
