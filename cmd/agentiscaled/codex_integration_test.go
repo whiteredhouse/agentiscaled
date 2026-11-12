@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -161,8 +162,8 @@ func codexOnHostileCheckout(t *testing.T, command string, policy agentPolicy, wr
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out != "No findings" {
-		t.Fatalf("answer %q", out)
+	if out.Text != "No findings" {
+		t.Fatalf("answer %q", out.Text)
 	}
 	requests, toolOutput, auth := model.seen()
 	// The model is called with the agent's own sign-in only.
@@ -337,4 +338,117 @@ func TestCodexEnvCarriesNoOwnerCredential(t *testing.T) {
 	if got != want {
 		t.Fatalf("environment\n got %s\nwant %s", got, want)
 	}
+}
+
+// TestCodexResumesTheTaskAfterAQuestion runs the real Codex CLI against a
+// fake model that first asks a question, in the turn schema, and then
+// answers: the second turn must resume the first one's session.
+//
+//	AGENTISCALE_TEST_CODEX=$(command -v codex) go test ./cmd/agentiscaled -run TestCodexResumesTheTaskAfterAQuestion -v
+func TestCodexResumesTheTaskAfterAQuestion(t *testing.T) {
+	command := os.Getenv("AGENTISCALE_TEST_CODEX")
+	if command == "" {
+		t.Skip("set AGENTISCALE_TEST_CODEX to a Codex CLI to run")
+	}
+	for name, policy := range map[string]agentPolicy{
+		"isolated":     {},
+		"owner config": {OwnerConfig: true, DirInstructions: true, DirSkills: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := codexTempDir(t)
+			t.Setenv("HOME", home)
+			t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+			dataDir := codexTempDir(t)
+			if policy.OwnerConfig {
+				t.Setenv("CODEX_API_KEY", "owner-codex-key")
+				write(t, filepath.Join(home, ".codex", "config.toml"), "")
+			} else {
+				write(t, filepath.Join(dataDir, "codex", "auth.json"), `{"OPENAI_API_KEY": "agent-key"}`)
+			}
+			rt, err := newCodexRuntime(command, dataDir, policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			codex := rt.(*codexRuntime)
+			model := &askingModel{}
+			srv := httptest.NewServer(model)
+			defer srv.Close()
+			codex.extra = []string{
+				"-c", `model_provider="agentiscale-test"`,
+				"-c", fmt.Sprintf(`model_providers.agentiscale-test={name="agentiscale-test", base_url="%s/v1", wire_api="responses", requires_openai_auth=true}`, srv.URL),
+			}
+			dir := t.TempDir()
+
+			first, err := codex.Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "Review a file"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !first.Question || first.Text != "Which file?" || first.Session == "" {
+				t.Fatalf("first turn: %+v", first)
+			}
+			second, err := codex.Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "main.go", Session: first.Session})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if second.Question || second.Text != "Reviewed main.go" || second.Session != first.Session {
+				t.Fatalf("second turn: %+v", second)
+			}
+			requests := model.seen()
+			if len(requests) != 2 {
+				t.Fatalf("%d model requests, want 2", len(requests))
+			}
+			// The resumed session carries the task and the question.
+			for _, want := range []string{"Review a file", "Which file?", "<answer>\\nmain.go\\n</answer>"} {
+				if !strings.Contains(requests[1], want) {
+					t.Errorf("second request lacks %q", want)
+				}
+			}
+			if !strings.Contains(requests[0], `"needs_input"`) {
+				t.Error("the first request carries no turn schema")
+			}
+		})
+	}
+}
+
+// askingModel answers the Responses API in the turn schema: a question
+// first, then the result.
+type askingModel struct {
+	mu       sync.Mutex
+	requests []string
+}
+
+func (m *askingModel) seen() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.requests)
+}
+
+func (m *askingModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[],"models":[]}`)
+		return
+	}
+	body, _ := io.ReadAll(r.Body)
+	m.mu.Lock()
+	m.requests = append(m.requests, string(body))
+	n := len(m.requests)
+	m.mu.Unlock()
+	answer := `{"status":"needs_input","text":"Which file?"}`
+	if n > 1 {
+		answer = `{"status":"done","text":"Reviewed main.go"}`
+	}
+	item := map[string]any{"type": "message", "role": "assistant", "id": fmt.Sprintf("m%d", n),
+		"content": []map[string]any{{"type": "output_text", "text": answer}}}
+	w.Header().Set("Content-Type", "text/event-stream")
+	event := func(kind string, data map[string]any) {
+		data["type"] = kind
+		b, _ := json.Marshal(data)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", kind, b)
+	}
+	id := fmt.Sprintf("r%d", n)
+	event("response.created", map[string]any{"response": map[string]any{"id": id}})
+	event("response.output_item.done", map[string]any{"item": item})
+	event("response.completed", map[string]any{"response": map[string]any{"id": id,
+		"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}})
 }

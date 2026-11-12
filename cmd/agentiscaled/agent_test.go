@@ -17,30 +17,37 @@ import (
 
 const testSender = "12D3KooWGPMbCHEiW61Swz3L4HP7LpdoeVqMMo7p3ycHKWFnybQS"
 
-// fixture is a deterministic runtime in place of Codex: each run reports the request it got and waits on release, or
-// returns err.
+// fixture is a deterministic runtime in place of Codex: each run reports the request it got and waits on release, or on
+// ask for a question, or returns err. Each task's session is "session-" and the text of its first request.
 type fixture struct {
 	prompts chan taskRequest
 	release chan string
+	ask     chan string
 	err     error
 }
 
 func newFixture() *fixture {
-	return &fixture{prompts: make(chan taskRequest, 4), release: make(chan string, 4)}
+	return &fixture{prompts: make(chan taskRequest, 4), release: make(chan string, 4), ask: make(chan string, 4)}
 }
 
 func (f *fixture) Describe(card *a2a.AgentCard) { card.Description = "fixture" }
 
-func (f *fixture) Run(ctx context.Context, dir string, req taskRequest) (string, error) {
+func (f *fixture) Run(ctx context.Context, dir string, req taskRequest) (turnResult, error) {
 	f.prompts <- req
 	if f.err != nil {
-		return "", f.err
+		return turnResult{}, f.err
+	}
+	session := req.Session
+	if session == "" {
+		session = "session-" + req.Text
 	}
 	select {
 	case out := <-f.release:
-		return out, nil
+		return turnResult{Text: out, Session: session}, nil
+	case q := <-f.ask:
+		return turnResult{Text: q, Question: true, Session: session}, nil
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return turnResult{}, ctx.Err()
 	}
 }
 
@@ -398,8 +405,8 @@ func TestCodexRuntimeIsReadOnlyAndUnconfigured(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err := (&codexRuntime{command: codex, home: filepath.Join(dir, "agent-codex")}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "Review main.go"})
-	if err != nil || out != "No findings" {
-		t.Fatalf("run: %q, %v", out, err)
+	if err != nil || out.Text != "No findings" {
+		t.Fatalf("run: %q, %v", out.Text, err)
 	}
 	b, _ := os.ReadFile(argsFile)
 	args := " " + strings.ReplaceAll(string(b), "\n", " ")

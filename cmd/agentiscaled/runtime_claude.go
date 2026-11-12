@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/google/uuid"
 )
 
 // claudeRuntime does tasks with the Claude Code CLI in the agent's
@@ -163,7 +164,7 @@ func claudeLogin(ctx context.Context, command, dataDir string, policy agentPolic
 }
 
 func (r *claudeRuntime) Describe(card *a2a.AgentCard) {
-	card.Description = "A Claude Code agent on this node that works in its configured directory under local runtime permissions. Send one text message with the task; it answers with the result."
+	card.Description = "A Claude Code agent on this node that works in its configured directory under local runtime permissions. Send one text message with the task; it answers with the result, or asks a question (input-required) that you answer with a message on the same task."
 	card.Skills = []a2a.AgentSkill{{
 		ID:          "task",
 		Name:        "Task",
@@ -190,10 +191,24 @@ func (r *claudeRuntime) Describe(card *a2a.AgentCard) {
 //     them off, and its skills unless the policy turns them off, which turns
 //     off every skill and command of the run, since Claude Code cannot turn
 //     off only the directory's.
-func (r *claudeRuntime) Run(ctx context.Context, dir string, req taskRequest) (string, error) {
+//   - Each task is a Claude Code session, kept in the run's configuration
+//     like any other, whose id the node chooses (--session-id). The run
+//     ends with an answer in turnSchema, and the caller's answer to a
+//     question resumes the session (--resume).
+func (r *claudeRuntime) Run(ctx context.Context, dir string, req taskRequest) (turnResult, error) {
 	args := []string{"-p",
 		"--output-format", "json",
-		"--no-session-persistence"}
+		"--json-schema", turnSchema}
+	session := req.Session
+	if session == "" {
+		session = uuid.NewString()
+		args = append(args, "--session-id", session)
+	} else {
+		if err := uuid.Validate(session); err != nil {
+			return turnResult{}, fmt.Errorf("claude session %q: %w", session, err)
+		}
+		args = append(args, "--resume", session)
+	}
 	if !r.noPermissionPrompts {
 		args = append(args, "--permission-prompts", "none")
 	}
@@ -244,24 +259,28 @@ func (r *claudeRuntime) Run(ctx context.Context, dir string, req taskRequest) (s
 	cmd.WaitDelay = 5 * time.Second
 	runErr := cmd.Run()
 	if ctx.Err() != nil {
-		return "", ctx.Err()
+		return turnResult{}, ctx.Err()
 	}
 	// The result, a failure included, is in the JSON on stdout, whatever
 	// the exit status.
 	var result struct {
-		Result  string `json:"result"`
-		IsError bool   `json:"is_error"`
+		Result     string      `json:"result"`
+		IsError    bool        `json:"is_error"`
+		Structured *turnAnswer `json:"structured_output"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		if runErr != nil {
-			return "", fmt.Errorf("claude -p: %v: %s", runErr, failureLines(stderr.String(), 3))
+			return turnResult{}, fmt.Errorf("claude -p: %v: %s", runErr, failureLines(stderr.String(), 3))
 		}
-		return "", fmt.Errorf("claude -p: unreadable result: %v", err)
+		return turnResult{}, fmt.Errorf("claude -p: unreadable result: %v", err)
 	}
 	if result.IsError || runErr != nil {
-		return "", fmt.Errorf("claude -p: %s", strings.TrimSpace(result.Result+" "+failureLines(stderr.String(), 3)))
+		return turnResult{}, fmt.Errorf("claude -p: %s", strings.TrimSpace(result.Result+" "+failureLines(stderr.String(), 3)))
 	}
-	return strings.TrimSpace(result.Result), nil
+	if result.Structured != nil {
+		return result.Structured.result(session)
+	}
+	return parseTurn(result.Result, session)
 }
 
 // claudeEnv is the run's environment: of the node's, only what a process
