@@ -579,6 +579,17 @@ func TestCodexInstallDirStaysNarrow(t *testing.T) {
 			t.Errorf("tooBroad(%s) = false", dir)
 		}
 	}
+	// A home reached through a symlink, as macOS's /var is /private/var.
+	link := filepath.Join(t.TempDir(), "home-link")
+	if err := os.Symlink(home, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", link)
+	for _, dir := range []string{link, home, filepath.Dir(home)} {
+		if !tooBroad(dir) {
+			t.Errorf("tooBroad(%s) = false with HOME %s", dir, link)
+		}
+	}
 }
 
 // The agent directory and the node's data directory must not overlap: the

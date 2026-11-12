@@ -165,6 +165,11 @@ var sharedPrefixes = []string{"/usr", "/usr/local", "/opt", "/opt/homebrew", "/o
 // directory, or a shared prefix.
 func tooBroad(dir string) bool {
 	dir = filepath.Clean(dir)
+	// Compared with the home directory as its real path, so a path through
+	// a symlink (macOS's /var is /private/var) is too.
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
 	if dir == "/" || filepath.Dir(dir) == "/" {
 		return true
 	}
