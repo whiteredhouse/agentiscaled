@@ -150,7 +150,27 @@ func runSaved(ctx context.Context, args []string) error {
 // runUp is `agentiscaled up`: it signs the owner in through the
 // browser if the node has no identity yet, joins the node to their network,
 // saves its settings and (re)starts it as a per-user background service.
-func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
+// In a terminal it first asks which agent clients to connect and whether to
+// offer an agent, as `clients connect` and `agent add` do on their own.
+func runUp(ctx context.Context, args []string, out io.Writer) error {
+	return bringUp(ctx, args, out, upOptions{askClients: true, askAgent: true})
+}
+
+// upOptions are what differs between `up` and the commands that bring a
+// node up on its behalf, such as `agent add`.
+type upOptions struct {
+	// agentFlags accepts the -agent* flags, which `agent add` sets; `up`
+	// keeps the saved agent and changes it only through its wizard.
+	agentFlags bool
+	// askClients and askAgent let the wizard ask which clients to connect
+	// and whether to offer an agent.
+	askClients, askAgent bool
+}
+
+// isAgentFlag tells the node flags that only `agent add` sets.
+func isAgentFlag(name string) bool { return name == "agent" || strings.HasPrefix(name, "agent-") }
+
+func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) (runErr error) {
 	var c config
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	nodeFlags(fs, &c)
@@ -162,6 +182,19 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 	noService := fs.Bool("foreground", false, "Do not install a background service; join and exit, then run 'agentiscaled run' yourself")
 	assumeYes := fs.Bool("y", false, "Ask nothing; take every default, as when 'up' runs without a terminal")
 	clients := fs.String("clients", clientsAuto, "Agent clients to connect to this node: auto (every installed one, including when it hosts an agent), none, or a list of "+strings.Join(clientNames, ","))
+	if !opts.agentFlags {
+		fs.Usage = func() {
+			fmt.Fprintf(fs.Output(), "Usage of up (offer an agent with 'agentiscaled agent add'):\n")
+			shown := flag.NewFlagSet("up", flag.ContinueOnError)
+			shown.SetOutput(fs.Output())
+			fs.VisitAll(func(f *flag.Flag) {
+				if !isAgentFlag(f.Name) {
+					shown.Var(f.Value, f.Name, f.Usage)
+				}
+			})
+			shown.PrintDefaults()
+		}
+	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -170,6 +203,13 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 	}
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if !opts.agentFlags {
+		for name := range set {
+			if isAgentFlag(name) {
+				return fmt.Errorf("up takes no -%s: offer, change or remove an agent with 'agentiscaled agent add' and 'agentiscaled agent remove'", name)
+			}
+		}
+	}
 	var ask *wizard
 	if !*assumeYes && interactive() {
 		ask = &wizard{in: bufio.NewReader(os.Stdin), out: out}
@@ -229,12 +269,12 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 	// Gather and validate changes while the existing node remains available.
 	// Runtime login or an invalid workspace must not stop a working service.
 	if ask != nil {
-		if !set["clients"] && (!haveSaved || saved.Clients == "") {
+		if opts.askClients && !set["clients"] && (!haveSaved || saved.Clients == "") {
 			if *clients, err = ask.chooseClients(installedClients()); err != nil {
 				return err
 			}
 		}
-		if c.agent == "" && !set["agent"] {
+		if opts.askAgent && c.agent == "" && !set["agent"] {
 			offer, err := ask.offerAgent()
 			if err != nil {
 				return err
@@ -332,7 +372,9 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 			fmt.Fprintln(out, "Run the node with:")
 		}
 		fmt.Fprintf(out, "  %s run -data-dir %s\n", shellQuote(exe), shellQuote(c.dataDir))
-		nextSteps(ctx, out, *clients, c, exe)
+		if opts.askClients || *clients != "none" {
+			nextSteps(ctx, out, *clients, c, exe)
+		}
 		return nil
 	}
 	if err := svc.start(serviceSpec{exe: exe, dataDir: c.dataDir, path: s.Path}); err != nil {
@@ -350,7 +392,9 @@ func runUp(ctx context.Context, args []string, out io.Writer) (runErr error) {
 	} else {
 		fmt.Fprintln(out, "Connected to the mesh.")
 	}
-	nextSteps(ctx, out, *clients, c, exe)
+	if opts.askClients || *clients != "none" {
+		nextSteps(ctx, out, *clients, c, exe)
+	}
 	return nil
 }
 
@@ -390,6 +434,14 @@ func nextSteps(ctx context.Context, out io.Writer, clients string, c config, exe
 		printNextSteps(out, exe, c.dataDir)
 	default:
 		connectClients(ctx, out, selectClients(clients), exe, c.dataDir)
+	}
+	dirFlag := ""
+	if realAbs(c.dataDir) != realAbs(defaultDataDir()) {
+		dirFlag = " -data-dir " + shellQuote(c.dataDir)
+	}
+	fmt.Fprintf(out, "\nConnect or disconnect agent clients later with 'agentiscaled clients connect%s' or 'clients disconnect'.\n", dirFlag)
+	if c.agent == "" {
+		fmt.Fprintln(out, "Offer an agent from this machine with 'agentiscaled agent add'.")
 	}
 }
 

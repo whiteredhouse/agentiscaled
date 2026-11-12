@@ -33,6 +33,8 @@ type agentClient interface {
 	entries(ctx context.Context) (map[string]mcpEntry, error)
 	// add adds a server the client does not have yet, and says what it did.
 	add(ctx context.Context, name string, e mcpEntry) (string, error)
+	// remove removes a server by name, and says what it did.
+	remove(ctx context.Context, name string) (string, error)
 	// step is how to add the server by hand.
 	step(name string, e mcpEntry) string
 }
@@ -309,7 +311,41 @@ func (c *claudeDesktop) add(_ context.Context, name string, e mcpEntry) (string,
 		return "", err
 	}
 	servers = append(servers, field{name, entry})
-	top = set(top, "mcpServers", encodeObject(servers))
+	backup, err := c.write(set(top, "mcpServers", encodeObject(servers)))
+	if err != nil {
+		return "", err
+	}
+	did := fmt.Sprintf("added %q to %s", name, c.path)
+	if backup != "" {
+		did += fmt.Sprintf(" (the file before: %s)", backup)
+	}
+	return did + ". Quit Claude Desktop (Cmd+Q) and open it again to load it.", nil
+}
+
+func (c *claudeDesktop) remove(_ context.Context, name string) (string, error) {
+	top, servers, err := c.read()
+	if err != nil {
+		return "", err
+	}
+	kept := servers[:0:0]
+	for _, f := range servers {
+		if f.key != name {
+			kept = append(kept, f)
+		}
+	}
+	if len(kept) == len(servers) {
+		return "", fmt.Errorf("%s changed: it has no server named %q now", c.path, name)
+	}
+	backup, err := c.write(set(top, "mcpServers", encodeObject(kept)))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("removed %q from %s (the file before: %s). Quit Claude Desktop (Cmd+Q) and open it again.", name, c.path, backup), nil
+}
+
+// write replaces the configuration, keeping a copy of the file before, and
+// answers where that copy is, if there was a file.
+func (c *claudeDesktop) write(top []field) (backup string, err error) {
 	var b bytes.Buffer
 	if err := json.Indent(&b, encodeObject(top), "", "  "); err != nil {
 		return "", err
@@ -317,7 +353,6 @@ func (c *claudeDesktop) add(_ context.Context, name string, e mcpEntry) (string,
 	b.WriteByte('\n')
 
 	mode := os.FileMode(0o644)
-	backup := ""
 	if fi, err := os.Stat(c.path); err == nil {
 		mode = fi.Mode().Perm()
 		if backup, err = backupFile(c.path); err != nil {
@@ -334,11 +369,7 @@ func (c *claudeDesktop) add(_ context.Context, name string, e mcpEntry) (string,
 		os.Remove(tmp)
 		return "", err
 	}
-	did := fmt.Sprintf("added %q to %s", name, c.path)
-	if backup != "" {
-		did += fmt.Sprintf(" (the file before: %s)", backup)
-	}
-	return did + ". Quit Claude Desktop (Cmd+Q) and open it again to load it.", nil
+	return backup, nil
 }
 
 func (c *claudeDesktop) step(name string, e mcpEntry) string {
@@ -416,14 +447,9 @@ func (c *codexClient) entries(ctx context.Context) (map[string]mcpEntry, error) 
 }
 
 func (c *codexClient) add(ctx context.Context, name string, e mcpEntry) (string, error) {
-	backup := ""
-	if c.home != "" {
-		cfg := filepath.Join(c.home, "config.toml")
-		if _, err := os.Stat(cfg); err == nil {
-			if backup, err = backupFile(cfg); err != nil {
-				return "", fmt.Errorf("back up %s: %w", cfg, err)
-			}
-		}
+	backup, err := c.backup()
+	if err != nil {
+		return "", err
 	}
 	args := append([]string{"mcp", "add", name, "--", e.Command}, e.Args...)
 	if _, err := c.run(ctx, args...); err != nil {
@@ -434,6 +460,37 @@ func (c *codexClient) add(ctx context.Context, name string, e mcpEntry) (string,
 		did += fmt.Sprintf(" (config.toml before: %s)", backup)
 	}
 	return did + "; new Codex sessions have it.", nil
+}
+
+func (c *codexClient) remove(ctx context.Context, name string) (string, error) {
+	backup, err := c.backup()
+	if err != nil {
+		return "", err
+	}
+	if _, err := c.run(ctx, "mcp", "remove", name); err != nil {
+		return "", err
+	}
+	did := fmt.Sprintf("removed %q with codex mcp remove", name)
+	if backup != "" {
+		did += fmt.Sprintf(" (config.toml before: %s)", backup)
+	}
+	return did + ".", nil
+}
+
+// backup copies config.toml before a change, if there is one.
+func (c *codexClient) backup() (string, error) {
+	if c.home == "" {
+		return "", nil
+	}
+	cfg := filepath.Join(c.home, "config.toml")
+	if _, err := os.Stat(cfg); err != nil {
+		return "", nil
+	}
+	backup, err := backupFile(cfg)
+	if err != nil {
+		return "", fmt.Errorf("back up %s: %w", cfg, err)
+	}
+	return backup, nil
 }
 
 func (c *codexClient) step(name string, e mcpEntry) string {

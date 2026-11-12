@@ -187,14 +187,25 @@ type agentOffer struct {
 // offerAgent asks whether to offer an agent from this machine and, on yes,
 // which runtime, name and directory. It is hosted on the selected node.
 func (w *wizard) offerAgent() (*agentOffer, error) {
+	return w.chooseAgent(true)
+}
+
+// chooseAgent asks which runtime, name and directory to offer an agent
+// with, after asking whether to offer one at all when confirm is set.
+func (w *wizard) chooseAgent(confirm bool) (*agentOffer, error) {
 	names := installedRuntimes()
 	if len(names) == 0 {
 		fmt.Fprintf(w.out, "\nNo agent CLI to offer from this machine was found (%s).\n", strings.Join(runtimeNames(), ", "))
 		return nil, nil
 	}
-	yes, err := w.yesNo("\nOffer an agent from this machine to your network? Found: "+strings.Join(names, ", "), false)
-	if err != nil || !yes {
-		return nil, ignoreEOF(err)
+	if confirm {
+		yes, err := w.yesNo("\nOffer an agent from this machine to your network? Found: "+strings.Join(names, ", "), false)
+		if err != nil || !yes {
+			if err == nil {
+				fmt.Fprintln(w.out, "  Offer one later with 'agentiscaled agent add'.")
+			}
+			return nil, ignoreEOF(err)
+		}
 	}
 	rt := names[0]
 	if len(names) > 1 {

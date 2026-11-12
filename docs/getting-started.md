@@ -38,8 +38,10 @@ Offer an agent from this machine to your network? Found: codex, claude [y/N]:
 ```
 
 `up -y` asks nothing, and neither does `up` in a script, a service or an SSH session
-without a terminal. Flags answer the questions too: `-clients` the first,
-`-agent` and `-agent-dir` the second.
+without a terminal. `-clients` answers the first question. Each question also has a
+command of its own for later: `agentiscaled clients` connects or disconnects agent apps
+([step 3](#3-your-agents-are-connected)) and `agentiscaled agent add` offers an agent
+([Offer an agent](#offer-an-agent-to-your-network)).
 
 If you offer an agent, its setup questions and any required `codex login` finish
 before the agentiscale browser sign-in.
@@ -101,21 +103,35 @@ the connection.
 configuration, saves a copy of a file before changing it, and never changes a server
 that is already there: if an app already has a server named `agentiscale` for something
 else, `up` leaves it and prints the lines to add yourself. Running `up` again finds its
-entry and changes nothing. An app installed later gets connected by the next `up`, or
-by hand with the lines in [Connect an agent client](connect-agents.md).
+entry and changes nothing. An app installed later gets connected by
+`agentiscaled clients connect`, or by hand with the lines in
+[Connect an agent client](connect-agents.md).
 
 Answering n for an app, or `-clients none`, leaves it as it is; `-clients none` also
 prints the lines to add yourself, and `-clients codex` connects only the Codex CLI.
 `up` remembers your choice, and `-foreground`, so a later `up` keeps them until you
 pass the flag again.
 
+To change which apps use the node later, without running `up`:
+
+```sh
+agentiscaled clients list                    # which apps use this node
+agentiscaled clients connect codex           # add it to the Codex CLI
+agentiscaled clients disconnect claude-desktop
+```
+
+`connect` without names connects every installed app, and `disconnect` without names
+disconnects every one. `disconnect` removes only this node's server, saving a copy of
+the file first. Both remember the choice, so a later `up` keeps it.
+
 ## Offer an agent to your network
 
-To let your other agents send tasks to an agent on this machine, answer y to "Offer an
-agent from this machine to your network?". `up` asks only when it finds an agent CLI it
-can host (`codex`, `claude`) and lists the ones it found; with several, pick one. Then give its name in your network and the
+To let your other agents send tasks to an agent on this machine, run
+`agentiscaled agent add`, or answer y to "Offer an agent from this machine to your
+network?" in `up`. Both ask the same questions, only when they find an agent CLI they
+can host (`codex`, `claude`), and list the ones found; with several, pick one. Then give its name in your network and the
 directory it works in. Press Enter at the directory for a workspace of its own, which
-`up` creates: `~/Library/Application Support/agentiscaled/workspaces/<name>` on macOS
+agentiscaled creates: `~/Library/Application Support/agentiscaled/workspaces/<name>` on macOS
 and `~/.local/share/agentiscaled/workspaces/<name>` (`$XDG_DATA_HOME`) on Linux.
 
 ```text
@@ -134,30 +150,32 @@ settings and MCP servers (your `CODEX_HOME`), and with the directory's own instr
 files (`AGENTS.md`) and skills. Your MCP servers include agentiscale itself if you
 connected Codex, so the agent can ask your network's other agents for help. Answer n
 to give the agent its own configuration and sign-in in its node's data directory, with
-no MCP servers (`-agent-owner-config=false`), or to leave out the directory's
+no MCP servers (`-owner-config=false`), or to leave out the directory's
 instruction files or skills when it may hold content from someone you don't trust
-(`-agent-dir-instructions=false`, `-agent-dir-skills=false`).
+(`-dir-instructions=false`, `-dir-skills=false`).
 
 The agent runs on the same node your local apps use. There is one mesh identity,
 one sign-in to agentiscale, and one background service. If Codex needs a runtime
-sign-in, `up` runs `codex login` during agent setup, before joining the node and
-starting the service. Local apps can discover and call this agent through the same
+sign-in, agentiscaled runs `codex login` during agent setup, before joining the node and
+(re)starting the service. Local apps can discover and call this agent through the same
 node, as well as agents on other machines.
 
-To configure it with flags instead of the wizard:
+To offer it without questions, name the runtime:
 
 ```sh
-agentiscaled up -agent codex -agent-dir ~/work/my-project
+agentiscaled agent add codex -dir ~/work/my-project
 ```
 
-Add `-agent-name <name>` for a name other than the default, or
-`-agent-description "<text>"` for your own description. The node currently hosts one
-agent. Running `up` again preserves saved settings unless you override their flags;
-`-agent=` stops offering the agent. `status`, `down`, `reset` and `tasks` address this
-same node. Reset keeps its agent configuration and runtime sign-in.
+Add `-name <name>` for a name other than the default, or `-description "<text>"` for
+your own description; `-dir` defaults to the agent's own workspace. Running
+`agent add` again with the same name changes that agent. `agent list` shows the
+agents this machine offers, and `agent remove <name>` stops offering one, leaving its
+directory as it is. `up` keeps the offered agent as it is; it takes no agent flags.
+`status`, `down`, `reset` and `tasks` address this same node. Reset keeps its agent
+configuration and runtime sign-in.
 
-Agent questions, runtime login and validation finish before `up` stops an existing
-service. If a later enrollment, save or startup step fails, `up` attempts to restore
+Agent questions, runtime login and validation finish before `up` or `agent add` stops an existing
+service. If a later enrollment, save or startup step fails, agentiscaled attempts to restore
 the old settings and restart a previously running service; recovery errors are
 reported. A service that was already stopped is not restarted as recovery.
 Client setup uses your invoking shell's Codex configuration, even when the hosted
@@ -178,15 +196,23 @@ for an example.
 
 ## More than one node on a machine
 
-Separate nodes remain available explicitly. Each has its own data directory,
-identity, service and recovery target. Pass the same `-data-dir` to `status`, `down`,
-`reset`, `tasks` and `mcp`. Its server in your agent apps is named after the directory,
-such as `agentiscale-agent`. Use `-clients none` if this node should not be connected
-to your local apps:
+A node offers one agent. When this machine's node already offers one, `agent add`
+with another name gives the new agent a node of its own, next to the default one
+(`~/Library/Application Support/agentiscale-<name>` on macOS,
+`~/.config/agentiscale-<name>` on Linux). That node signs in and joins your network
+once, runs as its own background service and is not connected to your agent apps,
+which reach its agent through the node they already use:
 
 ```sh
-agentiscaled up -data-dir ~/agentiscale-agent -agent codex -agent-dir ~/work/my-project -clients none
+agentiscaled agent add codex -name reviewer -dir ~/work/my-project
 ```
+
+`agent remove reviewer` stops that node's service; remove the node from your network
+in the console. Each node has its own data directory, identity, service and recovery
+target. Pass its `-data-dir` to `status`, `down`, `reset`, `tasks` and `mcp`, or to
+`agent add` to pick the directory yourself. Its server in your agent apps, if you
+connect it with `clients connect -data-dir <dir>`, is named after the directory, such
+as `agentiscale-reviewer`.
 
 Nodes created by older versions in directories such as `agentiscale-codex-2` stay
 independent. This version does not move their configuration or remove their services.
@@ -197,8 +223,8 @@ shortly after it starts. Keep its data directory until
 you have verified the new setup; isolated runtime sign-ins are specific to that directory.
 
 Before configuring the selected node, record the old agent's workspace, name,
-description, and choices for `-agent-owner-config`, `-agent-dir-instructions`, and
-`-agent-dir-skills`. Pass those choices explicitly so consolidation preserves its
+description, and choices for `-owner-config`, `-dir-instructions`, and
+`-dir-skills` of `agent add`. Pass those choices explicitly so consolidation preserves its
 permissions. For an owner-configured runtime, use the same `CODEX_HOME` if one was
 configured. An isolated runtime needs its own login in the selected node's data
 directory. Do not copy node keys or enrollment files between directories.
