@@ -191,8 +191,16 @@ flags the agent takes its name and card description from the file and works in
 the project the file is in (`~/work/my-project`); `-name`, `-description` and
 `-dir` override each. Each task then runs with the file's instructions added to the system prompt:
 `--append-system-prompt` for `claude -p`, `-c developer_instructions=…` for
-`codex exec`. The node reads the file when it starts, so restart it (or run
-`agent add` again) after you change the file.
+`codex exec`.
+
+`agent add` copies the file into the agent's own state in the node's data
+directory (`<data-dir>/agents/<name>/definition.md` or `.toml`), which the
+agent's directory may not overlap, so no task can change the agent's role and
+no edit, branch switch or delete in the project changes it unseen. The node
+runs the agent with that copy. `agent list` shows each agent's source file and
+marks it "source changed" or "source gone" when it no longer matches the copy;
+run the same `agent add` again to take the new version. `agent remove`, or
+`agent add` of the same name without `-definition`, deletes the copy.
 
 The rest of the file applies only when the agent's runtime is the one it was
 written for, and never widens the agent's permissions; on the other runtime

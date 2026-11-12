@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -48,6 +50,14 @@ type agentDefinition struct {
 // loadDefinition reads the agent definition at path, whose format its
 // extension names: .md for Claude Code, .toml for Codex.
 func loadDefinition(path string) (*agentDefinition, error) {
+	b, err := readDefinition(path)
+	if err != nil {
+		return nil, err
+	}
+	return parseDefinition(path, b)
+}
+
+func readDefinition(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("agent definition: %w", err)
@@ -60,7 +70,11 @@ func loadDefinition(path string) (*agentDefinition, error) {
 	if len(b) > maxDefinitionSize {
 		return nil, fmt.Errorf("agent definition %s: larger than %d KiB", path, maxDefinitionSize>>10)
 	}
-	var d *agentDefinition
+	return b, nil
+}
+
+// parseDefinition reads the content b of the definition at path.
+func parseDefinition(path string, b []byte) (d *agentDefinition, err error) {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".md":
 		d, err = parseClaudeDefinition(b)
@@ -76,6 +90,62 @@ func loadDefinition(path string) (*agentDefinition, error) {
 		return nil, fmt.Errorf("agent definition %s has no instructions", path)
 	}
 	return d, nil
+}
+
+// definitionCopy is where the node keeps its copy of agent name's
+// definition from source: in the agent's own state in the data directory,
+// out of reach of the agent's directory, so that no task can change the
+// agent's role, and no change in the project changes it unseen.
+func definitionCopy(dataDir, name, source string) string {
+	return filepath.Join(dataDir, "agents", name, "definition"+strings.ToLower(filepath.Ext(source)))
+}
+
+// copyDefinition copies the definition at source to agent name's state and
+// returns the copy's SHA-256 and what it defines.
+func copyDefinition(dataDir, name, source string) (string, *agentDefinition, error) {
+	b, err := readDefinition(source)
+	if err != nil {
+		return "", nil, err
+	}
+	d, err := parseDefinition(source, b)
+	if err != nil {
+		return "", nil, err
+	}
+	dst := definitionCopy(dataDir, name, source)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return "", nil, err
+	}
+	removeDefinitionCopies(dataDir, name)
+	tmp := dst + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return "", nil, err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		return "", nil, err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), d, nil
+}
+
+// removeDefinitionCopies removes agent name's copy of a definition, of
+// either format.
+func removeDefinitionCopies(dataDir, name string) {
+	for _, ext := range []string{".md", ".toml"} {
+		_ = os.Remove(filepath.Join(dataDir, "agents", name, "definition"+ext))
+	}
+}
+
+// definitionDrift says how the source of a definition differs from the copy
+// with SHA-256 sum: empty when it does not.
+func definitionDrift(source, sum string) string {
+	b, err := readDefinition(source)
+	if err != nil {
+		return "source gone"
+	}
+	if s := sha256.Sum256(b); hex.EncodeToString(s[:]) != sum {
+		return "source changed"
+	}
+	return ""
 }
 
 // parseClaudeDefinition reads a Claude Code agent file: YAML front matter
@@ -200,21 +270,18 @@ type definedRuntime interface {
 	setDefinition(*agentDefinition)
 }
 
-// applyDefinition gives rt the definition at path, if any.
-func applyDefinition(rt runtime, path string) error {
-	if path == "" {
-		return nil
-	}
+// applyDefinition gives rt the definition at path and returns it.
+func applyDefinition(rt runtime, path string) (*agentDefinition, error) {
 	d, err := loadDefinition(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	dr, ok := rt.(definedRuntime)
 	if !ok {
-		return errors.New("its runtime cannot run with a definition")
+		return nil, errors.New("its runtime cannot run with a definition")
 	}
 	dr.setDefinition(d)
-	return nil
+	return d, nil
 }
 
 // ignoredOn names the settings of d that runtime rt ignores because d was
