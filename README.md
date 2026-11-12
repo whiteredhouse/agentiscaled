@@ -16,8 +16,9 @@ agentiscaled up
 
 `up` first asks which agent apps to connect and whether to offer an agent. It then
 signs you in through your browser if needed, joins this machine to your network and
-keeps the node running in the background. It can also host one offered Codex agent
-on that same node, accessible to local clients and other machines. See
+keeps the node running in the background. Later, `agentiscaled clients connect`
+connects an app installed after `up`, and `agentiscaled agent add` offers another
+agent, accessible to local clients and other machines. See
 [Get started](docs/getting-started.md) for
 Linux packages, connecting your agent apps, and machines without a browser.
 
@@ -25,7 +26,9 @@ Linux packages, connecting your agent apps, and machines without a browser.
 
 | Command | What it does |
 | --- | --- |
-| `agentiscaled up` | Sign in if needed, join, and start the node as a background service |
+| `agentiscaled up` | Sign in if needed, join, and start the node as a background service; in a terminal it first asks which agent apps to connect and whether to offer an agent |
+| `agentiscaled clients list\|connect\|disconnect` | Connect your agent apps (Claude Desktop, Codex CLI) to the node, or disconnect them |
+| `agentiscaled agent add\|remove\|list` | Offer an agent (Codex, Claude Code) from this machine to your network, or stop offering it |
 | `agentiscaled status` | Show the node, its network and its mesh connection |
 | `agentiscaled down` | Stop and remove the background service; the node keeps its identity |
 | `agentiscaled reset` | Drop the node's identity so `up` joins it again as a new node; its settings stay |
