@@ -40,7 +40,7 @@ Offer an agent from this machine to your network? Found: codex, claude [y/N]:
 `up -y` asks nothing, and neither does `up` in a script, a service or an SSH session
 without a terminal. `-clients` answers the first question. Each question also has a
 command of its own for later: `agentiscaled clients` connects or disconnects agent apps
-([step 3](#3-your-agents-are-connected)) and `agentiscaled agent add` offers an agent
+([step 3](#3-your-agents-are-connected)) and `agentiscaled agents add` offers an agent
 ([Offer an agent](#offer-an-agent-to-your-network)).
 
 If you offer an agent, its setup questions and any required `codex login` finish
@@ -127,7 +127,7 @@ the file first. Both remember the choice, so a later `up` keeps it.
 ## Offer an agent to your network
 
 To let your other agents send tasks to an agent on this machine, run
-`agentiscaled agent add`, or answer y to "Offer an agent from this machine to your
+`agentiscaled agents add`, or answer y to "Offer an agent from this machine to your
 network?" in `up`. Both ask the same questions, only when they find an agent CLI they
 can host (`codex`, `claude`), and list the ones found; with several, pick one. Then give its name in your network and the
 directory it works in. Press Enter at the directory for a workspace of its own, which
@@ -163,23 +163,23 @@ node, as well as agents on other machines.
 To offer it without questions, name the runtime:
 
 ```sh
-agentiscaled agent add codex -dir ~/work/my-project
+agentiscaled agents add codex -dir ~/work/my-project
 ```
 
 Add `-name <name>` for a name other than the default, or `-description "<text>"` for
 your own description; `-dir` defaults to the agent's own workspace. `-definition <file>`
 gives the agent the role of a project's subagent definition (`.claude/agents/<name>.md`
 or `.codex/agents/<name>.toml`); see [Give an agent a subagent's role](connect-agents.md#give-an-agent-a-subagents-role). Running
-`agent add` again with the same name changes that agent, and `agent add` with
+`agents add` again with the same name changes that agent, and `agents add` with
 another name offers one more agent from the same node, next to the first: there
-is no second sign-in, node or service. `agent list` shows the agents this machine
-offers, and `agent remove <name>` stops offering one, leaving its directory as it
+is no second sign-in, node or service. `agents list` shows the agents this machine
+offers, and `agents remove <name>` stops offering one, leaving its directory as it
 is; each restarts the node's background service. `up` keeps the offered agents as
 they are; it takes no agent flags. `status`, `down`, `reset` and `tasks` address
 this same node, and `tasks stop` stops the tasks of all its agents, and `status` shows whether tasks are stopped. Reset keeps its
 agents' configuration and runtime sign-ins.
 
-Agent questions, runtime login and validation finish before `up` or `agent add` stops an existing
+Agent questions, runtime login and validation finish before `up` or `agents add` stops an existing
 service. If a later enrollment, save or startup step fails, agentiscaled attempts to restore
 the old settings and restart a previously running service; recovery errors are
 reported. A service that was already stopped is not restarted as recovery.
@@ -216,7 +216,7 @@ Nodes set up by older versions for one agent each, in directories such as
 move their agents or remove their services. To move such an agent onto the default
 node, record its workspace, name, description, and choices for `-owner-config`,
 `-dir-instructions` and `-dir-skills`, stop the old node with
-`down -data-dir <old-directory>`, then offer the agent again with `agent add` and the
+`down -data-dir <old-directory>`, then offer the agent again with `agents add` and the
 same choices. If another node on your network still serves that name, the node's log
 says so shortly after it starts. Remove the old node from your network in the console
 once the new setup works. An isolated runtime (`-owner-config=false`) needs its own

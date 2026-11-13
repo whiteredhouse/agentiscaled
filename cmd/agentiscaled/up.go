@@ -35,8 +35,8 @@ type settings struct {
 	APITokenPath string `json:"api_token_path,omitempty"`
 	Listen       string `json:"listen"`
 	LogLevel     string `json:"log_level"`
-	// Agents are the agents the node offers, which `agent add` and
-	// `agent remove` change.
+	// Agents are the agents the node offers, which `agents add` and
+	// `agents remove` change.
 	Agents      []agentConfig `json:"agents,omitempty"`
 	MachineName string        `json:"machine_name,omitempty"`
 	// PATH for the service, captured at `up`, since launchd and systemd
@@ -136,15 +136,15 @@ func runSaved(ctx context.Context, args []string) error {
 // browser if the node has no identity yet, joins the node to their network,
 // saves its settings and (re)starts it as a per-user background service.
 // In a terminal it first asks which agent clients to connect and whether to
-// offer an agent, as `clients connect` and `agent add` do on their own.
+// offer an agent, as `clients connect` and `agents add` do on their own.
 func runUp(ctx context.Context, args []string, out io.Writer) error {
 	return bringUp(ctx, args, out, upOptions{askClients: true, askAgent: true})
 }
 
 // upOptions are what differs between `up` and the commands that bring a
-// node up on its behalf, such as `agent add`.
+// node up on its behalf, such as `agents add`.
 type upOptions struct {
-	// addAgent is the agent that `agent add` offers from the node, in
+	// addAgent is the agent that `agents add` offers from the node, in
 	// place of a saved one of the same name. `up` keeps the saved agents
 	// and adds one only through its wizard.
 	addAgent *agentConfig
@@ -407,7 +407,7 @@ func nextSteps(ctx context.Context, out io.Writer, clients string, c config, exe
 	}
 	fmt.Fprintf(out, "\nConnect or disconnect agent clients later with 'agentiscaled clients connect%s' or 'clients disconnect'.\n", dirFlag)
 	if len(c.agents) == 0 {
-		fmt.Fprintln(out, "Offer an agent from this machine with 'agentiscaled agent add'.")
+		fmt.Fprintln(out, "Offer an agent from this machine with 'agentiscaled agents add'.")
 	}
 }
 
@@ -454,7 +454,7 @@ func checkAgent(a *agentConfig, dataDir string, service bool) error {
 	policy := a.policy()
 	if a.Definition != "" {
 		if _, err := loadDefinition(definitionCopy(dataDir, a.Name, a.Definition)); err != nil {
-			return fmt.Errorf("agent %s: its definition: %w; run 'agentiscaled agent add' with -definition again", a.Name, err)
+			return fmt.Errorf("agent %s: its definition: %w; run 'agentiscaled agents add' with -definition again", a.Name, err)
 		}
 	}
 	// The runtime checks the rest, such as the agent's own sign-in.

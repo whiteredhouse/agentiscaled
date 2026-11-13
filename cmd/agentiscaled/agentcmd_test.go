@@ -5,10 +5,27 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestAgentsListCommandAndAlias(t *testing.T) {
+	t.Setenv("AGENTISCALED_TEST_MAIN", "1")
+	dataDir := t.TempDir()
+	for _, group := range []string{"agents", "agent"} {
+		t.Run(group, func(t *testing.T) {
+			out, err := exec.Command(os.Args[0], group, "list", "-data-dir", dataDir).CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s list: %v\n%s", group, err, out)
+			}
+			if !strings.Contains(string(out), "offers no agent") || !strings.Contains(string(out), "agentiscaled agents add") {
+				t.Errorf("expected empty agents list with the canonical add command, got %q", out)
+			}
+		})
+	}
+}
 
 func TestWithClients(t *testing.T) {
 	all := strings.Join(systemClients(), ",")
@@ -89,8 +106,8 @@ func TestUpHasNoAgentFlags(t *testing.T) {
 	}
 }
 
-// `agent add` puts every agent on this machine's one node, and `agent
-// remove` takes each off it; no other node is set up.
+// `agents add` puts each agent on this machine's node.
+// `agents remove` takes it off that node.
 func TestAgentAddListRemove(t *testing.T) {
 	def := withDefaultDataDir(t)
 	mesh := newStandInMesh(t, "fine")
