@@ -66,16 +66,16 @@ const usage = `agentiscaled is the agentiscale node.
 
 Commands:
   up       sign in, join this machine to your network and keep the node running
-  clients  connect agent clients (Claude Desktop, Codex CLI) to the node, or disconnect them
+  client   connect agent clients (Claude Desktop, Codex CLI) to the node, or disconnect them
   agent    offer an agent from this machine to your network (add, remove, list)
-  runtimes list supported agent runtimes and their local configuration
+  runtime  list supported agent runtimes and their local configuration
   down     stop the node's background service; its identity stays
   status   show the node's service, network and mesh connection
   version  print the version
   reset    drop the node's identity so 'up' joins it again as a new node; its settings stay
   run      run the node in the foreground with the settings 'up' saved
   mcp      serve the node's MCP tools on stdio, for agent clients
-  tasks    stop, resume or show the agent's task execution
+  task     control task execution on this node (status, stop, resume)
 
 Without a command, agentiscaled runs the node in the foreground with the
 flags given (see agentiscaled -h).
@@ -90,15 +90,15 @@ func main() {
 		case "mcp":
 			// Standard output carries MCP messages; errors go to standard error.
 			err = runMCP(ctx, args)
-		case "tasks":
+		case "task":
 			err = runTasks(args, os.Stdout)
 		case "up":
 			err = runUp(ctx, args, os.Stdout)
-		case "clients":
+		case "client":
 			err = runClients(ctx, args, os.Stdout)
 		case "agent":
 			err = runAgent(ctx, args, os.Stdout)
-		case "runtimes":
+		case "runtime":
 			err = runRuntimes(args, os.Stdout)
 		case "down":
 			err = runDown(args, os.Stdout)

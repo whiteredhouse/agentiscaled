@@ -136,7 +136,7 @@ func runSaved(ctx context.Context, args []string) error {
 // browser if the node has no identity yet, joins the node to their network,
 // saves its settings and (re)starts it as a per-user background service.
 // In a terminal it first asks which agent clients to connect and whether to
-// offer an agent, as `clients connect` and `agent add` do on their own.
+// offer an agent, as `client connect` and `agent add` do on their own.
 func runUp(ctx context.Context, args []string, out io.Writer) error {
 	return bringUp(ctx, args, out, upOptions{askClients: true, askAgent: true})
 }
@@ -405,7 +405,7 @@ func nextSteps(ctx context.Context, out io.Writer, clients string, c config, exe
 	if realAbs(c.dataDir) != realAbs(defaultDataDir()) {
 		dirFlag = " -data-dir " + shellQuote(c.dataDir)
 	}
-	fmt.Fprintf(out, "\nConnect or disconnect agent clients later with 'agentiscaled clients connect%s' or 'clients disconnect'.\n", dirFlag)
+	fmt.Fprintf(out, "\nConnect or disconnect agent clients later with 'agentiscaled client connect%s' or 'client disconnect'.\n", dirFlag)
 	if len(c.agents) == 0 {
 		fmt.Fprintln(out, "Offer an agent from this machine with 'agentiscaled agent add'.")
 	}
@@ -636,7 +636,7 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 	}
 	// The owner's stop holds for all of the node's agents.
 	if b, err := os.ReadFile(stopFilePath(dir)); err == nil {
-		fmt.Fprintf(out, "Tasks:    stopped since %s; 'agentiscaled tasks resume' takes them again\n", strings.TrimSpace(string(b)))
+		fmt.Fprintf(out, "Tasks:    stopped since %s; 'agentiscaled task resume' takes them again\n", strings.TrimSpace(string(b)))
 	} else if len(s.Agents) > 0 {
 		fmt.Fprintln(out, "Tasks:    accepted")
 	}

@@ -9,15 +9,15 @@ import (
 	"time"
 )
 
-// runTasks is `agentiscaled tasks stop|resume|status`, the owner's stop
+// runTasks is `agentiscaled task stop|resume|status`, the owner's stop
 // control. Stopping writes a file in the data directory: the
 // running node cancels the task in progress within a second, refuses new
 // tasks, and stops advertising the service, and the stop survives a restart.
 func runTasks(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: agentiscaled tasks stop|resume|status [-data-dir DIR]")
+		return errors.New("usage: agentiscaled task stop|resume|status [-data-dir DIR]")
 	}
-	fs := flag.NewFlagSet("tasks", flag.ContinueOnError)
+	fs := flag.NewFlagSet("task", flag.ContinueOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -41,7 +41,7 @@ func runTasks(args []string, out io.Writer) error {
 			fmt.Fprintln(out, "running")
 		}
 	default:
-		return fmt.Errorf("unknown tasks command %q: use stop, resume or status", args[0])
+		return fmt.Errorf("unknown task command %q: use stop, resume or status", args[0])
 	}
 	return nil
 }

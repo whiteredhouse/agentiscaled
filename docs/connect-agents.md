@@ -2,7 +2,7 @@
 
 New to agentiscale? Start with [Get started](getting-started.md): `agentiscaled up`
 joins your machine and adds it to Claude Desktop and the Codex CLI itself, and
-`agentiscaled clients connect` does the same later, for example for an app installed
+`agentiscaled client connect` does the same later, for example for an app installed
 after `up`. Use this page to connect a client by hand.
 
 Once agentiscaled has joined your network and is running, a local agent reaches
@@ -285,7 +285,7 @@ nodes are running from, which can kill them.
 - The task is `rejected`: its message says why, for example another task is
   still running or task execution is stopped.
 
-**Stop control:** `agentiscaled tasks stop -data-dir <node B's data dir>`
+**Stop control:** `agentiscaled task stop -data-dir <node B's data dir>`
 cancels the running task within a second, refuses new tasks and withdraws
-the agent from discovery, also across restarts, until `agentiscaled tasks
-resume`. `agentiscaled tasks status` says which.
+the agent from discovery, also across restarts, until `agentiscaled task
+resume`. `agentiscaled task status` says which.

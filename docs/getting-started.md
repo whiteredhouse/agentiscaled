@@ -39,7 +39,7 @@ Offer an agent from this machine to your network? Found: codex, claude [y/N]:
 
 `up -y` asks nothing, and neither does `up` in a script, a service or an SSH session
 without a terminal. `-clients` answers the first question. Each question also has a
-command of its own for later: `agentiscaled clients` connects or disconnects agent apps
+command of its own for later: `agentiscaled client` connects or disconnects agent apps
 ([step 3](#3-your-agents-are-connected)) and `agentiscaled agent add` offers an agent
 ([Offer an agent](#offer-an-agent-to-your-network)).
 
@@ -104,7 +104,7 @@ configuration, saves a copy of a file before changing it, and never changes a se
 that is already there: if an app already has a server named `agentiscale` for something
 else, `up` leaves it and prints the lines to add yourself. Running `up` again finds its
 entry and changes nothing. An app installed later gets connected by
-`agentiscaled clients connect`, or by hand with the lines in
+`agentiscaled client connect`, or by hand with the lines in
 [Connect an agent client](connect-agents.md).
 
 Answering n for an app, or `-clients none`, leaves it as it is; `-clients none` also
@@ -115,9 +115,9 @@ pass the flag again.
 To change which apps use the node later, without running `up`:
 
 ```sh
-agentiscaled clients list                    # which apps use this node
-agentiscaled clients connect codex           # add it to the Codex CLI
-agentiscaled clients disconnect claude-desktop
+agentiscaled client list                    # which apps use this node
+agentiscaled client connect codex           # add it to the Codex CLI
+agentiscaled client disconnect claude-desktop
 ```
 
 `connect` without names connects every installed app, and `disconnect` without names
@@ -176,7 +176,7 @@ is no second sign-in, node or service. `agent list` shows the agents this machin
 offers, and `agent remove <name>` stops offering one, leaving its directory as it
 is; each restarts the node's background service. `up` keeps the offered agents as
 they are; it takes no agent flags. `status`, `down`, `reset` and `tasks` address
-this same node, and `tasks stop` stops the tasks of all its agents, and `status` shows whether tasks are stopped. Reset keeps its
+this same node, and `task stop` stops the tasks of all its agents, and `status` shows whether tasks are stopped. Reset keeps its
 agents' configuration and runtime sign-ins.
 
 Agent questions, runtime login and validation finish before `up` or `agent add` stops an existing
@@ -208,7 +208,7 @@ One node offers all the agents of a machine, so most machines need no other.
 A node in a data directory of its own, such as one run apart for testing, takes
 `-data-dir` on `up`, `agent`, `clients`, `status`, `down`, `reset`, `tasks` and
 `mcp`, and has its own identity, service and recovery target. Its server in your
-agent apps, if you connect it with `clients connect -data-dir <dir>`, is named after
+agent apps, if you connect it with `client connect -data-dir <dir>`, is named after
 the directory, such as `agentiscale-reviewer`.
 
 Nodes set up by older versions for one agent each, in directories such as

@@ -5,10 +5,39 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestSingularCommandGroups(t *testing.T) {
+	t.Setenv("AGENTISCALED_TEST_MAIN", "1")
+	t.Setenv("PATH", t.TempDir())
+	dataDir := t.TempDir()
+	writeSettings(t, dataDir, settings{Clients: "none"})
+	for _, tc := range []struct {
+		singular, plural string
+		args             []string
+		want             string
+	}{
+		{"agent", "agents", []string{"list", "-data-dir", dataDir}, "agentiscaled agent add"},
+		{"client", "clients", []string{"list", "-data-dir", dataDir}, "codex"},
+		{"runtime", "runtimes", []string{"list"}, "RUNTIME"},
+		{"task", "tasks", []string{"status", "-data-dir", dataDir}, "running"},
+	} {
+		t.Run(tc.singular, func(t *testing.T) {
+			out, err := exec.Command(os.Args[0], append([]string{tc.singular}, tc.args...)...).CombinedOutput()
+			if err != nil || !strings.Contains(string(out), tc.want) {
+				t.Errorf("%s %v: %v\n%s", tc.singular, tc.args, err, out)
+			}
+			out, err = exec.Command(os.Args[0], append([]string{tc.plural}, tc.args...)...).CombinedOutput()
+			if err == nil || !strings.Contains(string(out), `unknown command "`+tc.plural+`"`) {
+				t.Errorf("expected %s to be rejected as an unknown command, got %v\n%s", tc.plural, err, out)
+			}
+		})
+	}
+}
 
 func TestWithClients(t *testing.T) {
 	all := strings.Join(systemClients(), ",")
@@ -89,8 +118,8 @@ func TestUpHasNoAgentFlags(t *testing.T) {
 	}
 }
 
-// `agent add` puts every agent on this machine's one node, and `agent
-// remove` takes each off it; no other node is set up.
+// `agent add` puts each agent on this machine's node.
+// `agent remove` takes it off that node.
 func TestAgentAddListRemove(t *testing.T) {
 	def := withDefaultDataDir(t)
 	mesh := newStandInMesh(t, "fine")

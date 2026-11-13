@@ -357,7 +357,7 @@ func TestStatusShowsTaskStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if err := runStatus(context.Background(), []string{"-data-dir", dir}, &out); err != nil || !strings.Contains(out.String(), "Tasks:    stopped since ") || !strings.Contains(out.String(), "tasks resume") {
+	if err := runStatus(context.Background(), []string{"-data-dir", dir}, &out); err != nil || !strings.Contains(out.String(), "Tasks:    stopped since ") || !strings.Contains(out.String(), "task resume") {
 		t.Fatalf("status after stop: %v\n%s", err, &out)
 	}
 	out.Reset()
