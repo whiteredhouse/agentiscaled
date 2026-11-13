@@ -1,6 +1,6 @@
 # Release build for agentiscaled: a v* tag builds macOS and Linux
-# binaries, .deb and .rpm packages, checksums, and the Homebrew cask in
-# whiteredhouse/homebrew-tap. See .github/workflows/release.yml.
+# binaries, .deb and .rpm packages, checksums, and a Homebrew cask.
+# The release workflow publishes the draft and updates the tap after attestation.
 version: 2
 project_name: agentiscaled
 
@@ -32,7 +32,9 @@ checksum:
 nfpms:
   - id: packages
     package_name: agentiscaled
-    file_name_template: "{{ .ConventionalFileName }}"
+    # GitHub renames tildes in asset names. Normalize prerelease filenames
+    # before GoReleaser writes the checksum manifest.
+    file_name_template: '{{ replace .ConventionalFileName "~" "." }}'
     vendor: agentiscale
     homepage: https://github.com/whiteredhouse/agentiscaled
     maintainer: agentiscale <noreply@agentiscale.net>
@@ -51,17 +53,11 @@ homebrew_casks:
     repository:
       owner: whiteredhouse
       name: homebrew-tap
-      token: '{{ .Env.HOMEBREW_TAP_TOKEN }}'
     homepage: https://github.com/whiteredhouse/agentiscaled
     description: The agentiscale node. Joins your machine's agents to your private agentiscale network.
     license: Apache-2.0
     binaries: [agentiscaled]
-    commit_author:
-      name: agentiscale release
-      email: noreply@agentiscale.net
-    # Prereleases, and releases made before the tap token exists, leave the
-    # tap alone.
-    skip_upload: '{{ if index .Env "HOMEBREW_TAP_TOKEN" }}auto{{ else }}true{{ end }}'
+    skip_upload: true
     hooks:
       post:
         # The binary is not notarized yet, so macOS would
@@ -73,6 +69,9 @@ homebrew_casks:
 
 release:
   prerelease: auto
+  draft: true
+  use_existing_draft: true
+  replace_existing_artifacts: true
 
 changelog:
   use: github

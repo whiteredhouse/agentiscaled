@@ -1,7 +1,5 @@
-# A v* tag publishes a release: binaries, .deb and .rpm packages,
-# checksums and provenance attestations, and the Homebrew cask in
-# whiteredhouse/homebrew-tap when the HOMEBREW_TAP_TOKEN secret is set (a
-# fine-grained token with contents write on that repository only).
+# A v* tag stages a draft and publishes it after verifying build provenance.
+# The stable Homebrew cask is published by a separate, retryable job.
 name: Release
 
 on:
@@ -11,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  queue: max
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -18,27 +20,88 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+    outputs:
+      publication-artifact-id: ${{ steps.inputs.outputs.artifact-id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+          persist-credentials: false
+      - name: Check for an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/publish-release.py check
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
       - name: Test
         run: go test -race ./...
-      - uses: goreleaser/goreleaser-action@v6
+      - name: Stage release assets and generate cask
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: v2.20.2
           args: release --clean
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-      - uses: actions/attest-build-provenance@v2
+          GITHUB_TOKEN: ${{ github.token }}
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        id: attest
         with:
           subject-path: |
             dist/*.tar.gz
             dist/*.deb
             dist/*.rpm
             dist/checksums.txt
+      - name: Stage the attestation bundle for publication
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$ATTESTATION_BUNDLE" dist/provenance.json
+      - name: Retain inputs for publication and retries
+        id: inputs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: release-publication-${{ github.run_attempt }}
+          path: |
+            dist/checksums.txt
+            dist/provenance.json
+            dist/homebrew/Casks/agentiscaled.rb
+          if-no-files-found: error
+
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      prerelease: ${{ steps.publish.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          artifact-ids: ${{ needs.release.outputs.publication-artifact-id }}
+          path: release-inputs
+      - name: Verify draft assets and publish
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/publish-release.py publish release-inputs/checksums.txt release-inputs/provenance.json
+
+  homebrew:
+    needs: [release, publish]
+    if: needs.publish.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          artifact-ids: ${{ needs.release.outputs.publication-artifact-id }}
+          path: release-inputs
+      - name: Update the Homebrew tap
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: python3 .github/scripts/publish-release.py tap release-inputs/homebrew/Casks/agentiscaled.rb
