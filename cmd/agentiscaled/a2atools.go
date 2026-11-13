@@ -301,11 +301,32 @@ func settled(s a2a.TaskState) bool {
 	return s.Terminal() || s == a2a.TaskStateInputRequired
 }
 
+// streamCheckEvery is how often follow reads the task while it streams, so
+// that a stream that stalls, as one through a buffering proxy can, does not
+// hold get_task after the task settled.
+var streamCheckEvery = 5 * time.Second
+
 // follow streams the events of task id until it settles, the stream ends or
 // fails, or the deadline passes, and reports each status it carries.
 func follow(ctx context.Context, c *a2aclient.Client, id a2a.TaskID, deadline time.Time, report func(a2a.TaskStatus)) {
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
+	go func() {
+		none := 0
+		t := time.NewTicker(streamCheckEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if task, err := c.GetTask(ctx, &a2a.GetTaskRequest{ID: id, HistoryLength: &none}); err == nil && settled(task.Status.State) {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
 	for ev, err := range c.SubscribeToTask(ctx, &a2a.SubscribeToTaskRequest{ID: id}) {
 		if err != nil {
 			return

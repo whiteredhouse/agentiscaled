@@ -297,6 +297,9 @@ type methodCounter struct {
 	// refuse fails each call of this method, as a node that cannot
 	// stream would.
 	refuse string
+	// stall answers each call of this method with a stream that never
+	// sends, as one held up on the way would.
+	stall string
 }
 
 func (m *methodCounter) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -313,6 +316,11 @@ func (m *methodCounter) RoundTrip(r *http.Request) (*http.Response, error) {
 		m.mu.Lock()
 		m.seen[call.Method]++
 		m.mu.Unlock()
+		if call.Method == m.stall {
+			body, _ := io.Pipe()
+			go func() { <-r.Context().Done(); body.Close() }()
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: body, Header: http.Header{"Content-Type": {"text/event-stream"}}, Request: r}, nil
+		}
 		if call.Method == m.refuse {
 			return &http.Response{StatusCode: http.StatusBadGateway, Status: "502 Bad Gateway", Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}, Request: r}, nil
 		}
@@ -415,4 +423,63 @@ func TestGetTaskPollsWithoutAStream(t *testing.T) {
 	if n := calls.count("GetTask"); n < 3 {
 		t.Fatalf("%d task reads, want polling", n)
 	}
+}
+
+// A stream that stalls does not hold get_task after the task settled.
+func TestGetTaskOutlivesAStalledStream(t *testing.T) {
+	old := streamCheckEvery
+	streamCheckEvery = 100 * time.Millisecond
+	t.Cleanup(func() { streamCheckEvery = old })
+	h := newAgentHarness(t, testSender)
+	proxy := httptest.NewServer(h.svc.handler("codex", "secret"))
+	defer proxy.Close()
+	calls := &methodCounter{next: meshHeaders{"secret", testSender}, seen: map[string]int{}, stall: "SubscribeToTask"}
+	tasks := &a2aTasks{http: &http.Client{Transport: calls}, base: proxy.URL}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	target := taskTarget{PeerID: testSender, Service: "codex"}
+	_, sent, err := tasks.send(ctx, nil, sendTaskIn{taskTarget: target, Text: "fix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-h.fix.prompts
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		h.fix.release <- "fixed"
+	}()
+	start := time.Now()
+	got, err := tasks.watch(ctx, target, a2a.TaskID(sent.TaskID), 15*time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Terminal != "completed" || got.Result != "fixed" {
+		t.Fatalf("get_task: %+v", got)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("get_task took %s after the task completed", d)
+	}
+}
+
+// The agent ends a stream after maxStream, without an error, while the
+// task goes on: a stream its caller left does not stay open for the
+// task's whole run.
+func TestAgentEndsLongStreams(t *testing.T) {
+	old := maxStream
+	maxStream = 300 * time.Millisecond
+	t.Cleanup(func() { maxStream = old })
+	h := newAgentHarness(t, testSender)
+	task := h.send(t, "", "fix", nil)
+	<-h.fix.prompts
+	start := time.Now()
+	for _, err := range h.client.SubscribeToTask(context.Background(), &a2a.SubscribeToTaskRequest{ID: task.ID}) {
+		if err != nil {
+			t.Fatalf("stream ended with %v", err)
+		}
+	}
+	if d := time.Since(start); d < maxStream || d > 5*time.Second {
+		t.Fatalf("stream ended after %s, want about %s", d, maxStream)
+	}
+	h.await(t, task.ID, a2a.TaskStateWorking)
+	h.fix.release <- "fixed"
+	h.await(t, task.ID, a2a.TaskStateCompleted)
 }
