@@ -216,6 +216,10 @@ suits a task you can describe in one message. While it works, the task's
 message is the agent's latest step (at most one every 3 seconds), so the caller
 sees what it is doing when it follows the task with `get_task`; a client that
 shows MCP progress notifications also gets each step while `get_task` waits.
+`get_task` receives the steps as the agent sends them: the agent's card
+declares A2A streaming, so any A2A client can follow a task with
+`SubscribeToTask` or send one with `SendStreamingMessage`. Nothing is pushed
+to a URL of the caller's (no push notifications).
 A step is a fixed summary: the program a command runs, a file's base name, a
 tool's name or the todo item's position, such as `Running go`,
 `Editing main.go` or `Working on step 2 of 5`. It never carries a command's
@@ -230,7 +234,7 @@ machines or clients rather than every definition in a project: each one is
 another entry in your agents' service list.
 
 Each task belongs to the node that sent it: no other node can read its result,
-answer its question or cancel it. Limits: one task at a time (others are
+follow its steps, answer its question or cancel it. Limits: one task at a time (others are
 refused, not queued; a task waiting for an answer does not count, and an
 answer that comes while another task runs is refused with the question
 repeated, so send it again), 15 minutes of running time per task over all its

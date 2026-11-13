@@ -669,6 +669,10 @@ func (s *agentService) card(name string) *a2a.AgentCard {
 		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface("/", a2a.TransportProtocolJSONRPC)},
 		DefaultInputModes:   []string{"text/plain"},
 		DefaultOutputModes:  []string{"text/plain"},
+		// A caller can follow a task's progress as it happens
+		// (SendStreamingMessage, SubscribeToTask). Nothing is pushed to a
+		// caller's own URL.
+		Capabilities: a2a.AgentCapabilities{Streaming: true},
 	}
 	s.rt.Describe(card)
 	if s.description != "" {

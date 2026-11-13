@@ -231,10 +231,6 @@ func (t *a2aTasks) send(ctx context.Context, _ *mcp.CallToolRequest, in sendTask
 // the agent goes to the client as a progress notification, for clients that
 // asked for them (a progress token) and show them.
 func (t *a2aTasks) get(ctx context.Context, req *mcp.CallToolRequest, in getTaskIn) (*mcp.CallToolResult, taskOut, error) {
-	c, err := t.client(ctx, in.taskTarget)
-	if err != nil {
-		return nil, taskOut{}, err
-	}
 	var notify func(string)
 	if req != nil && req.Session != nil && req.Params != nil {
 		if token := req.Params.GetProgressToken(); token != nil {
@@ -246,28 +242,87 @@ func (t *a2aTasks) get(ctx context.Context, req *mcp.CallToolRequest, in getTask
 		}
 	}
 	wait := min(time.Duration(max(in.WaitSeconds, 0))*time.Second, maxWait)
+	out, err := t.watch(ctx, in.taskTarget, a2a.TaskID(in.TaskID), wait, notify)
+	if err != nil {
+		return nil, taskOut{}, err
+	}
+	return toolResult(out)
+}
+
+// watch waits up to wait for task id to settle, passes each new step of
+// its work to notify when set, and returns the task.
+func (t *a2aTasks) watch(ctx context.Context, target taskTarget, id a2a.TaskID, wait time.Duration, notify func(string)) (taskOut, error) {
+	c, err := t.client(ctx, target)
+	if err != nil {
+		return taskOut{}, err
+	}
 	deadline := time.Now().Add(wait)
 	// The task's history holds every step; only its status is read.
 	none := 0
 	var step string
-	for {
-		task, err := c.GetTask(ctx, &a2a.GetTaskRequest{ID: a2a.TaskID(in.TaskID), HistoryLength: &none})
-		if err != nil {
-			return nil, taskOut{}, unreachable(in.taskTarget, err)
-		}
-		if task.Status.State.Terminal() || task.Status.State == a2a.TaskStateInputRequired || !time.Now().Before(deadline) {
-			return toolResult(describeTask(task))
-		}
+	report := func(status a2a.TaskStatus) {
 		// Each step is a new status message; two steps can read the same.
-		if m := task.Status.Message; notify != nil && m != nil && task.Status.State == a2a.TaskStateWorking && m.ID != step {
+		if m := status.Message; notify != nil && m != nil && status.State == a2a.TaskStateWorking && m.ID != step {
 			step = m.ID
 			notify(messageText(m))
 		}
+	}
+	followed := false
+	for {
+		task, err := c.GetTask(ctx, &a2a.GetTaskRequest{ID: id, HistoryLength: &none})
+		if err != nil {
+			if ctx.Err() != nil {
+				return taskOut{}, ctx.Err()
+			}
+			return taskOut{}, unreachable(target, err)
+		}
+		if settled(task.Status.State) || !time.Now().Before(deadline) {
+			return describeTask(task), nil
+		}
+		report(task.Status)
+		if !followed {
+			// The agent sends the task's events as they happen, until the
+			// task settles. Should the stream fail or stop early, watch
+			// reads the task again every second.
+			followed = true
+			follow(ctx, c, task.ID, deadline, report)
+			continue
+		}
 		select {
 		case <-ctx.Done():
-			return nil, taskOut{}, ctx.Err()
+			return taskOut{}, ctx.Err()
 		case <-time.After(time.Second):
 		}
+	}
+}
+
+// settled is a state the task stays in until the caller acts, if ever.
+func settled(s a2a.TaskState) bool {
+	return s.Terminal() || s == a2a.TaskStateInputRequired
+}
+
+// follow streams the events of task id until it settles, the stream ends or
+// fails, or the deadline passes, and reports each status it carries.
+func follow(ctx context.Context, c *a2aclient.Client, id a2a.TaskID, deadline time.Time, report func(a2a.TaskStatus)) {
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	for ev, err := range c.SubscribeToTask(ctx, &a2a.SubscribeToTaskRequest{ID: id}) {
+		if err != nil {
+			return
+		}
+		var status a2a.TaskStatus
+		switch e := ev.(type) {
+		case *a2a.Task:
+			status = e.Status
+		case *a2a.TaskStatusUpdateEvent:
+			status = e.Status
+		default:
+			continue
+		}
+		if settled(status.State) {
+			return
+		}
+		report(status)
 	}
 }
 
