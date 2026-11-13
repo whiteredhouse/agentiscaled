@@ -622,6 +622,7 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 	} else if err != nil {
 		return err
 	}
+	fmt.Fprintf(out, "Data:     %s\n", dir)
 	if s.PeerID == "" {
 		fmt.Fprintf(out, "Node:     not joined (%s)\n", s.MachineName)
 		fmt.Fprint(out, rejoinSteps(dir, true))

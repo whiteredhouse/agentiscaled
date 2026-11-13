@@ -350,7 +350,7 @@ func TestStatusShowsTaskStop(t *testing.T) {
 	dir := t.TempDir()
 	writeSettings(t, dir, settings{Control: "https://control.test", Agents: []agentConfig{{Runtime: "codex", Name: "helper", Dir: t.TempDir()}}})
 	var out bytes.Buffer
-	if err := runStatus(context.Background(), []string{"-data-dir", dir}, &out); err != nil || !strings.Contains(out.String(), "Tasks:    accepted\n") {
+	if err := runStatus(context.Background(), []string{"-data-dir", dir}, &out); err != nil || !strings.Contains(out.String(), "Tasks:    accepted\n") || !strings.Contains(out.String(), "Data:     "+dir+"\n") {
 		t.Fatalf("status: %v\n%s", err, &out)
 	}
 	if err := runTasks([]string{"stop", "-data-dir", dir}, io.Discard); err != nil {
