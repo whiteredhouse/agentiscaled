@@ -259,27 +259,23 @@ func runAgentList(args []string, out io.Writer) error {
 		fmt.Fprintln(out, "This machine offers no agent. Offer one with 'agentiscaled agent add'.")
 		return nil
 	}
-	tasks := "running"
-	if _, err := os.Stat(stopFilePath(*dataDir)); err == nil {
-		tasks = "stopped"
-	}
 	defined := slices.ContainsFunc(s.Agents, func(a agentConfig) bool { return a.Definition != "" })
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	if defined {
-		fmt.Fprintln(tw, "NAME\tRUNTIME\tDIRECTORY\tTASKS\tDEFINITION")
+		fmt.Fprintln(tw, "NAME\tRUNTIME\tDIRECTORY\tDEFINITION")
 	} else {
-		fmt.Fprintln(tw, "NAME\tRUNTIME\tDIRECTORY\tTASKS")
+		fmt.Fprintln(tw, "NAME\tRUNTIME\tDIRECTORY")
 	}
 	for _, a := range s.Agents {
 		if !defined {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Name, a.Runtime, homeRelative(a.Dir), tasks)
+			fmt.Fprintf(tw, "%s\t%s\t%s\n", a.Name, a.Runtime, homeRelative(a.Dir))
 			continue
 		}
 		def := "-"
 		if a.Definition != "" {
 			def = homeRelative(definitionCopy(*dataDir, a.Name, a.Definition))
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", a.Name, a.Runtime, homeRelative(a.Dir), tasks, def)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Name, a.Runtime, homeRelative(a.Dir), def)
 	}
 	return tw.Flush()
 }

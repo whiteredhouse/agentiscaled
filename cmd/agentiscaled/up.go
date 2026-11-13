@@ -633,6 +633,12 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 	for _, a := range s.Agents {
 		fmt.Fprintf(out, "Agent:    %s (%s) in %s\n", a.Name, a.Runtime, a.Dir)
 	}
+	// The owner's stop holds for all of the node's agents.
+	if b, err := os.ReadFile(stopFilePath(dir)); err == nil {
+		fmt.Fprintf(out, "Tasks:    stopped since %s; 'agentiscaled tasks resume' takes them again\n", strings.TrimSpace(string(b)))
+	} else if len(s.Agents) > 0 {
+		fmt.Fprintln(out, "Tasks:    accepted")
+	}
 	serviceRuns := false
 	if svc := newService(dir); svc != nil {
 		var state string

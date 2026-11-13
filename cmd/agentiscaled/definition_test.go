@@ -343,3 +343,25 @@ func TestAgentAddDefinition(t *testing.T) {
 		t.Errorf("copy after remove: %v", err)
 	}
 }
+
+// Whether the node takes tasks holds for all its agents, so status says it
+// once and agent list does not.
+func TestStatusShowsTaskStop(t *testing.T) {
+	dir := t.TempDir()
+	writeSettings(t, dir, settings{Control: "https://control.test", Agents: []agentConfig{{Runtime: "codex", Name: "helper", Dir: t.TempDir()}}})
+	var out bytes.Buffer
+	if err := runStatus(context.Background(), []string{"-data-dir", dir}, &out); err != nil || !strings.Contains(out.String(), "Tasks:    accepted\n") {
+		t.Fatalf("status: %v\n%s", err, &out)
+	}
+	if err := runTasks([]string{"stop", "-data-dir", dir}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := runStatus(context.Background(), []string{"-data-dir", dir}, &out); err != nil || !strings.Contains(out.String(), "Tasks:    stopped since ") || !strings.Contains(out.String(), "tasks resume") {
+		t.Fatalf("status after stop: %v\n%s", err, &out)
+	}
+	out.Reset()
+	if err := runAgent(context.Background(), []string{"list", "-data-dir", dir}, &out); err != nil || strings.Contains(out.String(), "TASKS") || strings.Contains(out.String(), "stopped") {
+		t.Fatalf("agent list: %v\n%s", err, &out)
+	}
+}
