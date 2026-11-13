@@ -454,7 +454,7 @@ func checkAgent(a *agentConfig, dataDir string, service bool) error {
 	policy := a.policy()
 	if a.Definition != "" {
 		if _, err := loadDefinition(definitionCopy(dataDir, a.Name, a.Definition)); err != nil {
-			return fmt.Errorf("agent %s: its copy of %s: %w; run 'agentiscaled agent add' with -definition again", a.Name, a.Definition, err)
+			return fmt.Errorf("agent %s: its definition: %w; run 'agentiscaled agent add' with -definition again", a.Name, err)
 		}
 	}
 	// The runtime checks the rest, such as the agent's own sign-in.
@@ -622,6 +622,7 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 	} else if err != nil {
 		return err
 	}
+	fmt.Fprintf(out, "Data:     %s\n", dir)
 	if s.PeerID == "" {
 		fmt.Fprintf(out, "Node:     not joined (%s)\n", s.MachineName)
 		fmt.Fprint(out, rejoinSteps(dir, true))
@@ -632,6 +633,12 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 	}
 	for _, a := range s.Agents {
 		fmt.Fprintf(out, "Agent:    %s (%s) in %s\n", a.Name, a.Runtime, a.Dir)
+	}
+	// The owner's stop holds for all of the node's agents.
+	if b, err := os.ReadFile(stopFilePath(dir)); err == nil {
+		fmt.Fprintf(out, "Tasks:    stopped since %s; 'agentiscaled tasks resume' takes them again\n", strings.TrimSpace(string(b)))
+	} else if len(s.Agents) > 0 {
+		fmt.Fprintln(out, "Tasks:    accepted")
 	}
 	serviceRuns := false
 	if svc := newService(dir); svc != nil {

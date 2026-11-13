@@ -176,7 +176,7 @@ is no second sign-in, node or service. `agent list` shows the agents this machin
 offers, and `agent remove <name>` stops offering one, leaving its directory as it
 is; each restarts the node's background service. `up` keeps the offered agents as
 they are; it takes no agent flags. `status`, `down`, `reset` and `tasks` address
-this same node, and `tasks stop` stops the tasks of all its agents. Reset keeps its
+this same node, and `tasks stop` stops the tasks of all its agents, and `status` shows whether tasks are stopped. Reset keeps its
 agents' configuration and runtime sign-ins.
 
 Agent questions, runtime login and validation finish before `up` or `agent add` stops an existing
