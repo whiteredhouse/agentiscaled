@@ -29,9 +29,9 @@ func TestRuntimesList(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CODEX_HOME", tc.codexHome)
 			t.Setenv("CLAUDE_CONFIG_DIR", tc.claudeHome)
-			out, err := exec.Command(os.Args[0], "runtimes", "list").CombinedOutput()
+			out, err := exec.Command(os.Args[0], "runtime", "list").CombinedOutput()
 			if err != nil {
-				t.Fatalf("runtimes list: %v\n%s", err, out)
+				t.Fatalf("runtime list: %v\n%s", err, out)
 			}
 			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 			if len(lines) != 3 || strings.Join(strings.Fields(lines[0]), " ") != "RUNTIME COMMAND EXECUTABLE CONFIG DIR" {

@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-const clientsUsage = `usage: agentiscaled clients list|connect|disconnect [-data-dir DIR] [client ...]
+const clientsUsage = `usage: agentiscaled client list|connect|disconnect [-data-dir DIR] [client ...]
 
   list        show which agent clients use this node
   connect     add this node to the clients' MCP configuration (default: every installed one)
@@ -21,7 +21,7 @@ const clientsUsage = `usage: agentiscaled clients list|connect|disconnect [-data
 
 Clients: ` + "claude-desktop, codex"
 
-// runClients is `agentiscaled clients`: it connects agent clients to a node
+// runClients is `agentiscaled client`: it connects agent clients to a node
 // that `up` set up, or disconnects them, apart from bringing the node up.
 // It records the choice, so that a later `up` keeps it.
 func runClients(ctx context.Context, args []string, out io.Writer) error {
@@ -30,9 +30,9 @@ func runClients(ctx context.Context, args []string, out io.Writer) error {
 	}
 	cmd := args[0]
 	if cmd != "list" && cmd != "connect" && cmd != "disconnect" {
-		return fmt.Errorf("unknown clients command %q\n%s", cmd, clientsUsage)
+		return fmt.Errorf("unknown client command %q\n%s", cmd, clientsUsage)
 	}
-	fs := flag.NewFlagSet("clients "+cmd, flag.ContinueOnError)
+	fs := flag.NewFlagSet("client "+cmd, flag.ContinueOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node")
 	names, err := parseInterleaved(fs, args[1:])
 	if err != nil {
@@ -44,7 +44,7 @@ func runClients(ctx context.Context, args []string, out io.Writer) error {
 		}
 	}
 	if cmd == "list" && len(names) > 0 {
-		return errors.New("clients list takes no clients")
+		return errors.New("client list takes no clients")
 	}
 	dir, err := filepath.Abs(*dataDir)
 	if err != nil {

@@ -265,7 +265,7 @@ func warnDuplicateAgent(ctx context.Context, self, name string, discover func(co
 			}
 		}
 		if len(others) > 0 {
-			log.Printf("warning: another node on your network also serves a2a://%s (peer %s); stop it with 'agentiscaled down -data-dir <its directory>' or offer this agent under another name with 'agentiscaled agents add -name'", name, strings.Join(others, ", "))
+			log.Printf("warning: another node on your network also serves a2a://%s (peer %s); stop it with 'agentiscaled down -data-dir <its directory>' or offer this agent under another name with 'agentiscaled agent add -name'", name, strings.Join(others, ", "))
 			return
 		}
 	}

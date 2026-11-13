@@ -8,7 +8,7 @@ import (
 	"text/tabwriter"
 )
 
-const runtimesUsage = `usage: agentiscaled runtimes list
+const runtimesUsage = `usage: agentiscaled runtime list
 
 List supported runtimes and look up their default commands on PATH.
 CONFIG DIR is the user config directory selected by the current shell.

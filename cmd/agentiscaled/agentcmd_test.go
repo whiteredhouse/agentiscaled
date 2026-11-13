@@ -11,17 +11,29 @@ import (
 	"testing"
 )
 
-func TestAgentsListCommandAndAlias(t *testing.T) {
+func TestSingularCommandGroups(t *testing.T) {
 	t.Setenv("AGENTISCALED_TEST_MAIN", "1")
+	t.Setenv("PATH", t.TempDir())
 	dataDir := t.TempDir()
-	for _, group := range []string{"agents", "agent"} {
-		t.Run(group, func(t *testing.T) {
-			out, err := exec.Command(os.Args[0], group, "list", "-data-dir", dataDir).CombinedOutput()
-			if err != nil {
-				t.Fatalf("%s list: %v\n%s", group, err, out)
+	writeSettings(t, dataDir, settings{Clients: "none"})
+	for _, tc := range []struct {
+		singular, plural string
+		args             []string
+		want             string
+	}{
+		{"agent", "agents", []string{"list", "-data-dir", dataDir}, "agentiscaled agent add"},
+		{"client", "clients", []string{"list", "-data-dir", dataDir}, "codex"},
+		{"runtime", "runtimes", []string{"list"}, "RUNTIME"},
+		{"task", "tasks", []string{"status", "-data-dir", dataDir}, "running"},
+	} {
+		t.Run(tc.singular, func(t *testing.T) {
+			out, err := exec.Command(os.Args[0], append([]string{tc.singular}, tc.args...)...).CombinedOutput()
+			if err != nil || !strings.Contains(string(out), tc.want) {
+				t.Errorf("%s %v: %v\n%s", tc.singular, tc.args, err, out)
 			}
-			if !strings.Contains(string(out), "offers no agent") || !strings.Contains(string(out), "agentiscaled agents add") {
-				t.Errorf("expected empty agents list with the canonical add command, got %q", out)
+			out, err = exec.Command(os.Args[0], append([]string{tc.plural}, tc.args...)...).CombinedOutput()
+			if err == nil || !strings.Contains(string(out), `unknown command "`+tc.plural+`"`) {
+				t.Errorf("expected %s to be rejected as an unknown command, got %v\n%s", tc.plural, err, out)
 			}
 		})
 	}
@@ -106,8 +118,8 @@ func TestUpHasNoAgentFlags(t *testing.T) {
 	}
 }
 
-// `agents add` puts each agent on this machine's node.
-// `agents remove` takes it off that node.
+// `agent add` puts each agent on this machine's node.
+// `agent remove` takes it off that node.
 func TestAgentAddListRemove(t *testing.T) {
 	def := withDefaultDataDir(t)
 	mesh := newStandInMesh(t, "fine")

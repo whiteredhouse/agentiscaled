@@ -211,7 +211,7 @@ func (w *wizard) chooseAgent(confirm bool) (*agentOffer, error) {
 		yes, err := w.yesNo("\nOffer an agent from this machine to your network? Found: "+strings.Join(names, ", "), false)
 		if err != nil || !yes {
 			if err == nil {
-				fmt.Fprintln(w.out, "  Offer one later with 'agentiscaled agents add'.")
+				fmt.Fprintln(w.out, "  Offer one later with 'agentiscaled agent add'.")
 			}
 			return nil, ignoreEOF(err)
 		}

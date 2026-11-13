@@ -66,16 +66,16 @@ const usage = `agentiscaled is the agentiscale node.
 
 Commands:
   up       sign in, join this machine to your network and keep the node running
-  clients  connect agent clients (Claude Desktop, Codex CLI) to the node, or disconnect them
-  agents   offer an agent from this machine to your network (add, remove, list)
-  runtimes list supported agent runtimes and their local configuration
+  client   connect agent clients (Claude Desktop, Codex CLI) to the node, or disconnect them
+  agent    offer an agent from this machine to your network (add, remove, list)
+  runtime  list supported agent runtimes and their local configuration
   down     stop the node's background service; its identity stays
   status   show the node's service, network and mesh connection
   version  print the version
   reset    drop the node's identity so 'up' joins it again as a new node; its settings stay
   run      run the node in the foreground with the settings 'up' saved
   mcp      serve the node's MCP tools on stdio, for agent clients
-  tasks    control task execution on this node (status, stop, resume)
+  task     control task execution on this node (status, stop, resume)
 
 Without a command, agentiscaled runs the node in the foreground with the
 flags given (see agentiscaled -h).
@@ -90,15 +90,15 @@ func main() {
 		case "mcp":
 			// Standard output carries MCP messages; errors go to standard error.
 			err = runMCP(ctx, args)
-		case "tasks":
+		case "task":
 			err = runTasks(args, os.Stdout)
 		case "up":
 			err = runUp(ctx, args, os.Stdout)
-		case "clients":
+		case "client":
 			err = runClients(ctx, args, os.Stdout)
-		case "agents", "agent":
+		case "agent":
 			err = runAgent(ctx, args, os.Stdout)
-		case "runtimes":
+		case "runtime":
 			err = runRuntimes(args, os.Stdout)
 		case "down":
 			err = runDown(args, os.Stdout)
@@ -157,7 +157,7 @@ func nodeFlags(fs *flag.FlagSet, c *config) {
 	fs.StringVar(&c.machineName, "hostname", defaultMachineName(), "Name of this machine in your network's member list")
 }
 
-// agentConfig is an agent the node offers: what `agents add` saves for it.
+// agentConfig is an agent the node offers: what `agent add` saves for it.
 type agentConfig struct {
 	// Runtime runs the agent's tasks (codex, claude).
 	Runtime string `json:"runtime"`
@@ -170,7 +170,7 @@ type agentConfig struct {
 	// Description replaces the runtime's on the agent's card.
 	Description string `json:"description,omitempty"`
 	// Definition is the node's copy of the subagent definition the agent
-	// was given (agentDefinition), which `agents add` takes. The node reads
+	// was given (agentDefinition), which `agent add` takes. The node reads
 	// it only from the agent's state (definitionCopy), whatever directory
 	// this names.
 	Definition string `json:"definition,omitempty"`
@@ -180,7 +180,7 @@ type agentConfig struct {
 	IgnoreDirSkills       bool `json:"ignore_dir_skills,omitempty"`
 	OwnConfig             bool `json:"own_config,omitempty"`
 	// Env locates the owner's configuration of the agent's runtime, such
-	// as CODEX_HOME, as `agents add` found it (agentOwnerEnv).
+	// as CODEX_HOME, as `agent add` found it (agentOwnerEnv).
 	Env []string `json:"env,omitempty"`
 }
 
@@ -292,7 +292,7 @@ func newAgents(c *config) ([]*hostedAgent, error) {
 		for _, kv := range a.Env {
 			name, value, _ := strings.Cut(kv, "=")
 			if prev, ok := env[name]; ok && prev != value {
-				return nil, fmt.Errorf("this node's agents disagree on %s (%s and %s); add them again with 'agentiscaled agents add' from the same shell", name, prev, value)
+				return nil, fmt.Errorf("this node's agents disagree on %s (%s and %s); add them again with 'agentiscaled agent add' from the same shell", name, prev, value)
 			}
 			env[name] = value
 		}

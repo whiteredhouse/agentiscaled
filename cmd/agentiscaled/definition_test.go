@@ -226,7 +226,7 @@ func TestTOMLStringRoundTrips(t *testing.T) {
 	}
 }
 
-// `agents add -definition` copies the definition into the agent's state and
+// `agent add -definition` copies the definition into the agent's state and
 // takes the name and directory from it, never the runtime.
 func TestAgentAddDefinition(t *testing.T) {
 	def := withDefaultDataDir(t)
@@ -283,7 +283,7 @@ func TestAgentAddDefinition(t *testing.T) {
 	if rt := svc.rt.(*codexRuntime); rt.def == nil || rt.def.Name != "docs-writer" {
 		t.Errorf("runtime definition: %+v", rt.def)
 	}
-	// agents list shows the copy; a changed or deleted source changes nothing
+	// agent list shows the copy; a changed or deleted source changes nothing
 	// until the next add.
 	out.Reset()
 	if err := runAgent(context.Background(), []string{"list"}, &out); err != nil || !strings.Contains(out.String(), "DEFINITION") ||
@@ -345,7 +345,7 @@ func TestAgentAddDefinition(t *testing.T) {
 }
 
 // Whether the node takes tasks holds for all its agents, so status says it
-// once and agents list does not.
+// once and agent list does not.
 func TestStatusShowsTaskStop(t *testing.T) {
 	dir := t.TempDir()
 	writeSettings(t, dir, settings{Control: "https://control.test", Agents: []agentConfig{{Runtime: "codex", Name: "helper", Dir: t.TempDir()}}})
@@ -357,11 +357,11 @@ func TestStatusShowsTaskStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if err := runStatus(context.Background(), []string{"-data-dir", dir}, &out); err != nil || !strings.Contains(out.String(), "Tasks:    stopped since ") || !strings.Contains(out.String(), "tasks resume") {
+	if err := runStatus(context.Background(), []string{"-data-dir", dir}, &out); err != nil || !strings.Contains(out.String(), "Tasks:    stopped since ") || !strings.Contains(out.String(), "task resume") {
 		t.Fatalf("status after stop: %v\n%s", err, &out)
 	}
 	out.Reset()
 	if err := runAgent(context.Background(), []string{"list", "-data-dir", dir}, &out); err != nil || strings.Contains(out.String(), "TASKS") || strings.Contains(out.String(), "stopped") {
-		t.Fatalf("agents list: %v\n%s", err, &out)
+		t.Fatalf("agent list: %v\n%s", err, &out)
 	}
 }

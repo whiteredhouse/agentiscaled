@@ -2,7 +2,7 @@
 
 New to agentiscale? Start with [Get started](getting-started.md): `agentiscaled up`
 joins your machine and adds it to Claude Desktop and the Codex CLI itself, and
-`agentiscaled clients connect` does the same later, for example for an app installed
+`agentiscaled client connect` does the same later, for example for an app installed
 after `up`. Use this page to connect a client by hand.
 
 Once agentiscaled has joined your network and is running, a local agent reaches
@@ -70,7 +70,7 @@ client configuration files.
 ## Send a task from Claude Desktop to Codex
 
 With the default setup, Claude Desktop and the hosted Codex agent use the same
-node. Offer the agent with `agentiscaled agents add codex -dir /absolute/path/to/workspace`,
+node. Offer the agent with `agentiscaled agent add codex -dir /absolute/path/to/workspace`,
 then quit and reopen Claude Desktop to load the current MCP bridge. Use
 `list_local_services` with type `a2a`, read the agent's card with `get_agent_card`,
 and call `send_task` with its name as `service`; omit `peer_id` for local calls.
@@ -100,13 +100,13 @@ your agent apps, so Claude Desktop keeps using node A's `agentiscale` server.
 the agent works in:
 
 ```sh
-agentiscaled agents add codex \
+agentiscaled agent add codex \
   -data-dir ~/Library/Application\ Support/agentiscale-codex \
   -dir /absolute/path/to/the/directory
 ```
 
-`agents add` signs in once more for node B, joins it to the same network and runs it as
-its own background service; node A offers more agents with plain `agents add`, with
+`agent add` signs in once more for node B, joins it to the same network and runs it as
+its own background service; node A offers more agents with plain `agent add`, with
 no node of their own. The first argument picks the runtime that does the work:
 `codex` (the Codex CLI) or `claude` (Claude Code, see
 [Claude Code as the agent](#claude-code-as-the-agent)). Node B checks that `codex` runs (`-command` takes another path), then
@@ -128,8 +128,8 @@ node's working directory. `codex exec` is non-interactive: human approval prompt
 are unavailable and escalation is refused. An owner-configured automatic reviewer
 can use Codex's supported unattended approval flow. The adapter does not turn that
 reviewer on or approve requests on your behalf. Codex runs as yours
-does, with your `CODEX_HOME` (`~/.codex`, or the `CODEX_HOME` set when you ran `agents add`,
-which `agents add` keeps for node B's service): your sign-in, skills, plugins, settings and MCP
+does, with your `CODEX_HOME` (`~/.codex`, or the `CODEX_HOME` set when you ran `agent add`,
+which `agent add` keeps for node B's service): your sign-in, skills, plugins, settings and MCP
 servers, agentiscale included if you connected Codex, so the agent can call your
 network's other agents. Node B's background service starts with almost no
 environment, so when it starts it reads your login shell's (`$SHELL -l -i`, as your
@@ -139,7 +139,7 @@ set go in `<data-dir>/agent.env`, one `NAME=value` per line, readable only by yo
 (`chmod 600`); they win over both. agentiscaled never writes either. The node's log
 says how many variables came from each. With `-owner-config=false` it instead runs with its own
 `CODEX_HOME` and `HOME` (`<data-dir>/codex`) and `--ignore-user-config`, and signs in
-separately (`CODEX_HOME=<data-dir>/codex codex login`; `agents add` tells you): none of your
+separately (`CODEX_HOME=<data-dir>/codex codex login`; `agent add` tells you): none of your
 own Codex skills, plugins, settings or MCP servers exist for it, so it cannot call
 back into the network, and it gets none of the API keys or tokens in node B's
 environment (`CODEX_API_KEY` included), only `PATH`, locale, proxy and CA settings
@@ -161,7 +161,7 @@ To check this on your machine without signing in:
 
 ### Claude Code as the agent
 
-`agents add claude` runs each task with `claude -p` in the agent's directory, the
+`agent add claude` runs each task with `claude -p` in the agent's directory, the
 unmodified Claude Code CLI signed in through its own `claude auth login`. The node
 never reads or stores that sign-in. With your configuration (the default) it runs as
 your own Claude Code does: your sign-in, settings, permissions, skills, plugins and
@@ -183,7 +183,7 @@ that any client on any of your machines can call it, Codex calling a Claude Code
 subagent included:
 
 ```sh
-agentiscaled agents add codex -definition ~/work/my-project/.claude/agents/security-reviewer.md
+agentiscaled agent add codex -definition ~/work/my-project/.claude/agents/security-reviewer.md
 ```
 
 `-definition` reads the file's name, description and instructions. You pick the
@@ -194,17 +194,17 @@ the project the file is in (`~/work/my-project`); `-name`, `-description` and
 `--append-system-prompt` for `claude -p`, `-c developer_instructions=…` for
 `codex exec`.
 
-`agents add` copies the file into the agent's own state in the node's data
+`agent add` copies the file into the agent's own state in the node's data
 directory (`<data-dir>/agents/<name>/definition.md` or `.toml`), which the
 agent's directory may not overlap, so no task can change the agent's role and
 no edit, branch switch or delete in the project changes it unseen. The node
-runs the agent with that copy, and `agents list` shows its path. To take a
-changed file, run the same `agents add` again. `agents remove`, or `agents add`
+runs the agent with that copy, and `agent list` shows its path. To take a
+changed file, run the same `agent add` again. `agent remove`, or `agent add`
 of the same name without `-definition`, deletes the copy.
 
 The rest of the file applies only when the agent's runtime is the one it was
 written for, and never widens the agent's permissions; on the other runtime
-`agents add` says which settings it ignores. A Claude Code agent's
+`agent add` says which settings it ignores. A Claude Code agent's
 `model` and `disallowedTools` apply, and its `tools` narrows the built-in tools
 (to those of Read, Grep and Glob it names, with `-owner-config=false`); MCP tools
 in that list are not built-in and are left out. A Codex agent's `model` and
@@ -276,7 +276,7 @@ nodes are running from, which can kill them.
 - Node B will not start and says Codex is not signed in: run the `codex login`
   line it prints (yours, or with `-owner-config=false` the agent's own).
   With your configuration a `CODEX_API_KEY` in your shell counts as signed in, but
-  the background service does not get it: `agents add` asks you to store it first with
+  the background service does not get it: `agent add` asks you to store it first with
   `printenv CODEX_API_KEY | codex login --with-api-key` (the wizard does that for you).
 - The task ends `failed`: its message carries Codex's error, for example
   "You've hit your usage limit …" when the account the agent signed in with is
@@ -285,7 +285,7 @@ nodes are running from, which can kill them.
 - The task is `rejected`: its message says why, for example another task is
   still running or task execution is stopped.
 
-**Stop control:** `agentiscaled tasks stop -data-dir <node B's data dir>`
+**Stop control:** `agentiscaled task stop -data-dir <node B's data dir>`
 cancels the running task within a second, refuses new tasks and withdraws
-the agent from discovery, also across restarts, until `agentiscaled tasks
-resume`. `agentiscaled tasks status` says which.
+the agent from discovery, also across restarts, until `agentiscaled task
+resume`. `agentiscaled task status` says which.
