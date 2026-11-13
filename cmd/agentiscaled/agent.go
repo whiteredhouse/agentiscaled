@@ -23,6 +23,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
 	"github.com/google/agentmesh/api"
 )
 
@@ -668,6 +669,10 @@ func (s *agentService) card(name string) *a2a.AgentCard {
 		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface("/", a2a.TransportProtocolJSONRPC)},
 		DefaultInputModes:   []string{"text/plain"},
 		DefaultOutputModes:  []string{"text/plain"},
+		// A caller can follow a task's progress as it happens
+		// (SendStreamingMessage, SubscribeToTask). Nothing is pushed to a
+		// caller's own URL.
+		Capabilities: a2a.AgentCapabilities{Streaming: true},
 	}
 	s.rt.Describe(card)
 	if s.description != "" {
@@ -682,7 +687,9 @@ func (s *agentService) card(name string) *a2a.AgentCard {
 func (s *agentService) handler(name, token string) http.Handler {
 	card := s.card(name)
 	cardHandler := a2asrv.NewStaticAgentCardHandler(card)
-	rpc := a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(s, a2asrv.WithCallInterceptors(peerIdentity{})))
+	store := taskstore.NewInMemory(&taskstore.InMemoryStoreConfig{Authenticator: a2asrv.NewTaskStoreAuthenticator()})
+	rpc := a2asrv.NewJSONRPCHandler(boundedStreams{a2asrv.NewHandler(s, a2asrv.WithTaskStore(store),
+		a2asrv.WithCallInterceptors(peerIdentity{tasks: store}))})
 	want := []byte("Bearer " + token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
@@ -705,19 +712,69 @@ func (s *agentService) handler(name, token string) http.Handler {
 
 // peerIdentity makes the peer that the node authenticated and stamped on the
 // request the A2A user of the call. The task store keeps each task for the
-// user that created it, so a peer can get or cancel only its own tasks, and a
-// call without a peer ID did not come through the mesh.
+// user that created it, so a peer can get, cancel or follow only its own
+// tasks, and a call without a peer ID did not come through the mesh.
 type peerIdentity struct {
 	a2asrv.PassthroughCallInterceptor
+	// tasks is the agent's task store, which keeps each task's owner.
+	tasks taskstore.Store
 }
 
-func (peerIdentity) Before(ctx context.Context, callCtx *a2asrv.CallContext, _ *a2asrv.Request) (context.Context, any, error) {
+func (p peerIdentity) Before(ctx context.Context, callCtx *a2asrv.CallContext, req *a2asrv.Request) (context.Context, any, error) {
 	peer := firstParam(callCtx.ServiceParams(), api.HeaderPeerID)
 	if peer == "" {
 		return ctx, nil, a2a.ErrUnauthenticated
 	}
 	callCtx.User = a2asrv.NewAuthenticatedUser(peer, nil)
+	// A2A serves a running task's events to whoever subscribes to its ID:
+	// only the task's owner may.
+	if sub, ok := req.Payload.(*a2a.SubscribeToTaskRequest); ok && sub != nil {
+		if _, err := p.tasks.Get(ctx, sub.ID); err != nil {
+			return ctx, nil, a2a.ErrTaskNotFound
+		}
+	}
 	return ctx, nil, nil
+}
+
+// maxStream bounds how long the agent streams a task's events to one
+// request. The mesh does not pass a caller's hang-up on to the agent: a
+// stream the caller left stays open on the agent's side until its next
+// event. Ended on time, it closes all the way through the mesh. A caller
+// that still wants the events subscribes again (SubscribeToTask).
+var maxStream = 2 * time.Minute
+
+// boundedStreams ends each stream of task events after maxStream.
+type boundedStreams struct {
+	a2asrv.RequestHandler
+}
+
+func (b boundedStreams) SendStreamingMessage(ctx context.Context, req *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
+	return boundStream(ctx, func(ctx context.Context) iter.Seq2[a2a.Event, error] {
+		return b.RequestHandler.SendStreamingMessage(ctx, req)
+	})
+}
+
+func (b boundedStreams) SubscribeToTask(ctx context.Context, req *a2a.SubscribeToTaskRequest) iter.Seq2[a2a.Event, error] {
+	return boundStream(ctx, func(ctx context.Context) iter.Seq2[a2a.Event, error] {
+		return b.RequestHandler.SubscribeToTask(ctx, req)
+	})
+}
+
+// boundStream runs stream for at most maxStream and then ends it, without
+// an error: the task goes on, only this stream of its events ends.
+func boundStream(ctx context.Context, stream func(context.Context) iter.Seq2[a2a.Event, error]) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		bounded, cancel := context.WithTimeout(ctx, maxStream)
+		defer cancel()
+		for ev, err := range stream(bounded) {
+			if err != nil && bounded.Err() != nil && ctx.Err() == nil {
+				return
+			}
+			if !yield(ev, err) {
+				return
+			}
+		}
+	}
 }
 
 // serveAgent starts the agent service on a loopback port and returns the

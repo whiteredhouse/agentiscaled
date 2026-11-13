@@ -302,6 +302,13 @@ func TestTasksBelongToTheirSender(t *testing.T) {
 	if _, err := intruder.CancelTask(context.Background(), &a2a.CancelTaskRequest{ID: task.ID}); !errors.Is(err, a2a.ErrTaskNotFound) {
 		t.Fatalf("another peer cancelled the task: %v", err)
 	}
+	// Nor can it follow the running task's events.
+	for ev, err := range intruder.SubscribeToTask(context.Background(), &a2a.SubscribeToTaskRequest{ID: task.ID}) {
+		if !errors.Is(err, a2a.ErrTaskNotFound) {
+			t.Fatalf("another peer subscribed to the task: %T %v", ev, err)
+		}
+		break
+	}
 	h.fix.release <- "No findings"
 	done := h.await(t, task.ID, a2a.TaskStateCompleted)
 	if _, err := intruder.GetTask(context.Background(), &a2a.GetTaskRequest{ID: done.ID}); !errors.Is(err, a2a.ErrTaskNotFound) {
