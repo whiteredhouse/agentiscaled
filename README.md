@@ -55,10 +55,20 @@ fork.
 ## Releases
 
 A `v*` tag builds the release with [GoReleaser](.goreleaser.yaml) in
-[GitHub Actions](.github/workflows/release.yml): macOS and Linux binaries for arm64 and
-amd64, `.deb` and `.rpm` packages, `checksums.txt`, build provenance attestations
-(`gh attestation verify <file> -R whiteredhouse/agentiscaled`), and the Homebrew cask
-in [whiteredhouse/homebrew-tap](https://github.com/whiteredhouse/homebrew-tap).
+[GitHub Actions](.github/workflows/release.yml). GoReleaser stages macOS and
+Linux binaries for arm64 and amd64, `.deb` and `.rpm` packages, and
+`checksums.txt` in a draft. The workflow verifies build provenance and checks
+that GitHub reports the signed digest for every staged asset before publishing.
+Use `gh attestation verify <file> -R whiteredhouse/agentiscaled` to verify a
+download.
+
+After GitHub publication, the `homebrew` job updates
+[whiteredhouse/homebrew-tap](https://github.com/whiteredhouse/homebrew-tap) for
+stable releases when `HOMEBREW_TAP_TOKEN` is configured. If attestation fails,
+rerun the failed `release` job to restage the draft. If publication or the tap
+update fails, rerun the failed jobs in the original workflow run to reuse the
+staged inputs. Resolve a failed tap update before tagging the next stable
+version so each release has a corresponding tap revision.
 
 ## License
 

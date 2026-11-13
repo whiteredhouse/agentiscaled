@@ -24,6 +24,10 @@ runs:
       if: runner.os == 'Linux'
       shell: bash
       run: |
+        # Pinned Homebrew can fall back to git-credential-osxkeychain on
+        # Linux during optional tap metadata lookups. The tests use public
+        # Git refs and verify the release assets independently.
+        echo 'HOMEBREW_NO_GITHUB_API=1' >> "$GITHUB_ENV"
         if [ -d /home/linuxbrew/.linuxbrew ]; then
           sudo chown -R "$(id -un):$(id -gn)" /home/linuxbrew/.linuxbrew
           echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"

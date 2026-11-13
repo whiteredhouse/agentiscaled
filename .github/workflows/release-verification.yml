@@ -2,7 +2,14 @@ name: Release verification
 
 on:
   pull_request:
-    paths: ['qa/releases/**', 'spec/exacly/**', '.github/actions/release-setup/**', '.github/workflows/release-*.yml']
+    paths:
+      - 'qa/releases/**'
+      - 'spec/exacly/**'
+      - '.goreleaser.yaml'
+      - '.github/actions/release-setup/**'
+      - '.github/scripts/publish-release.py'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/release-*.yml'
   schedule:
     - cron: '37 */6 * * *'
   workflow_run:
