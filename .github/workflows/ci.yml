@@ -17,7 +17,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Format
-        run: test -z "$(gofmt -l cmd third_party/agentmesh/export third_party/agentmesh/internal/router third_party/agentmesh/internal/controlplane/bound_peer*.go)"
+        run: test -z "$(gofmt -l cmd)"
       - name: Vet
         run: go vet ./...
       - name: Prepare real Codex sandbox tests
@@ -44,15 +44,15 @@ jobs:
           echo "AGENTISCALE_TEST_CODEX=$install/bin/codex" >> "$GITHUB_ENV"
       - name: Test
         run: go test -race ./...
-      - name: Build the fork
-        working-directory: third_party/agentmesh
-        run: go build ./...
-      - name: Test the fork's patch
-        working-directory: third_party/agentmesh
-        run: go test -race -run TestBootstrapTokenBoundToOnePeer ./internal/controlplane/
-      - name: Test router and identity authorization
-        working-directory: third_party/agentmesh
-        run: go test -race ./internal/router ./internal/identity
+      - name: Test the Agent Mesh fork's patched packages
+        run: |
+          go mod download github.com/google/agentmesh
+          mesh="$RUNNER_TEMP/agentmesh"
+          cp -R "$(go list -m -f '{{.Replace.Dir}}' github.com/google/agentmesh)" "$mesh"
+          chmod -R u+w "$mesh"
+          cd "$mesh"
+          go build ./...
+          go test -race ./internal/controlplane ./internal/router ./internal/identity ./internal/node
 
   release-check:
     runs-on: ubuntu-latest

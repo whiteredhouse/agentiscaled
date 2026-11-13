@@ -1,5 +1,5 @@
 // Command agentiscaled is the agentiscale node. It embeds the
-// Google Agent Mesh node from agentiscale's fork (third_party/agentmesh)
+// Google Agent Mesh node from agentiscale's fork (whiteredhouse/agentmesh)
 // instead of running the agentmesh-node binary.
 //
 // `agentiscaled up` signs the owner in through the browser, joins the node
