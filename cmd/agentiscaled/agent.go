@@ -23,6 +23,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
 	"github.com/google/agentmesh/api"
 )
 
@@ -682,7 +683,9 @@ func (s *agentService) card(name string) *a2a.AgentCard {
 func (s *agentService) handler(name, token string) http.Handler {
 	card := s.card(name)
 	cardHandler := a2asrv.NewStaticAgentCardHandler(card)
-	rpc := a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(s, a2asrv.WithCallInterceptors(peerIdentity{})))
+	store := taskstore.NewInMemory(&taskstore.InMemoryStoreConfig{Authenticator: a2asrv.NewTaskStoreAuthenticator()})
+	rpc := a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(s, a2asrv.WithTaskStore(store),
+		a2asrv.WithCallInterceptors(peerIdentity{tasks: store})))
 	want := []byte("Bearer " + token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
@@ -705,18 +708,27 @@ func (s *agentService) handler(name, token string) http.Handler {
 
 // peerIdentity makes the peer that the node authenticated and stamped on the
 // request the A2A user of the call. The task store keeps each task for the
-// user that created it, so a peer can get or cancel only its own tasks, and a
-// call without a peer ID did not come through the mesh.
+// user that created it, so a peer can get, cancel or follow only its own
+// tasks, and a call without a peer ID did not come through the mesh.
 type peerIdentity struct {
 	a2asrv.PassthroughCallInterceptor
+	// tasks is the agent's task store, which keeps each task's owner.
+	tasks taskstore.Store
 }
 
-func (peerIdentity) Before(ctx context.Context, callCtx *a2asrv.CallContext, _ *a2asrv.Request) (context.Context, any, error) {
+func (p peerIdentity) Before(ctx context.Context, callCtx *a2asrv.CallContext, req *a2asrv.Request) (context.Context, any, error) {
 	peer := firstParam(callCtx.ServiceParams(), api.HeaderPeerID)
 	if peer == "" {
 		return ctx, nil, a2a.ErrUnauthenticated
 	}
 	callCtx.User = a2asrv.NewAuthenticatedUser(peer, nil)
+	// A2A serves a running task's events to whoever subscribes to its ID:
+	// only the task's owner may.
+	if sub, ok := req.Payload.(*a2a.SubscribeToTaskRequest); ok && sub != nil {
+		if _, err := p.tasks.Get(ctx, sub.ID); err != nil {
+			return ctx, nil, a2a.ErrTaskNotFound
+		}
+	}
 	return ctx, nil, nil
 }
 
