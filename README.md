@@ -5,7 +5,7 @@ as Claude Desktop and the Codex CLI, on your own private agentiscale network, so
 can find each other and send each other tasks, end to end encrypted, across machines.
 
 It embeds the node of [Google Agent Mesh](https://github.com/google/agentmesh) from a
-fork in [third_party/agentmesh](third_party/agentmesh/AGENTISCALE.md).
+fork, [whiteredhouse/agentmesh](https://github.com/whiteredhouse/agentmesh/blob/agentiscale/AGENTISCALE.md).
 
 ## Install and start
 

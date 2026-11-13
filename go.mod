@@ -3,6 +3,7 @@ module github.com/whiteredhouse/agentiscaled
 go 1.26.6
 
 require (
+	github.com/BurntSushi/toml v1.5.0
 	github.com/a2aproject/a2a-go/v2 v2.7.0
 	github.com/eclipse-biscuit/biscuit-go/v2 v2.2.2
 	github.com/google/agentmesh v0.2.0
@@ -11,13 +12,13 @@ require (
 	github.com/libp2p/go-msgio v0.3.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/multiformats/go-multiaddr v0.16.1
+	go.yaml.in/yaml/v3 v3.0.5
 	google.golang.org/protobuf v1.36.12
 )
 
 require (
 	filippo.io/bigmod v0.1.1-0.20260103110540-f8a47775ebe5 // indirect
 	filippo.io/keygen v1.0.0 // indirect
-	github.com/BurntSushi/toml v1.5.0 // indirect
 	github.com/alecthomas/participle/v2 v2.1.4 // indirect
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -109,7 +110,6 @@ require (
 	go.uber.org/mock v0.6.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
 	golang.org/x/mod v0.42.0 // indirect
@@ -128,5 +128,5 @@ require (
 )
 
 // agentiscale's fork of Google Agent Mesh v0.2.0, which exports the node
-// package. See third_party/agentmesh/AGENTISCALE.md.
-replace github.com/google/agentmesh => ./third_party/agentmesh
+// package. See AGENTISCALE.md on the fork's agentiscale branch.
+replace github.com/google/agentmesh => github.com/whiteredhouse/agentmesh v0.0.0-20261113180942-ec543d37a827

@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -150,7 +151,11 @@ func TestMCPWaitsForTheNodeToStart(t *testing.T) {
 // bridge drops that paragraph for its own tools. The paragraph must still
 // start the way the bridge looks for, in the fork it builds against.
 func TestTheBridgeReplacesTheNodesA2AGuide(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "..", "third_party", "agentmesh", "internal", "node", "mcp.go"))
+	dir, err := exec.Command("go", "list", "-m", "-f", "{{if .Replace}}{{.Replace.Dir}}{{else}}{{.Dir}}{{end}}", "github.com/google/agentmesh").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := os.ReadFile(filepath.Join(strings.TrimSpace(string(dir)), "internal", "node", "mcp.go"))
 	if err != nil {
 		t.Fatal(err)
 	}

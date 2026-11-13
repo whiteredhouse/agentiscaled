@@ -130,9 +130,18 @@ def compile_companion(root, report):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(tar.extractfile(member).read())
     fixtures = Path(__file__).with_name("testdata")
-    # Use the archived mesh module's complete dependency lock, which includes
+    # Use the mesh module's complete dependency lock, which includes
     # standalone's SQL/console dependencies absent from the client go.mod.
+    # Releases up to v0.8.0 carry the module in third_party/agentmesh; later
+    # ones pin the fork in go.mod, and go.sum fixes the downloaded bytes.
     mesh_source = source / "third_party/agentmesh"
+    if not mesh_source.is_dir():
+        module = json.loads(run("go", "mod", "download", "-json", "github.com/google/agentmesh",
+                                cwd=source, timeout=600))
+        mesh_source = root / "mesh-source"
+        shutil.copytree(module["Dir"], mesh_source)
+        for path in [mesh_source, *mesh_source.rglob("*")]:
+            path.chmod(path.stat().st_mode | 0o200)
     command = mesh_source / "cmd" / "qa-lifecycle"
     command.mkdir()
     shutil.copyfile(fixtures / "lifecycle_mesh.go", command / "main.go")
