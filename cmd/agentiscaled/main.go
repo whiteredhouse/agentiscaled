@@ -166,12 +166,11 @@ type agentConfig struct {
 	Command string `json:"command,omitempty"`
 	// Description replaces the runtime's on the agent's card.
 	Description string `json:"description,omitempty"`
-	// Definition is the absolute path of the subagent definition the agent
-	// was given (agentDefinition). The node runs the agent with its copy
-	// of it (definitionCopy), whose SHA-256 is DefinitionSHA256; `agent
-	// add` takes a new copy.
-	Definition       string `json:"definition,omitempty"`
-	DefinitionSHA256 string `json:"definition_sha256,omitempty"`
+	// Definition is the node's copy of the subagent definition the agent
+	// was given (agentDefinition), which `agent add` takes. The node reads
+	// it only from the agent's state (definitionCopy), whatever directory
+	// this names.
+	Definition string `json:"definition,omitempty"`
 	// What the agent may not take from Dir or the owner; it takes all when
 	// these are unset (agentPolicy).
 	IgnoreDirInstructions bool `json:"ignore_dir_instructions,omitempty"`

@@ -264,7 +264,7 @@ func TestAgentAddDefinition(t *testing.T) {
 		t.Fatalf("agents: %+v", s.Agents)
 	}
 	a := s.Agents[0]
-	if a.Runtime != "codex" || a.Name != "docs-writer" || a.Description != "" || a.Dir != project || a.Definition != path || len(a.DefinitionSHA256) != 64 {
+	if a.Runtime != "codex" || a.Name != "docs-writer" || a.Description != "" || a.Dir != project || !strings.HasSuffix(a.Definition, "/agents/docs-writer/definition.toml") {
 		t.Fatalf("agent: %+v", a)
 	}
 	// The node runs it with its own copy, out of the agent's directory, and
@@ -283,25 +283,29 @@ func TestAgentAddDefinition(t *testing.T) {
 	if rt := svc.rt.(*codexRuntime); rt.def == nil || rt.def.Name != "docs-writer" {
 		t.Errorf("runtime definition: %+v", rt.def)
 	}
-	// A changed or deleted source changes nothing until the next add, and
-	// agent list says so.
-	write(t, path, strings.Replace(codexAgentFile, "You write docs.", "You write poems.", 1))
+	// agent list shows the copy; a changed or deleted source changes nothing
+	// until the next add.
 	out.Reset()
-	if err := runAgent(context.Background(), []string{"list"}, &out); err != nil || !strings.Contains(out.String(), "(source changed)") || !strings.Contains(out.String(), "agent add RUNTIME") {
-		t.Fatalf("list after a change: %v\n%s", err, &out)
+	if err := runAgent(context.Background(), []string{"list"}, &out); err != nil || !strings.Contains(out.String(), "DEFINITION") ||
+		!strings.Contains(out.String(), "agents/docs-writer/definition.toml") || strings.Contains(out.String(), ".codex/agents") {
+		t.Fatalf("list: %v\n%s", err, &out)
 	}
+	write(t, path, strings.Replace(codexAgentFile, "You write docs.", "You write poems.", 1))
 	if d, err := loadDefinition(copyPath); err != nil || strings.Contains(d.Instructions, "poems") {
 		t.Fatalf("copy after a change: %+v, %v", d, err)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	out.Reset()
-	if err := runAgent(context.Background(), []string{"list"}, &out); err != nil || !strings.Contains(out.String(), "(source gone)") {
-		t.Fatalf("list after a delete: %v\n%s", err, &out)
-	}
 	if _, err := newAgent(&a, def); err != nil {
 		t.Fatalf("agent without its source: %v", err)
+	}
+	// The node reads only the copy in the agent's state, whatever the
+	// settings name.
+	moved := a
+	moved.Definition = filepath.Join(project, "elsewhere", "definition.toml")
+	if _, err := newAgent(&moved, def); err != nil {
+		t.Fatalf("agent with another directory in its definition: %v", err)
 	}
 	write(t, path, codexAgentFile)
 	// Flags win over the definition.
@@ -310,7 +314,7 @@ func TestAgentAddDefinition(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, _ = loadSettings(def)
-	if a := s.Agents[1]; a.Name != "writer" || a.Description != "Writes." || a.Dir != other || a.Definition != path {
+	if a := s.Agents[1]; a.Name != "writer" || a.Description != "Writes." || a.Dir != other || !strings.HasSuffix(a.Definition, "/agents/writer/definition.toml") {
 		t.Fatalf("agent with flags: %+v", a)
 	}
 	// A Claude Code agent file on codex says what codex ignores.

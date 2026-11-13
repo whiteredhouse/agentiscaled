@@ -176,20 +176,19 @@ func validAgentName(name string) bool {
 
 // agentOffer is an agent the owner chose to offer from this machine.
 type agentOffer struct {
-	runtime          string
-	name             string
-	description      string // empty for the runtime's
-	agentDir         string
-	command          string // empty for the runtime's
-	definition       string // absolute path, empty for none
-	definitionSHA256 string
-	dataDir          string
-	policy           agentPolicy
+	runtime     string
+	name        string
+	description string // empty for the runtime's
+	agentDir    string
+	command     string // empty for the runtime's
+	definition  string // absolute path, empty for none
+	dataDir     string
+	policy      agentPolicy
 }
 
 // config is the offered agent as the node keeps it.
 func (o *agentOffer) config() agentConfig {
-	a := agentConfig{Runtime: o.runtime, Name: o.name, Dir: o.agentDir, Command: o.command, Description: o.description, Definition: o.definition, DefinitionSHA256: o.definitionSHA256}
+	a := agentConfig{Runtime: o.runtime, Name: o.name, Dir: o.agentDir, Command: o.command, Description: o.description, Definition: o.definition}
 	a.setPolicy(o.policy)
 	return a
 }

@@ -198,10 +198,9 @@ the project the file is in (`~/work/my-project`); `-name`, `-description` and
 directory (`<data-dir>/agents/<name>/definition.md` or `.toml`), which the
 agent's directory may not overlap, so no task can change the agent's role and
 no edit, branch switch or delete in the project changes it unseen. The node
-runs the agent with that copy. `agent list` shows each agent's source file and
-marks it "source changed" or "source gone" when it no longer matches the copy;
-run the same `agent add` again to take the new version. `agent remove`, or
-`agent add` of the same name without `-definition`, deletes the copy.
+runs the agent with that copy, and `agent list` shows its path. To take a
+changed file, run the same `agent add` again. `agent remove`, or `agent add`
+of the same name without `-definition`, deletes the copy.
 
 The rest of the file applies only when the agent's runtime is the one it was
 written for, and never widens the agent's permissions; on the other runtime

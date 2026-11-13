@@ -89,7 +89,7 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 		if !ok {
 			return fmt.Errorf("unknown runtime %q (have %s)", rt, strings.Join(runtimeNames(), ", "))
 		}
-		offer = &agentOffer{runtime: rt, name: *name, description: *description, agentDir: *dir, definition: defPath, policy: policy}
+		offer = &agentOffer{runtime: rt, name: *name, description: *description, agentDir: *dir, policy: policy}
 		if def != nil {
 			if ignored := def.ignoredOn(rt); len(ignored) > 0 {
 				fmt.Fprintf(out, "%s is a %s agent file: %s ignores its %s, and runs with its own default model and the agent's permissions.\n",
@@ -150,7 +150,7 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 	// The node runs the agent with its own copy of the definition, which
 	// only another `agent add` replaces.
 	if defPath != "" {
-		if offer.definitionSHA256, _, err = copyDefinition(offer.dataDir, offer.name, defPath); err != nil {
+		if offer.definition, err = copyDefinition(offer.dataDir, offer.name, defPath); err != nil {
 			return err
 		}
 	}
@@ -264,7 +264,6 @@ func runAgentList(args []string, out io.Writer) error {
 		tasks = "stopped"
 	}
 	defined := slices.ContainsFunc(s.Agents, func(a agentConfig) bool { return a.Definition != "" })
-	drifted := false
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	if defined {
 		fmt.Fprintln(tw, "NAME\tRUNTIME\tDIRECTORY\tTASKS\tDEFINITION")
@@ -278,21 +277,11 @@ func runAgentList(args []string, out io.Writer) error {
 		}
 		def := "-"
 		if a.Definition != "" {
-			def = homeRelative(a.Definition)
-			if drift := definitionDrift(a.Definition, a.DefinitionSHA256); drift != "" {
-				def += " (" + drift + ")"
-				drifted = true
-			}
+			def = homeRelative(definitionCopy(*dataDir, a.Name, a.Definition))
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", a.Name, a.Runtime, homeRelative(a.Dir), tasks, def)
 	}
-	if err := tw.Flush(); err != nil {
-		return err
-	}
-	if drifted {
-		fmt.Fprintln(out, "\nAn agent runs with the copy of its definition taken when it was added. To take the changed one, run its 'agentiscaled agent add RUNTIME -definition FILE ...' again, with the same flags.")
-	}
-	return nil
+	return tw.Flush()
 }
 
 // runtimeTitle is how a runtime's agent files are called.

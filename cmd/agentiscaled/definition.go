@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -93,38 +91,37 @@ func parseDefinition(path string, b []byte) (d *agentDefinition, err error) {
 }
 
 // definitionCopy is where the node keeps its copy of agent name's
-// definition from source: in the agent's own state in the data directory,
-// out of reach of the agent's directory, so that no task can change the
-// agent's role, and no change in the project changes it unseen.
-func definitionCopy(dataDir, name, source string) string {
-	return filepath.Join(dataDir, "agents", name, "definition"+strings.ToLower(filepath.Ext(source)))
+// definition, of the format of path's extension: in the agent's own state in
+// the data directory, out of reach of the agent's directory, so that no task
+// can change the agent's role, and no change in the project changes it
+// unseen.
+func definitionCopy(dataDir, name, path string) string {
+	return filepath.Join(dataDir, "agents", name, "definition"+strings.ToLower(filepath.Ext(path)))
 }
 
 // copyDefinition copies the definition at source to agent name's state and
-// returns the copy's SHA-256 and what it defines.
-func copyDefinition(dataDir, name, source string) (string, *agentDefinition, error) {
+// returns the copy's path.
+func copyDefinition(dataDir, name, source string) (string, error) {
 	b, err := readDefinition(source)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
-	d, err := parseDefinition(source, b)
-	if err != nil {
-		return "", nil, err
+	if _, err := parseDefinition(source, b); err != nil {
+		return "", err
 	}
 	dst := definitionCopy(dataDir, name, source)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return "", nil, err
+		return "", err
 	}
 	removeDefinitionCopies(dataDir, name)
 	tmp := dst + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return "", nil, err
+		return "", err
 	}
 	if err := os.Rename(tmp, dst); err != nil {
-		return "", nil, err
+		return "", err
 	}
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:]), d, nil
+	return dst, nil
 }
 
 // removeDefinitionCopies removes agent name's copy of a definition, of
@@ -133,19 +130,6 @@ func removeDefinitionCopies(dataDir, name string) {
 	for _, ext := range []string{".md", ".toml"} {
 		_ = os.Remove(filepath.Join(dataDir, "agents", name, "definition"+ext))
 	}
-}
-
-// definitionDrift says how the source of a definition differs from the copy
-// with SHA-256 sum: empty when it does not.
-func definitionDrift(source, sum string) string {
-	b, err := readDefinition(source)
-	if err != nil {
-		return "source gone"
-	}
-	if s := sha256.Sum256(b); hex.EncodeToString(s[:]) != sum {
-		return "source changed"
-	}
-	return ""
 }
 
 // parseClaudeDefinition reads a Claude Code agent file: YAML front matter

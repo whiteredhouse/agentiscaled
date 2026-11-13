@@ -454,7 +454,7 @@ func checkAgent(a *agentConfig, dataDir string, service bool) error {
 	policy := a.policy()
 	if a.Definition != "" {
 		if _, err := loadDefinition(definitionCopy(dataDir, a.Name, a.Definition)); err != nil {
-			return fmt.Errorf("agent %s: its copy of %s: %w; run 'agentiscaled agent add' with -definition again", a.Name, a.Definition, err)
+			return fmt.Errorf("agent %s: its definition: %w; run 'agentiscaled agent add' with -definition again", a.Name, err)
 		}
 	}
 	// The runtime checks the rest, such as the agent's own sign-in.
