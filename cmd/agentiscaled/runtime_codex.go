@@ -79,14 +79,11 @@ func codexHome(dataDir string, policy agentPolicy) (string, error) {
 	if !policy.OwnerConfig {
 		return filepath.Abs(filepath.Join(dataDir, "codex"))
 	}
-	if home := os.Getenv("CODEX_HOME"); home != "" {
-		return filepath.Abs(home)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".codex"), nil
+	return codexOwnerConfigDir()
+}
+
+func codexOwnerConfigDir() (string, error) {
+	return ownerRuntimeConfigDir("CODEX_HOME", ".codex")
 }
 
 func codexSignedIn(_, dataDir string, policy agentPolicy) bool {

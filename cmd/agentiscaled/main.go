@@ -68,6 +68,7 @@ Commands:
   up       sign in, join this machine to your network and keep the node running
   clients  connect agent clients (Claude Desktop, Codex CLI) to the node, or disconnect them
   agent    offer an agent from this machine to your network (add, remove, list)
+  runtimes list supported agent runtimes and their local configuration
   down     stop the node's background service; its identity stays
   status   show the node's service, network and mesh connection
   version  print the version
@@ -97,6 +98,8 @@ func main() {
 			err = runClients(ctx, args, os.Stdout)
 		case "agent":
 			err = runAgent(ctx, args, os.Stdout)
+		case "runtimes":
+			err = runRuntimes(args, os.Stdout)
 		case "down":
 			err = runDown(args, os.Stdout)
 		case "reset":

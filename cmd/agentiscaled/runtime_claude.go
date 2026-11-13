@@ -103,6 +103,10 @@ func claudeConfigDir(dataDir string, policy agentPolicy) (string, error) {
 	return filepath.Abs(filepath.Join(dataDir, "claude"))
 }
 
+func claudeOwnerConfigDir() (string, error) {
+	return ownerRuntimeConfigDir("CLAUDE_CONFIG_DIR", ".claude")
+}
+
 // claudeSignedIn asks Claude Code whether it is signed in, in a way the
 // background service also sees: without a credential from this shell's
 // environment.
