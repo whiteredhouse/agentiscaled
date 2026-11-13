@@ -29,6 +29,7 @@ Linux packages, connecting your agent apps, and machines without a browser.
 | `agentiscaled up` | Sign in if needed, join, and start the node as a background service; in a terminal it first asks which agent apps to connect and whether to offer an agent |
 | `agentiscaled clients list\|connect\|disconnect` | Connect your agent apps (Claude Desktop, Codex CLI) to the node, or disconnect them |
 | `agentiscaled agent add\|remove\|list` | Offer an agent (Codex, Claude Code) from this machine to your network, or stop offering it |
+| `agentiscaled runtimes list` | List supported agent runtimes, their executables on `PATH`, and their config directories for the current shell |
 | `agentiscaled status` | Show the node, its network and its mesh connection |
 | `agentiscaled down` | Stop and remove the background service; the node keeps its identity |
 | `agentiscaled reset` | Drop the node's identity so `up` joins it again as a new node; its settings stay |

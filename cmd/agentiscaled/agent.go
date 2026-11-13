@@ -134,6 +134,7 @@ var runtimes = map[string]struct {
 	new            func(command, dataDir string, policy agentPolicy) (runtime, error)
 	defaultName    string
 	defaultCommand string
+	ownerConfigDir func() (string, error)
 	// signedIn and login are for a runtime whose agent signs in: whether
 	// it has, in a way the background service also sees, and the command
 	// that signs it in, with how to show that command. A runtime may also
@@ -148,8 +149,19 @@ var runtimes = map[string]struct {
 	// agentPolicy.OwnerConfig the agent finds the same configuration.
 	ownerEnv []string
 }{
-	"codex":  {newCodexRuntime, "codex", "codex", codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
-	"claude": {newClaudeRuntime, "claude", "claude", claudeSignedIn, claudeEnvSignedIn, claudeLogin, []string{"CLAUDE_CONFIG_DIR"}},
+	"codex":  {newCodexRuntime, "codex", "codex", codexOwnerConfigDir, codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
+	"claude": {newClaudeRuntime, "claude", "claude", claudeOwnerConfigDir, claudeSignedIn, claudeEnvSignedIn, claudeLogin, []string{"CLAUDE_CONFIG_DIR"}},
+}
+
+func ownerRuntimeConfigDir(variable, defaultDir string) (string, error) {
+	if dir := os.Getenv(variable); dir != "" {
+		return filepath.Abs(dir)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, defaultDir), nil
 }
 
 // agentOwnerEnv is what `up` keeps of the runtime's ownerEnv: each variable
