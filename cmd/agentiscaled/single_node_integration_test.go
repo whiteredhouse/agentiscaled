@@ -4,12 +4,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/google/agentmesh/api"
 	meshnode "github.com/google/agentmesh/export/node"
 	"github.com/google/uuid"
@@ -195,23 +196,19 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 		if err != nil || answered.Terminal != "completed" || answered.Result != "reviewed main.go" {
 			t.Fatalf("answered task: %+v %v", answered, err)
 		}
-		// Local task controls and delegation limits use the ordinary agent handler.
-		a2aClient, err := tasks.client(ctx, target)
+		// Local task controls and delegation limits use the ordinary agent
+		// handler: a token whose task is too deep is refused.
+		deepToken, err := (&taskNetwork{node: client}).mint(ctx, fmt.Sprintf("%s%d/t-1", taskClaimPrefix, maxDelegationDepth+1), time.Now().Add(time.Minute))
 		if err != nil {
 			t.Fatal(err)
 		}
-		msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("nested"))
-		msg.SetMeta(metaDelegationDepth, maxDelegationDepth+1)
-		response, err := a2aClient.SendMessage(ctx, &a2a.SendMessageRequest{Message: msg, Config: &a2a.SendMessageConfig{ReturnImmediately: true}})
+		deep := &a2aTasks{http: meshTokenClient(ctx, filepath.Join(dir, meshnode.DefaultSocketName), deepToken), base: "http://agentiscaled", local: meshTokenClient(ctx, filepath.Join(dir, localAgentSocketName), deepToken)}
+		_, rejected, err := deep.send(ctx, nil, sendTaskIn{taskTarget: target, Text: "nested"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		rejected, ok := response.(*a2a.Task)
-		if !ok {
-			t.Fatalf("delegation response %T", response)
-		}
-		_, rejection, err := tasks.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: target, TaskID: string(rejected.ID)}, WaitSeconds: 5})
-		if err != nil || rejection.Terminal != "rejected" {
+		_, rejection, err := deep.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: target, TaskID: rejected.TaskID}, WaitSeconds: 5})
+		if err != nil || rejection.Terminal != "rejected" || !strings.Contains(rejection.Message, "delegation depth") {
 			t.Fatalf("nested delegation: %+v %v", rejection, err)
 		}
 		_, pending, err := tasks.send(ctx, nil, sendTaskIn{taskTarget: target, Text: "cancel locally"})

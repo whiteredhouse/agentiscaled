@@ -37,15 +37,14 @@ const (
 	maxWaiting = 16
 	// maxDelegationDepth bounds how far a task may have been delegated: a
 	// person's client sends at depth 0, and a hosted agent working on such a
-	// task may call other agents (taskNetwork), at depth 1. A task at the
-	// bound runs without the network, so it cannot delegate further, and a
-	// deeper one is refused.
+	// task may call other agents (taskNetwork), at depth 1, which its
+	// token names (senderOf). A task at the bound runs without the
+	// network, so it cannot delegate further, and a deeper one is refused.
 	maxDelegationDepth = 1
 )
 
 // Metadata keys agentiscale reads and writes on A2A messages and tasks.
 const (
-	metaDelegationDepth = "agentiscale.delegation_depth"
 	// metaTerminal names why a task ended, since A2A 1.0 has no timed-out
 	// state: completed, rejected, cancelled, timeout or failed.
 	metaTerminal = "agentiscale.terminal"
@@ -378,12 +377,13 @@ func (s *agentService) stopped() bool {
 // the runtime's session of the turn before.
 func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 	return func(yield func(a2a.Event, error) bool) {
-		sender := firstParam(execCtx.ServiceParams, api.HeaderPeerID)
+		from, fromErr := senderOf(execCtx.ServiceParams)
+		sender := from.String()
 		answer := execCtx.StoredTask != nil
 		if !answer {
 			task := a2a.NewSubmittedTask(execCtx, execCtx.Message)
-			if sender != "" {
-				task.SetMeta(metaSender, sender)
+			if from.peer != "" {
+				task.SetMeta(metaSender, from.peer)
 			}
 			if !yield(task, nil) {
 				return
@@ -419,22 +419,21 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		// The node stamps the authenticated caller on every request it
 		// delivers from the mesh; one without it did not come through the
 		// mesh.
-		if sender == "" {
-			refuse("refused: the request carries no authenticated sender", nil)
+		if fromErr != nil {
+			refuse("refused: "+fromErr.Error(), nil)
 			return
 		}
 		if answer && prior.sender != sender {
 			refuse("refused: only the task's sender can answer", nil)
 			return
 		}
-		depth, ok := delegationDepth(execCtx.Message)
-		if !ok || depth > maxDelegationDepth {
+		depth := from.depth
+		if depth > maxDelegationDepth {
 			refuse(fmt.Sprintf("refused: delegation depth above %d", maxDelegationDepth), nil)
 			return
 		}
 		if answer {
-			// What the answer says of itself does not count: the task is as
-			// deep as it was when it came.
+			// The task is as deep as it was when it came.
 			depth = prior.depth
 		}
 		request := messageText(execCtx.Message)
@@ -471,7 +470,7 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		// the task's history.
 		progress := make(chan string, 1)
 		done := make(chan runOutcome, 1)
-		req := taskRequest{Sender: sender, Text: request, Session: prior.session, Progress: func(line string) {
+		req := taskRequest{Sender: from.peer, Text: request, Session: prior.session, Progress: func(line string) {
 			select {
 			case <-progress:
 			default:
@@ -754,10 +753,12 @@ func (s *agentService) handler(name, token string) http.Handler {
 	})
 }
 
-// peerIdentity makes the peer that the node authenticated and stamped on the
-// request the A2A user of the call. The task store keeps each task for the
-// user that created it, so a peer can get, cancel or follow only its own
-// tasks, and a call without a peer ID did not come through the mesh.
+// peerIdentity makes the sender that the node authenticated and stamped on
+// the request (senderOf: the peer, and the task its token is for) the A2A
+// user of the call. The task store keeps each task for the user that created
+// it, so a sender can get, cancel or follow only its own tasks: a hosted
+// agent's task only the tasks it sent itself. A call without a peer ID did
+// not come through the mesh.
 type peerIdentity struct {
 	a2asrv.PassthroughCallInterceptor
 	// tasks is the agent's task store, which keeps each task's owner.
@@ -765,11 +766,11 @@ type peerIdentity struct {
 }
 
 func (p peerIdentity) Before(ctx context.Context, callCtx *a2asrv.CallContext, req *a2asrv.Request) (context.Context, any, error) {
-	peer := firstParam(callCtx.ServiceParams(), api.HeaderPeerID)
-	if peer == "" {
+	from, err := senderOf(callCtx.ServiceParams())
+	if err != nil {
 		return ctx, nil, a2a.ErrUnauthenticated
 	}
-	callCtx.User = a2asrv.NewAuthenticatedUser(peer, nil)
+	callCtx.User = a2asrv.NewAuthenticatedUser(from.String(), nil)
 	// A2A serves a running task's events to whoever subscribes to its ID:
 	// only the task's owner may.
 	if sub, ok := req.Payload.(*a2a.SubscribeToTaskRequest); ok && sub != nil {
@@ -848,18 +849,6 @@ func serveAgent(ctx context.Context, s *agentService, name string) (string, erro
 }
 
 func stopFilePath(dataDir string) string { return filepath.Join(dataDir, "tasks-stopped") }
-
-func delegationDepth(m *a2a.Message) (int, bool) {
-	v, ok := m.Metadata[metaDelegationDepth]
-	if !ok {
-		return 0, true
-	}
-	f, ok := v.(float64)
-	if !ok || f < 0 || f != float64(int(f)) {
-		return 0, false
-	}
-	return int(f), true
-}
 
 func messageText(m *a2a.Message) string {
 	var parts []string

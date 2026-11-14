@@ -36,9 +36,6 @@ type a2aTasks struct {
 	http  *http.Client
 	base  string       // the node's local API
 	local *http.Client // owner-only agent socket; nil for older nodes
-	// depth is the delegation depth of the tasks sent: 0 for a person's
-	// client, one more than its own task's for a hosted agent (taskNetwork).
-	depth int
 	// self is the hosted agent these tools serve, which may not send tasks
 	// to itself; empty for a person's client.
 	self string
@@ -247,9 +244,6 @@ func (t *a2aTasks) send(ctx context.Context, _ *mcp.CallToolRequest, in sendTask
 	}
 	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(in.Text))
 	msg.TaskID = a2a.TaskID(in.TaskID)
-	// A person's client sends at depth 0, a hosted agent one deeper than
-	// its own task.
-	msg.SetMeta(metaDelegationDepth, t.depth)
 	res, err := c.SendMessage(ctx, &a2a.SendMessageRequest{Message: msg, Config: &a2a.SendMessageConfig{ReturnImmediately: true}})
 	if err != nil {
 		return nil, taskOut{}, unreachable(in.taskTarget, err)

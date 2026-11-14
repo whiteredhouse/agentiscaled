@@ -306,10 +306,14 @@ func (r *codexRuntime) Run(ctx context.Context, dir string, req taskRequest) (tu
 	}
 	if n := req.Network; n != nil {
 		// Codex reads the server's bearer token from the variable, which
-		// the commands it runs do not get (shell_environment_policy).
+		// the commands it runs do not get (shell_environment_policy). The
+		// run asks no one, so Codex would refuse the tools that are not
+		// read-only (send_task, cancel_task) unless approved here: the
+		// token is what bounds them.
 		server := "mcp_servers." + networkServerName
 		args = append(args, "-c", server+".url="+tomlString(n.URL),
-			"-c", server+".bearer_token_env_var="+tomlString(networkTokenEnv))
+			"-c", server+".bearer_token_env_var="+tomlString(networkTokenEnv),
+			"-c", server+`.default_tools_approval_mode="approve"`)
 	}
 	args = append(args, "--json", "--output-schema", schema, "--output-last-message", last)
 	args = append(args, r.extra...)

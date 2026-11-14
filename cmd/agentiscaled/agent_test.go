@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
 )
 
 const testSender = "12D3KooWGPMbCHEiW61Swz3L4HP7LpdoeVqMMo7p3ycHKWFnybQS"
@@ -104,6 +106,23 @@ func (h *agentHarness) as(t *testing.T, sender string) *a2aclient.Client {
 	return a2aClient(t, h.url, meshHeaders{"secret", sender})
 }
 
+// asTask is a client of the same agent that the node delivers for sender
+// with a token for task: the name of the token's task rule.
+func (h *agentHarness) asTask(t *testing.T, sender, task string) *a2aclient.Client {
+	return a2aClient(t, h.url, withTask{meshHeaders{"secret", sender}, task})
+}
+
+type withTask struct {
+	next http.RoundTripper
+	task string
+}
+
+func (w withTask) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("X-Mesh-Task", w.task)
+	return w.next.RoundTrip(r)
+}
+
 func a2aClient(t *testing.T, url string, rt http.RoundTripper) *a2aclient.Client {
 	t.Helper()
 	c, err := a2aclient.NewFromEndpoints(context.Background(),
@@ -136,9 +155,15 @@ func (h *agentHarness) send(t *testing.T, id, text string, meta map[string]any) 
 // await polls until the task reaches want.
 func (h *agentHarness) await(t *testing.T, id a2a.TaskID, want a2a.TaskState) *a2a.Task {
 	t.Helper()
+	return h.awaitWith(t, h.client, id, want)
+}
+
+// awaitWith waits as await does, as the sender of client.
+func (h *agentHarness) awaitWith(t *testing.T, client *a2aclient.Client, id a2a.TaskID, want a2a.TaskState) *a2a.Task {
+	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		task, err := h.client.GetTask(context.Background(), &a2a.GetTaskRequest{ID: id})
+		task, err := client.GetTask(context.Background(), &a2a.GetTaskRequest{ID: id})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -252,29 +277,70 @@ func TestARetriedMessageIsNotRunTwice(t *testing.T) {
 	}
 }
 
+// The delegation depth comes from the token the request came with: one
+// that names a deeper task is refused, and one whose depth cannot be read
+// does not authenticate.
 func TestRefusedRequests(t *testing.T) {
+	h := newAgentHarness(t, testSender)
+	tooDeep := h.asTask(t, testSender, fmt.Sprintf("agentiscale-task/%d/t-1", maxDelegationDepth+1))
+	res, err := tooDeep.SendMessage(context.Background(), &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("review")), Config: &a2a.SendMessageConfig{ReturnImmediately: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, ok := res.(*a2a.Task)
+	if !ok {
+		t.Fatalf("send: %T", res)
+	}
+	done := h.awaitWith(t, tooDeep, task.ID, a2a.TaskStateRejected)
+	if !strings.Contains(statusText(done), "delegation depth") {
+		t.Fatalf("got %q", statusText(done))
+	}
+	// What the message says of its depth does not count.
+	h.send(t, "", "review", map[string]any{"agentiscale.delegation_depth": maxDelegationDepth + 1})
+	if p := <-h.fix.prompts; p.Text != "review" {
+		t.Fatalf("prompt %+v", p)
+	}
+	h.fix.release <- "done"
+	for _, name := range []string{"agentiscale-task/x/t-1", "agentiscale-task/-1/t-1", "agentiscale-task/01/t-1", "agentiscale-task/1", "agentiscale-task/1/"} {
+		_, err := h.asTask(t, testSender, name).SendMessage(context.Background(), &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("review"))})
+		if !errors.Is(err, a2a.ErrUnauthenticated) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	select {
+	case p := <-h.fix.prompts:
+		t.Fatalf("a refused task ran: %+v", p)
+	default:
+	}
+}
+
+func TestSenderOf(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		sender string
-		meta   map[string]any
-		want   string
+		peer, task string
+		want       taskSender
+		bad        bool
 	}{
-		{"delegated too far", testSender, map[string]any{metaDelegationDepth: maxDelegationDepth + 1}, "delegation depth"},
-		{"malformed depth", testSender, map[string]any{metaDelegationDepth: "0"}, "delegation depth"},
+		{peer: "p", want: taskSender{peer: "p"}},
+		{peer: "p", task: "agentiscale-task/1/t-1", want: taskSender{peer: "p", task: "agentiscale-task/1/t-1", depth: 1}},
+		{peer: "p", task: "agentiscale-task/0/a/b", want: taskSender{peer: "p", task: "agentiscale-task/0/a/b"}},
+		// Narrowed by other means than a hosted agent's: a person's.
+		{peer: "p", task: "review", want: taskSender{peer: "p", task: "review"}},
+		{peer: "p", task: "agentiscale-task/+1/t-1", bad: true},
+		{task: "agentiscale-task/1/t-1", bad: true},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newAgentHarness(t, tc.sender)
-			task := h.send(t, "", "review", tc.meta)
-			done := h.await(t, task.ID, a2a.TaskStateRejected)
-			if !strings.Contains(statusText(done), tc.want) {
-				t.Fatalf("got %q, want %q", statusText(done), tc.want)
-			}
-			select {
-			case p := <-h.fix.prompts:
-				t.Fatalf("the task ran: %+v", p)
-			default:
-			}
-		})
+		params := a2asrv.NewServiceParams(map[string][]string{"x-peer-id": {tc.peer}, "x-mesh-task": {tc.task}})
+		got, err := senderOf(params)
+		if tc.bad != (err != nil) || got != tc.want {
+			t.Errorf("%q %q: %+v %v", tc.peer, tc.task, got, err)
+		}
+	}
+	if name, err := taskClaim(1, "t-1"); err != nil || name != "agentiscale-task/1/t-1" {
+		t.Errorf("claim: %q %v", name, err)
+	}
+	for _, id := range []a2a.TaskID{"", "a b", a2a.TaskID(strings.Repeat("a", 120))} {
+		if _, err := taskClaim(1, id); err == nil {
+			t.Errorf("claim for %q", id)
+		}
 	}
 }
 
@@ -314,6 +380,43 @@ func TestTasksBelongToTheirSender(t *testing.T) {
 	if _, err := intruder.GetTask(context.Background(), &a2a.GetTaskRequest{ID: done.ID}); !errors.Is(err, a2a.ErrTaskNotFound) {
 		t.Fatalf("another peer got the result: %v", err)
 	}
+}
+
+// A task a hosted agent sent is its task's, by the token it came with: not
+// the node's, nor another task's on the same node, and the hosted agent's
+// token does not reach the node's tasks.
+func TestTasksBelongToTheTaskThatSentThem(t *testing.T) {
+	h := newAgentHarness(t, testSender)
+	ctx := context.Background()
+	mine := h.asTask(t, testSender, "agentiscale-task/1/t-1")
+	res, err := mine.SendMessage(ctx, &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("review")), Config: &a2a.SendMessageConfig{ReturnImmediately: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := res.(*a2a.Task)
+	<-h.fix.prompts
+	for name, other := range map[string]*a2aclient.Client{
+		"the node":              h.client,
+		"another task":          h.asTask(t, testSender, "agentiscale-task/1/t-2"),
+		"another node's task":   h.asTask(t, "12D3KooWRBy97UB99e3J6hiPesre1MZeuNQvfan4gBziswrRJsNK", "agentiscale-task/1/t-1"),
+		"the task at any depth": h.asTask(t, testSender, "agentiscale-task/0/t-1"),
+	} {
+		if _, err := other.GetTask(ctx, &a2a.GetTaskRequest{ID: sent.ID}); !errors.Is(err, a2a.ErrTaskNotFound) {
+			t.Fatalf("%s got the task: %v", name, err)
+		}
+		if _, err := other.CancelTask(ctx, &a2a.CancelTaskRequest{ID: sent.ID}); !errors.Is(err, a2a.ErrTaskNotFound) {
+			t.Fatalf("%s cancelled the task: %v", name, err)
+		}
+	}
+	h.fix.release <- "done"
+	h.awaitWith(t, mine, sent.ID, a2a.TaskStateCompleted)
+	own := h.send(t, "", "review", nil)
+	<-h.fix.prompts
+	if _, err := mine.GetTask(ctx, &a2a.GetTaskRequest{ID: own.ID}); !errors.Is(err, a2a.ErrTaskNotFound) {
+		t.Fatalf("a hosted agent got the node's task: %v", err)
+	}
+	h.fix.release <- "done"
+	h.await(t, own.ID, a2a.TaskStateCompleted)
 }
 
 // The record of delivered requests outlives the node: a retry of a request
