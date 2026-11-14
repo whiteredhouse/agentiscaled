@@ -198,11 +198,23 @@ func TestTaskCallsRejectRedirects(t *testing.T) {
 	target := taskTarget{PeerID: testSender, Service: "agent"}
 	ctx := context.Background()
 	for name, call := range map[string]func() error{
-		"send":   func() error { _, _, err := tools.send(ctx, nil, sendTaskIn{taskTarget: target, Text: "x"}); return err },
-		"answer": func() error { _, _, err := tools.send(ctx, nil, sendTaskIn{taskTarget: target, Text: "x", TaskID: "t-1"}); return err },
-		"get":    func() error { _, _, err := tools.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: target, TaskID: "t-1"}}); return err },
-		"wait":   func() error { _, _, err := tools.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: target, TaskID: "t-1"}, WaitSeconds: 1}); return err },
-		"cancel": func() error { _, _, err := tools.cancel(ctx, nil, taskIn{taskTarget: target, TaskID: "t-1"}); return err },
+		"send": func() error { _, _, err := tools.send(ctx, nil, sendTaskIn{taskTarget: target, Text: "x"}); return err },
+		"answer": func() error {
+			_, _, err := tools.send(ctx, nil, sendTaskIn{taskTarget: target, Text: "x", TaskID: "t-1"})
+			return err
+		},
+		"get": func() error {
+			_, _, err := tools.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: target, TaskID: "t-1"}})
+			return err
+		},
+		"wait": func() error {
+			_, _, err := tools.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: target, TaskID: "t-1"}, WaitSeconds: 1})
+			return err
+		},
+		"cancel": func() error {
+			_, _, err := tools.cancel(ctx, nil, taskIn{taskTarget: target, TaskID: "t-1"})
+			return err
+		},
 	} {
 		if err := call(); err == nil {
 			t.Errorf("%s: no error from a redirect", name)
