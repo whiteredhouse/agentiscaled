@@ -78,12 +78,19 @@ type networkGrant struct {
 	close   func()
 }
 
-// sentTasks are the tasks one task of a hosted agent has sent, with the
-// target each was sent to, and the sends still on their way.
+// sentTasks are the tasks one task of a hosted agent has sent, and the sends
+// still on their way.
 type sentTasks struct {
 	mu      sync.Mutex
-	tasks   map[string]taskTarget
+	tasks   map[sentTask]bool
 	sending int
+}
+
+// sentTask names a task by the agent it went to and the ID that agent gave
+// it: each agent makes its own IDs, so two may give the same one.
+type sentTask struct {
+	target taskTarget
+	id     string
 }
 
 // maxSentTasks bounds the tasks one task of a hosted agent may send.
@@ -108,7 +115,7 @@ func (s *sentTasks) reserve() (sent func(id string, target taskTarget), drop fun
 			record()
 		})
 	}
-	return func(id string, target taskTarget) { end(func() { s.tasks[id] = target }) },
+	return func(id string, target taskTarget) { end(func() { s.tasks[sentTask{target, id}] = true }) },
 		func() { end(func() {}) }, nil
 }
 
@@ -116,7 +123,7 @@ func (s *sentTasks) reserve() (sent func(id string, target taskTarget), drop fun
 func (s *sentTasks) check(id string, target taskTarget) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sent, ok := s.tasks[id]; !ok || sent != target {
+	if !s.tasks[sentTask{target, id}] {
 		return fmt.Errorf("task %s is not one you sent to %s; use the task_id, service and peer_id of a task your send_task created", id, target.Service)
 	}
 	return nil
@@ -206,7 +213,7 @@ func (n *taskNetwork) sentBy(task a2a.TaskID) *sentTasks {
 	defer n.mu.Unlock()
 	s := n.sent[task]
 	if s == nil {
-		s = &sentTasks{tasks: map[string]taskTarget{}}
+		s = &sentTasks{tasks: map[sentTask]bool{}}
 		n.sent[task] = s
 	}
 	return s

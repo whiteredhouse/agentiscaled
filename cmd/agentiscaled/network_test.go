@@ -466,7 +466,7 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 // No more tasks go out than the bound allows, however many sends run at
 // once, and a send that fails gives its place back.
 func TestSentTasksBound(t *testing.T) {
-	s := &sentTasks{tasks: map[string]taskTarget{}}
+	s := &sentTasks{tasks: map[sentTask]bool{}}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	reserved := 0
@@ -491,7 +491,7 @@ func TestSentTasksBound(t *testing.T) {
 	if _, _, err := s.reserve(); err == nil {
 		t.Fatal("a send went out past the bound")
 	}
-	s = &sentTasks{tasks: map[string]taskTarget{}}
+	s = &sentTasks{tasks: map[sentTask]bool{}}
 	for range maxSentTasks {
 		_, drop, err := s.reserve()
 		if err != nil {
@@ -502,5 +502,23 @@ func TestSentTasksBound(t *testing.T) {
 	}
 	if _, _, err := s.reserve(); err != nil || s.sending != 1 {
 		t.Fatalf("failed sends kept their places: %v, %d sending", err, s.sending)
+	}
+
+	// Two agents may give their tasks the same ID: both stay the sender's,
+	// each with its own agent, and both count.
+	s = &sentTasks{tasks: map[sentTask]bool{}}
+	a, b := taskTarget{Service: "a"}, taskTarget{Service: "b", PeerID: testSender}
+	for _, target := range []taskTarget{a, b} {
+		sent, _, err := s.reserve()
+		if err != nil {
+			t.Fatal(err)
+		}
+		sent("1", target)
+	}
+	if s.check("1", a) != nil || s.check("1", b) != nil || len(s.tasks) != 2 {
+		t.Fatalf("tasks with one ID at two agents: %v", s.tasks)
+	}
+	if s.check("1", taskTarget{Service: "c"}) == nil || s.check("2", a) == nil {
+		t.Fatal("a task not sent passed the check")
 	}
 }
