@@ -148,9 +148,11 @@ Offer an agent from this machine to your network? Found: codex, claude [y/N]: y
 By default the agent runs as your own Codex does: with your sign-in, skills, plugins,
 settings and MCP servers (your `CODEX_HOME`), and with the directory's own instruction
 files (`AGENTS.md`) and skills. Your MCP servers include agentiscale itself if you
-connected Codex, so the agent can ask your network's other agents for help. Answer n
+connected Codex. Whatever you answer, while it works on a task the agent can ask your network's
+other agents for help, with a token that lasts only as long as the task (see
+[Agents call other agents](connect-agents.md#agents-call-other-agents)). Answer n
 to give the agent its own configuration and sign-in in its node's data directory, with
-no MCP servers (`-owner-config=false`), or to leave out the directory's
+no MCP servers of yours (`-owner-config=false`), or to leave out the directory's
 instruction files or skills when it may hold content from someone you don't trust
 (`-dir-instructions=false`, `-dir-skills=false`).
 

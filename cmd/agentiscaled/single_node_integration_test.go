@@ -27,41 +27,7 @@ import (
 func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 	dir := shortTempDir(t)
 	mesh := newStandInMesh(t, "fine")
-	router, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer router.Close()
-	routerToken, err := meshnode.MintBootstrapBiscuitToken(mesh.key, router.ID(), api.RoleRouter, time.Now().Add(time.Hour), nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	router.SetStreamHandler(api.AuthProtocolID, func(s network.Stream) {
-		defer s.Close()
-		reader := msgio.NewVarintReaderSize(s, 65536)
-		frame, err := reader.ReadMsg()
-		if err != nil {
-			return
-		}
-		reader.ReleaseMsg(frame)
-		response, _ := proto.Marshal(&api.AuthResponse{Success: true, Biscuit: routerToken})
-		_ = msgio.NewVarintWriter(s).WriteMsg(response)
-	})
-	router.SetStreamHandler(api.DirectoryProtocolID, func(s network.Stream) {
-		defer s.Close()
-		reader := msgio.NewVarintReaderSize(s, 65536)
-		frame, err := reader.ReadMsg()
-		if err != nil {
-			return
-		}
-		reader.ReleaseMsg(frame)
-		response, _ := proto.Marshal(&api.DirectoryResponse{})
-		_ = msgio.NewVarintWriter(s).WriteMsg(response)
-	})
-	routerAddr, err := multiaddr.NewMultiaddr(router.Addrs()[0].String() + "/p2p/" + router.ID().String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	routerAddr := standInRouter(t, mesh.key)
 	mint := func() string {
 		pid := seedNode(t, dir, mesh.srv.URL, mesh.key)
 		store, err := meshnode.NewStore(dir)
@@ -235,7 +201,7 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 			t.Fatal(err)
 		}
 		msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("nested"))
-		msg.SetMeta(metaDelegationDepth, 1)
+		msg.SetMeta(metaDelegationDepth, maxDelegationDepth+1)
 		response, err := a2aClient.SendMessage(ctx, &a2a.SendMessageRequest{Message: msg, Config: &a2a.SendMessageConfig{ReturnImmediately: true}})
 		if err != nil {
 			t.Fatal(err)
@@ -282,4 +248,46 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 	}
 	// The control plane's key is unchanged; the node identity has been replaced.
 	exercise()
+}
+
+// standInRouter admits any node with a router credential signed by key and
+// answers every directory request with an empty directory.
+func standInRouter(t *testing.T, key ed25519.PrivateKey) multiaddr.Multiaddr {
+	t.Helper()
+	router, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { router.Close() })
+	routerToken, err := meshnode.MintBootstrapBiscuitToken(key, router.ID(), api.RoleRouter, time.Now().Add(time.Hour), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.SetStreamHandler(api.AuthProtocolID, func(s network.Stream) {
+		defer s.Close()
+		reader := msgio.NewVarintReaderSize(s, 65536)
+		frame, err := reader.ReadMsg()
+		if err != nil {
+			return
+		}
+		reader.ReleaseMsg(frame)
+		response, _ := proto.Marshal(&api.AuthResponse{Success: true, Biscuit: routerToken})
+		_ = msgio.NewVarintWriter(s).WriteMsg(response)
+	})
+	router.SetStreamHandler(api.DirectoryProtocolID, func(s network.Stream) {
+		defer s.Close()
+		reader := msgio.NewVarintReaderSize(s, 65536)
+		frame, err := reader.ReadMsg()
+		if err != nil {
+			return
+		}
+		reader.ReleaseMsg(frame)
+		response, _ := proto.Marshal(&api.DirectoryResponse{})
+		_ = msgio.NewVarintWriter(s).WriteMsg(response)
+	})
+	routerAddr, err := multiaddr.NewMultiaddr(router.Addrs()[0].String() + "/p2p/" + router.ID().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return routerAddr
 }

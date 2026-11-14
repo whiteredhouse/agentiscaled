@@ -94,7 +94,18 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if err := authorizeLocalAgent(r.Context(), node, cfg, name, r.Method, backendPath, authorization); err != nil {
+		// A hosted agent's call carries its task's token (taskNetwork),
+		// which the node checks in place of its own credential.
+		var callerToken string
+		if v := r.Header.Get(api.HeaderMeshAuthentication); v != "" {
+			bearer, ok := strings.CutPrefix(v, "Bearer ")
+			if !ok || strings.TrimSpace(bearer) == "" {
+				http.Error(w, "local agent authorization failed", http.StatusForbidden)
+				return
+			}
+			callerToken = strings.TrimSpace(bearer)
+		}
+		if err := authorizeLocalAgent(r.Context(), node, cfg, name, r.Method, backendPath, authorization, callerToken); err != nil {
 			log.Printf("local agent %s refused: %v", name, err)
 			http.Error(w, "local agent authorization failed", http.StatusForbidden)
 			return
@@ -131,8 +142,11 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 
 // authorizeLocalAgent checks the provider with public policy primitives, then
 // asks the existing Mesh sidecar to evaluate invocation policy. No self-dial or
-// internal Mesh types are needed. The request is built from trusted inputs only.
-func authorizeLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, name, method, path string, authorization *http.Client) error {
+// internal Mesh types are needed. The request is built from trusted inputs only,
+// and the caller's credential is the node's own unless callerToken, a task's
+// token, narrows it: the sidecar then refuses a token that is revoked, expired
+// or does not allow the call.
+func authorizeLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, name, method, path string, authorization *http.Client, callerToken string) error {
 	token := node.GetIdentity()
 	claims, err := node.VerifyLocalBiscuit(token)
 	if err != nil {
@@ -190,7 +204,11 @@ func authorizeLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg 
 	if err != nil {
 		return err
 	}
-	req.Header.Set(api.HeaderMeshBiscuit, base64.StdEncoding.EncodeToString(token))
+	credential := base64.StdEncoding.EncodeToString(token)
+	if callerToken != "" {
+		credential = callerToken
+	}
+	req.Header.Set(api.HeaderMeshBiscuit, credential)
 	req.Header.Set(api.HeaderMeshTargetService, "a2a://"+name)
 	response, err := authorization.Do(req)
 	if err != nil {

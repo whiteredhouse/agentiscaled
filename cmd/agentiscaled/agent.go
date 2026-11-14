@@ -35,9 +35,12 @@ const (
 	maxQuestions = 5
 	// maxWaiting bounds an agent's tasks that wait for an answer.
 	maxWaiting = 16
-	// A request that was itself delegated is refused: runtimes run with no
-	// agentiscale tools, so nothing they start can delegate further.
-	maxDelegationDepth = 0
+	// maxDelegationDepth bounds how far a task may have been delegated: a
+	// person's client sends at depth 0, and a hosted agent working on such a
+	// task may call other agents (taskNetwork), at depth 1. A task at the
+	// bound runs without the network, so it cannot delegate further, and a
+	// deeper one is refused.
+	maxDelegationDepth = 1
 )
 
 // Metadata keys agentiscale reads and writes on A2A messages and tasks.
@@ -81,6 +84,10 @@ type taskRequest struct {
 	// lines (progressLine). It is called from one goroutine at a time and
 	// must not block.
 	Progress func(string)
+	// Network, if set, is the turn's way to the network's other agents,
+	// which the runtime offers the agent as an MCP server. It works only
+	// while the turn runs.
+	Network *networkAccess
 }
 
 func (r taskRequest) progress(line string) {
@@ -194,6 +201,10 @@ type agentService struct {
 	stopFile string
 	// life ends when the node stops, and with it any task still running.
 	life context.Context
+	// name is the agent's service name, and network, when set, opens the
+	// network to each turn of its tasks that may delegate.
+	name    string
+	network *taskNetwork
 
 	mu      sync.Mutex
 	current *agentRun
@@ -222,6 +233,9 @@ type waitingTask struct {
 	// its agent has asked.
 	used      time.Duration
 	questions int
+	// depth is how far the task had been delegated when it came, which
+	// its answers cannot change.
+	depth int
 }
 
 // answerWait is how long a task waits for the caller to answer the agent's
@@ -246,7 +260,7 @@ func newAgentService(dir string, rt runtime, dataDir, name string) (*agentServic
 	if err != nil {
 		return nil, err
 	}
-	return &agentService{dir: dir, rt: rt, deadline: taskDeadline, stopFile: stopFilePath(dataDir), life: context.Background(), delivered: delivered, waiting: map[a2a.TaskID]*waitingTask{}}, nil
+	return &agentService{dir: dir, rt: rt, name: name, deadline: taskDeadline, stopFile: stopFilePath(dataDir), life: context.Background(), delivered: delivered, waiting: map[a2a.TaskID]*waitingTask{}}, nil
 }
 
 // deliveries records the requests that started a task, keyed by the sender
@@ -413,9 +427,15 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 			refuse("refused: only the task's sender can answer", nil)
 			return
 		}
-		if depth, ok := delegationDepth(execCtx.Message); !ok || depth > maxDelegationDepth {
+		depth, ok := delegationDepth(execCtx.Message)
+		if !ok || depth > maxDelegationDepth {
 			refuse(fmt.Sprintf("refused: delegation depth above %d", maxDelegationDepth), nil)
 			return
+		}
+		if answer {
+			// What the answer says of itself does not count: the task is as
+			// deep as it was when it came.
+			depth = prior.depth
 		}
 		request := messageText(execCtx.Message)
 		if strings.TrimSpace(request) == "" {
@@ -458,8 +478,28 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 			}
 			progress <- line
 		}}
+		// The turn may call other agents with a token of its own, which ends
+		// with the turn: revoked when it ends, expired when its time is up.
+		release := func() {}
+		asked := false
+		defer func() {
+			// The tasks it sent stay its own while it waits for an answer.
+			if !asked {
+				s.network.forget(execCtx.TaskID)
+			}
+		}()
+		if s.network != nil && depth < maxDelegationDepth {
+			left := s.deadline - prior.used
+			access, revoke, err := s.network.grant(runCtx, s.name, execCtx.TaskID, left, depth+1)
+			if err != nil {
+				log.Printf("agent %s: task %s runs without the network: %v", s.name, execCtx.TaskID, err)
+			} else {
+				req.Network, release = access, revoke
+			}
+		}
 		go func() {
 			out, err := s.rt.Run(runCtx, s.dir, req)
+			release()
 			done <- runOutcome{out, err}
 		}()
 		var res runOutcome
@@ -515,10 +555,11 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		}
 		if out.Question {
 			if why := s.wait(execCtx.TaskID, waitingTask{sender: sender, session: out.Session, question: out.Text, since: time.Now(),
-				used: prior.used + time.Since(started), questions: prior.questions + 1}); why != "" {
+				used: prior.used + time.Since(started), questions: prior.questions + 1, depth: depth}); why != "" {
 				end(a2a.TaskStateFailed, "failed", "task failed: "+why, nil)
 				return
 			}
+			asked = true
 			// The slot is free before the caller learns of the question,
 			// so that the answer finds it free.
 			s.finish(run)
@@ -555,6 +596,7 @@ func (s *agentService) waitingFor(id a2a.TaskID) *waitingTask {
 	w := s.waiting[id]
 	if w == nil || time.Since(w.since) > answerWait {
 		delete(s.waiting, id)
+		s.network.forget(id)
 		return nil
 	}
 	return w
@@ -574,6 +616,7 @@ func (s *agentService) wait(id a2a.TaskID, w waitingTask) string {
 	for other, o := range s.waiting {
 		if time.Since(o.since) > answerWait {
 			delete(s.waiting, other)
+			s.network.forget(other)
 		}
 	}
 	if len(s.waiting) >= maxWaiting {
@@ -649,6 +692,7 @@ func (s *agentService) Cancel(ctx context.Context, execCtx *a2asrv.ExecutorConte
 		if _, ok := s.waiting[execCtx.TaskID]; ok {
 			begun = true
 			delete(s.waiting, execCtx.TaskID)
+			s.network.forget(execCtx.TaskID)
 		}
 		s.mu.Unlock()
 		text := "cancelled before the task started"

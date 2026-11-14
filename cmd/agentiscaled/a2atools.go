@@ -36,6 +36,23 @@ type a2aTasks struct {
 	http  *http.Client
 	base  string       // the node's local API
 	local *http.Client // owner-only agent socket; nil for older nodes
+	// depth is the delegation depth of the tasks sent: 0 for a person's
+	// client, one more than its own task's for a hosted agent (taskNetwork).
+	depth int
+	// self is the hosted agent these tools serve, which may not send tasks
+	// to itself; empty for a person's client.
+	self string
+	// sent, for a hosted agent, holds the tasks its task has sent, the only
+	// ones it may follow, answer or cancel; nil for a person's client.
+	sent *sentTasks
+}
+
+// mayUse refuses a hosted agent a task it did not send.
+func (t *a2aTasks) mayUse(target taskTarget, id string) error {
+	if t.sent == nil {
+		return nil
+	}
+	return t.sent.check(id, target)
 }
 
 type taskTarget struct {
@@ -115,6 +132,9 @@ func (t *a2aTasks) route(ctx context.Context, target taskTarget) (string, *http.
 		if err == nil && (target.PeerID == "" || target.PeerID == info.PeerID) {
 			if !slices.Contains(info.Services, target.Service) {
 				return "", nil, fmt.Errorf("this node does not host agent %q", target.Service)
+			}
+			if target.Service == t.self {
+				return "", nil, fmt.Errorf("agent %q is you: an agent cannot send tasks to itself", target.Service)
 			}
 			return fmt.Sprintf("http://agentiscaled/a2a/%s/%s", info.PeerID, target.Service), t.local, nil
 		} else if target.PeerID == "" {
@@ -208,14 +228,28 @@ func (t *a2aTasks) send(ctx context.Context, _ *mcp.CallToolRequest, in sendTask
 	if strings.TrimSpace(in.Text) == "" {
 		return nil, taskOut{}, errors.New("text is empty")
 	}
+	// A hosted agent's new task takes its place before it goes out.
+	sent, drop := func(string, taskTarget) {}, func() {}
+	if in.TaskID != "" {
+		if err := t.mayUse(in.taskTarget, in.TaskID); err != nil {
+			return nil, taskOut{}, err
+		}
+	} else if t.sent != nil {
+		var err error
+		if sent, drop, err = t.sent.reserve(); err != nil {
+			return nil, taskOut{}, err
+		}
+	}
+	defer drop()
 	c, err := t.client(ctx, in.taskTarget)
 	if err != nil {
 		return nil, taskOut{}, err
 	}
 	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(in.Text))
 	msg.TaskID = a2a.TaskID(in.TaskID)
-	// The sender is a person's agent, not a delegated one.
-	msg.SetMeta(metaDelegationDepth, 0)
+	// A person's client sends at depth 0, a hosted agent one deeper than
+	// its own task.
+	msg.SetMeta(metaDelegationDepth, t.depth)
 	res, err := c.SendMessage(ctx, &a2a.SendMessageRequest{Message: msg, Config: &a2a.SendMessageConfig{ReturnImmediately: true}})
 	if err != nil {
 		return nil, taskOut{}, unreachable(in.taskTarget, err)
@@ -223,6 +257,9 @@ func (t *a2aTasks) send(ctx context.Context, _ *mcp.CallToolRequest, in sendTask
 	task, ok := res.(*a2a.Task)
 	if !ok {
 		return nil, taskOut{}, fmt.Errorf("the agent answered with %T, not a task", res)
+	}
+	if in.TaskID == "" {
+		sent(string(task.ID), in.taskTarget)
 	}
 	return toolResult(describeTask(task))
 }
@@ -240,6 +277,9 @@ func (t *a2aTasks) get(ctx context.Context, req *mcp.CallToolRequest, in getTask
 				_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{ProgressToken: token, Progress: float64(n), Message: step})
 			}
 		}
+	}
+	if err := t.mayUse(in.taskTarget, in.TaskID); err != nil {
+		return nil, taskOut{}, err
 	}
 	wait := min(time.Duration(max(in.WaitSeconds, 0))*time.Second, maxWait)
 	out, err := t.watch(ctx, in.taskTarget, a2a.TaskID(in.TaskID), wait, notify)
@@ -310,10 +350,14 @@ var streamCheckEvery = 5 * time.Second
 // fails, or the deadline passes, and reports each status it carries.
 func follow(ctx context.Context, c *a2aclient.Client, id a2a.TaskID, deadline time.Time, report func(a2a.TaskStatus)) {
 	ctx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
+	// The check below ends with follow, not after it.
+	checked := make(chan struct{})
+	defer func() { cancel(); <-checked }()
+	every := streamCheckEvery
 	go func() {
+		defer close(checked)
 		none := 0
-		t := time.NewTicker(streamCheckEvery)
+		t := time.NewTicker(every)
 		defer t.Stop()
 		for {
 			select {
@@ -348,6 +392,9 @@ func follow(ctx context.Context, c *a2aclient.Client, id a2a.TaskID, deadline ti
 }
 
 func (t *a2aTasks) cancel(ctx context.Context, _ *mcp.CallToolRequest, in taskIn) (*mcp.CallToolResult, taskOut, error) {
+	if err := t.mayUse(in.taskTarget, in.TaskID); err != nil {
+		return nil, taskOut{}, err
+	}
 	c, err := t.client(ctx, in.taskTarget)
 	if err != nil {
 		return nil, taskOut{}, err

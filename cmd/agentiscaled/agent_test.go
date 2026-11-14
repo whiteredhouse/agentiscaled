@@ -259,7 +259,7 @@ func TestRefusedRequests(t *testing.T) {
 		meta   map[string]any
 		want   string
 	}{
-		{"delegated request", testSender, map[string]any{metaDelegationDepth: 1}, "delegation depth"},
+		{"delegated too far", testSender, map[string]any{metaDelegationDepth: maxDelegationDepth + 1}, "delegation depth"},
 		{"malformed depth", testSender, map[string]any{metaDelegationDepth: "0"}, "delegation depth"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
