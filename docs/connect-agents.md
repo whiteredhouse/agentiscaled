@@ -140,8 +140,9 @@ set go in `<data-dir>/agent.env`, one `NAME=value` per line, readable only by yo
 says how many variables came from each. With `-owner-config=false` it instead runs with its own
 `CODEX_HOME` and `HOME` (`<data-dir>/codex`) and `--ignore-user-config`, and signs in
 separately (`CODEX_HOME=<data-dir>/codex codex login`; `agent add` tells you): none of your
-own Codex skills, plugins, settings or MCP servers exist for it, so it cannot call
-back into the network, and it gets none of the API keys or tokens in node B's
+own Codex skills, plugins, settings or MCP servers exist for it (it reaches the
+network's other agents only as described in [Agents call other agents](#agents-call-other-agents)),
+and it gets none of the API keys or tokens in node B's
 environment (`CODEX_API_KEY` included), only `PATH`, locale, proxy and CA settings
 (`CODEX_CA_CERTIFICATE`, `SSL_CERT_FILE`). The directory's `AGENTS.md` files and
 skills load as in any Codex run in it. For a directory whose content may come from
@@ -170,7 +171,8 @@ denied (`--permission-prompts none`, or the print mode's own denial on a Claude 
 too old for that flag). With `-owner-config=false` it uses its own `CLAUDE_CONFIG_DIR`
 (`<data-dir>/claude`, signed in with `CLAUDE_CONFIG_DIR=<data-dir>/claude claude auth login`)
 and runs `--restricted` (a Claude Code without it is refused: update it with `claude update`) with only the Read, Grep and Glob tools, confined to the
-agent's directory, no MCP servers, and none of your credentials from the environment
+agent's directory, no MCP servers but the network's own (see
+[Agents call other agents](#agents-call-other-agents)), and none of your credentials from the environment
 (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`). `-dir-instructions=false`
 stops `CLAUDE.md` files from loading. `-dir-skills=false` turns off every
 skill and command of the run, since Claude Code cannot turn off only the directory's.
@@ -241,13 +243,11 @@ refused, not queued; a task waiting for an answer does not count, and an
 answer that comes while another task runs is refused with the question
 repeated, so send it again), 15 minutes of running time per task over all its
 turns, five questions per task, an hour to answer each, and a request that says
-it was delegated is refused. Tasks waiting for answers do not survive a
-restart of the node. With your configuration the agent can itself send tasks to your other
-agents through your agentiscale MCP server; nothing counts those calls as delegation,
-so use `-owner-config=false` where that must not happen. Calling itself while
-its task is running is rejected by the same one-task-at-a-time gate. That gate is
-not a general delegation boundary: outgoing `send_task` calls use depth zero;
-the hosted runtime's delegation provenance is not automatically propagated.
+it was delegated more than once is refused. Tasks waiting for answers do not survive a
+restart of the node. With your configuration the agent can also send tasks through your
+own agentiscale MCP server, if your configuration has it; those calls carry your
+rights and count as a person's (depth zero), so use `-owner-config=false` where that
+must not happen.
 A repeated message ID from the same node is refused instead of run
 again, also after node B restarts (`<data-dir>/agents/<name>/tasks-delivered.jsonl`). Incomplete
 final log writes are repaired before new tasks start. A malformed completed
@@ -295,3 +295,33 @@ nodes are running from, which can kill them.
 cancels the running task within a second, refuses new tasks and withdraws
 the agent from discovery, also across restarts, until `agentiscaled task
 resume`. `agentiscaled task status` says which.
+
+### Agents call other agents
+
+While it works on a task, an agent can give parts of it to your network's other
+agents. Each turn of a task gets its own Agent Mesh token, which the node mints
+from its own credential (`/oauth/token` on its local API) and seals: it allows only
+A2A calls (`a2a://*`), names the node, so it works only through it, and expires
+when the task's running time is up. The agent's run reaches it as one more MCP
+server, `agentiscale-network`, on a loopback port of the node, with the token as
+its bearer credential: `--mcp-config` in a file only you can read, outside the
+agent's directory, for Claude Code; `-c mcp_servers.agentiscale-network.*` with the
+token in `AGENTISCALE_NETWORK_TOKEN`, which the commands Codex runs do not get, for
+Codex. It has `list_agents`, `get_agent_card`, `send_task`, `get_task` and
+`cancel_task`. Every call goes to the node with the token, and the node checks it
+(signature, expiry, revocation, the A2A-only rule) and sends it on in place of its
+own credential. When the turn ends, the node revokes the token and the MCP server
+refuses it.
+
+With `-owner-config=false` this server is the run's only way into the network: the
+run has no MCP server of yours and cannot reach the node's socket or credential in
+the node's data directory, so it cannot use your network's MCP services or mint
+tokens of its own.
+With your configuration the run also has whatever your configuration gives it, your
+own agentiscale MCP server included if you added it.
+
+Delegation stops after one hop: tasks an agent sends say they were delegated once,
+and the agent that gets one works on it without the network, so it cannot pass it
+on. An agent cannot send a task to itself. A node running an agentiscaled from
+before this change refuses every delegated task: update the nodes whose agents
+should take tasks from other agents.

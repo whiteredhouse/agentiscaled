@@ -225,6 +225,9 @@ func (r *codexRuntime) Describe(card *a2a.AgentCard) {
 //     With the isolated configuration, a read-only profile confines reads to
 //     the workspace, minimal system files and the Codex install; CODEX_HOME
 //     stays denied and approvals are off.
+//   - With req.Network, the run also has the network's other agents as the
+//     MCP server agentiscale-network; its token is in the environment of
+//     Codex only (AGENTISCALE_NETWORK_TOKEN), not of the commands it runs.
 //   - Each task is a Codex session, kept in the run's CODEX_HOME like any
 //     other. The run ends with an answer in turnSchema (--output-schema),
 //     and the caller's answer to a question resumes the session.
@@ -301,6 +304,13 @@ func (r *codexRuntime) Run(ctx context.Context, dir string, req taskRequest) (tu
 	if req.Session == "" {
 		args = append(args, "-C", dir)
 	}
+	if n := req.Network; n != nil {
+		// Codex reads the server's bearer token from the variable, which
+		// the commands it runs do not get (shell_environment_policy).
+		server := "mcp_servers." + networkServerName
+		args = append(args, "-c", server+".url="+tomlString(n.URL),
+			"-c", server+".bearer_token_env_var="+tomlString(networkTokenEnv))
+	}
 	args = append(args, "--json", "--output-schema", schema, "--output-last-message", last)
 	args = append(args, r.extra...)
 	if req.Session != "" {
@@ -315,6 +325,9 @@ func (r *codexRuntime) Run(ctx context.Context, dir string, req taskRequest) (tu
 		cmd.Env = os.Environ()
 	} else {
 		cmd.Env = codexEnv(os.Environ(), r.home)
+	}
+	if req.Network != nil {
+		cmd.Env = append(withoutEnv(cmd.Env, []string{networkTokenEnv}), networkTokenEnv+"="+req.Network.Token)
 	}
 	cmd.Stdin = strings.NewReader(taskPrompt(req))
 	// Its events stream on stdout: each step goes to req.Progress as it

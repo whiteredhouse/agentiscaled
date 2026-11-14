@@ -203,6 +203,9 @@ func (r *claudeRuntime) Describe(card *a2a.AgentCard) {
 //   - Its events stream (--output-format stream-json): each step it takes
 //     goes to req.Progress as it happens, and the last event is the
 //     result.
+//   - With req.Network, the run also has the network's other agents as the
+//     MCP server agentiscale-network, with the turn's token, and may use
+//     its tools without asking. A restricted run has no other MCP server.
 func (r *claudeRuntime) Run(ctx context.Context, dir string, req taskRequest) (turnResult, error) {
 	args := []string{"-p",
 		"--output-format", "stream-json", "--verbose",
@@ -230,6 +233,14 @@ func (r *claudeRuntime) Run(ctx context.Context, dir string, req taskRequest) (t
 	}
 	if tools, ok := claudeTools(r.def, allowed); ok {
 		args = append(args, "--tools", tools)
+	}
+	if req.Network != nil {
+		config, cleanup, err := claudeNetworkConfig(req.Network)
+		if err != nil {
+			return turnResult{}, err
+		}
+		defer cleanup()
+		args = append(args, "--mcp-config", config, "--allowedTools", "mcp__"+networkServerName)
 	}
 	if d := r.def; d != nil {
 		args = append(args, "--append-system-prompt", d.Instructions)
@@ -349,4 +360,28 @@ func withoutEnv(environ, names []string) []string {
 		}
 	}
 	return env
+}
+
+// claudeNetworkConfig writes the MCP configuration that gives a run the
+// network (--mcp-config), readable only by the owner and outside the agent's
+// directory, so that the token is neither on the command line nor in the
+// files the agent works on. cleanup removes it.
+func claudeNetworkConfig(n *networkAccess) (path string, cleanup func(), err error) {
+	dir, err := os.MkdirTemp("", "agentiscale-claude-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup = func() { os.RemoveAll(dir) }
+	config, err := json.Marshal(map[string]any{"mcpServers": map[string]any{networkServerName: map[string]any{
+		"type": "http", "url": n.URL, "headers": map[string]string{"Authorization": "Bearer " + n.Token},
+	}}})
+	if err == nil {
+		path = filepath.Join(dir, "mcp.json")
+		err = os.WriteFile(path, config, 0o600)
+	}
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return path, cleanup, nil
 }

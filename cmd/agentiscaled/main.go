@@ -479,8 +479,18 @@ func run(ctx context.Context, c config) error {
 		}
 	}
 	if len(agents) > 0 {
+		// The agents' tasks reach the network's other agents through the
+		// node's API and the local agent API, both started below.
+		network, err := serveTaskNetwork(nodeCtx, filepath.Join(c.dataDir, meshnode.DefaultSocketName), filepath.Join(c.dataDir, localAgentSocketName),
+			func(ctx context.Context) ([]*api.DiscoveredProvider, error) {
+				return node.DiscoverRemoteServices(ctx, api.ServiceType_SERVICE_TYPE_A2A, "")
+			})
+		if err != nil {
+			return fmt.Errorf("start the agents' network API: %w", err)
+		}
 		var services []api.ServiceConfig
 		for _, a := range agents {
+			a.svc.network = network
 			target, err := serveAgent(nodeCtx, a.svc, a.Name)
 			if err != nil {
 				return fmt.Errorf("start agent %s: %w", a.Name, err)
