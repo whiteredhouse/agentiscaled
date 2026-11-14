@@ -237,13 +237,14 @@ shows in your session history). Offer the few roles you call from other
 machines or clients rather than every definition in a project: each one is
 another entry in your agents' service list.
 
-Each task belongs to the node that sent it: no other node can read its result,
+Each task belongs to the node that sent it, or to the task of a hosted agent
+that sent it (see below): no other node or task can read its result,
 follow its steps, answer its question or cancel it. Limits: one task at a time (others are
 refused, not queued; a task waiting for an answer does not count, and an
 answer that comes while another task runs is refused with the question
 repeated, so send it again), 15 minutes of running time per task over all its
-turns, five questions per task, an hour to answer each, and a request that says
-it was delegated more than once is refused. Tasks waiting for answers do not survive a
+turns, five questions per task, an hour to answer each, and a request whose token
+says it was delegated more than once is refused. Tasks waiting for answers do not survive a
 restart of the node. With your configuration the agent can also send tasks through your
 own agentiscale MCP server, if your configuration has it; those calls carry your
 rights and count as a person's (depth zero), so use `-owner-config=false` where that
@@ -305,9 +306,10 @@ A2A calls (`a2a://*`), names the node, so it works only through it, and expires
 when the task's running time is up. The agent's run reaches it as one more MCP
 server, `agentiscale-network`, on a loopback port of the node, with the token as
 its bearer credential: `--mcp-config` in a file only you can read, outside the
-agent's directory, for Claude Code; `-c mcp_servers.agentiscale-network.*` with the
-token in `AGENTISCALE_NETWORK_TOKEN`, which the commands Codex runs do not get, for
-Codex. It has `list_agents`, `get_agent_card`, `send_task`, `get_task` and
+agent's directory, with its tools allowed, for Claude Code; `-c mcp_servers.agentiscale-network.*`
+with the token in `AGENTISCALE_NETWORK_TOKEN`, which the commands Codex runs do not
+get, and its tools approved, for Codex. Neither run asks before it uses them: the
+token is what bounds them. It has `list_agents`, `get_agent_card`, `send_task`, `get_task` and
 `cancel_task`. Every call goes to the node with the token, and the node checks it
 (signature, expiry, revocation, the A2A-only rule) and sends it on in place of its
 own credential. When the turn ends, the node revokes the token and the MCP server
@@ -320,10 +322,24 @@ tokens of its own.
 With your configuration the run also has whatever your configuration gives it, your
 own agentiscale MCP server included if you added it.
 
-Delegation stops after one hop: tasks an agent sends say they were delegated once,
-and the agent that gets one works on it without the network, so it cannot pass it
-on, also after it asks a question and gets an answer. An agent cannot send a task
-to itself. An agent can follow, answer or cancel only the tasks its own task has
-sent, though the node is the sender of all of them, its owner's tasks included. A node running an agentiscaled from
-before this change refuses every delegated task: update the nodes whose agents
-should take tasks from other agents.
+The token also names the task it is for and how far the tasks it sends are
+delegated (`agentiscale-task/1/<task ID>` as the name of its task rule). The run
+cannot change that, since the token is sealed, and the node that delivers a call
+passes the name from the verified token to the agent it calls, which reads the
+delegation and the sender from it, not from the message. So delegation stops
+after one hop: the agent that gets a task from another agent works on it without
+the network, so it cannot pass it on, also after it asks a question and gets an
+answer. An agent cannot send a task to itself.
+
+A task an agent sends belongs to the agent's task, over all its turns, not to the
+node: only that task can follow, answer or cancel it, not the node's owner or the
+node's other tasks, and the agent's task cannot reach the owner's tasks either.
+The node also keeps that record itself, and refuses more than 64 tasks sent by one
+task. A node's owner can narrow its own credential and send without the name;
+the delegation bound holds hosted agents, not the owners of the nodes they call
+from.
+
+A node running v0.9.0 or older takes a task from another agent as one from its
+node: its agents have no network, so delegation still stops there, but the task
+belongs to the sending node rather than to the sending task. Update the nodes
+whose agents take tasks from other agents.

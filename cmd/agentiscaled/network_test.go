@@ -98,7 +98,7 @@ func TestCodexRuntimeNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		args := strings.ReplaceAll(readRecord(t, record+".args"), "\n", " ")
-		for _, want := range []string{`-c mcp_servers.agentiscale-network.url="http://127.0.0.1:1234/mcp"`, `-c mcp_servers.agentiscale-network.bearer_token_env_var="AGENTISCALE_NETWORK_TOKEN"`, `-c shell_environment_policy.inherit="core"`} {
+		for _, want := range []string{`-c mcp_servers.agentiscale-network.url="http://127.0.0.1:1234/mcp"`, `-c mcp_servers.agentiscale-network.bearer_token_env_var="AGENTISCALE_NETWORK_TOKEN"`, `-c shell_environment_policy.inherit="core"`, `-c mcp_servers.agentiscale-network.default_tools_approval_mode="approve"`} {
 			if !strings.Contains(args, want) {
 				t.Errorf("codex arguments %q lack %q", args, want)
 			}
@@ -303,7 +303,7 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 	expectRefused("remote agent", meshTokenClient(ctx, socket, taskToken), http.MethodGet, "http://agentiscaled/mesh/"+pid+"/a2a/helper/.well-known/agent-card.json")
 
 	// A running task's token allows only A2A calls, and is sealed.
-	live, err := network.mint(ctx, time.Now().Add(time.Minute))
+	live, err := network.mint(ctx, "agentiscale-task/1/live", time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,12 +344,21 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 		var out taskOut
 		return out, json.Unmarshal([]byte(res.Content[0].(*mcp.TextContent).Text), &out)
 	}
-	turn := func(parent a2a.TaskID) (*mcp.ClientSession, func()) {
-		token, err := network.mint(ctx, time.Now().Add(time.Minute))
+	// mintFor mints a token for a turn of task, as grant does.
+	mintFor := func(task a2a.TaskID) string {
+		t.Helper()
+		claim, err := taskClaim(1, task)
 		if err != nil {
 			t.Fatal(err)
 		}
-		access, closeGrant := network.open(token, "caller", network.sentBy(parent), time.Now().Add(time.Minute), 1)
+		token, err := network.mint(ctx, claim, time.Now().Add(time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	turn := func(parent a2a.TaskID) (*mcp.ClientSession, func()) {
+		access, closeGrant := network.open(mintFor(parent), "caller", network.sentBy(parent), time.Now().Add(time.Minute))
 		session, err := networkSession(ctx, access)
 		if err != nil {
 			t.Fatal(err)
@@ -370,9 +379,16 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 			return taskRequest{}
 		}
 	}
-	settle := func(id, want string) {
+	// asTask calls as a turn of task would, without the record of what it
+	// sent: what the helper itself allows.
+	asTask := func(task a2a.TaskID) *a2aTasks {
+		token := mintFor(task)
+		return &a2aTasks{http: meshTokenClient(ctx, socket, token), base: "http://agentiscaled", local: meshTokenClient(ctx, agentSocket, token)}
+	}
+	parent := asTask("parent")
+	settle := func(by *a2aTasks, id, want string) {
 		t.Helper()
-		_, got, err := owner.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: taskTarget{Service: "helper"}, TaskID: id}, WaitSeconds: 10})
+		_, got, err := by.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: taskTarget{Service: "helper"}, TaskID: id}, WaitSeconds: 10})
 		if err != nil || got.State != want {
 			t.Fatalf("helper task %s: %+v %v, want %s", id, got, err, want)
 		}
@@ -384,7 +400,7 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	nextPrompt()
-	settle(child.TaskID, "input_required")
+	settle(parent, child.TaskID, "input_required")
 	endFirst()
 	next, endNext := turn("parent")
 	defer endNext()
@@ -413,8 +429,19 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 		}
 	}
 
+	// The helper itself refuses another task's token, and the node's own
+	// credential, the tasks the parent sent: they are not theirs.
+	for name, by := range map[string]*a2aTasks{"another task": asTask("other"), "the node": owner} {
+		if _, _, err := by.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: taskTarget{Service: "helper"}, TaskID: child.TaskID}}); err == nil {
+			t.Errorf("the helper gave %s the parent's task", name)
+		}
+	}
+	if _, _, err := parent.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: taskTarget{Service: "helper"}, TaskID: owners.TaskID}}); err == nil {
+		t.Error("the helper gave a hosted agent's task the node's task")
+	}
+
 	helperRT.release <- "done"
-	settle(owners.TaskID, "completed")
+	settle(owner, owners.TaskID, "completed")
 
 	// A call in flight ends with its grant, without waiting for the peer:
 	// here a get_task that would wait 40 seconds for a busy helper.
@@ -440,19 +467,21 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 		t.Fatal("a call in flight outlived its grant")
 	}
 	helperRT.release <- "done"
-	settle(slow.TaskID, "completed")
+	settle(parent, slow.TaskID, "completed")
 
-	// An answer cannot make a delegated task shallower: the helper's task
-	// from the caller resumes without the network, though the node's owner
-	// answers it (as the same sender) at depth 0.
-	if _, _, err := owner.send(ctx, nil, sendTaskIn{taskTarget: taskTarget{Service: "helper"}, Text: "main.go", TaskID: child.TaskID}); err != nil {
+	// Only the task that sent it answers the helper's question, and the
+	// delegated task resumes without the network.
+	if _, _, err := owner.send(ctx, nil, sendTaskIn{taskTarget: taskTarget{Service: "helper"}, Text: "main.go", TaskID: child.TaskID}); err == nil {
+		t.Error("the node answered its hosted agent's task")
+	}
+	if _, _, err := parent.send(ctx, nil, sendTaskIn{taskTarget: taskTarget{Service: "helper"}, Text: "main.go", TaskID: child.TaskID}); err != nil {
 		t.Fatal(err)
 	}
 	if p := nextPrompt(); p.Text != "main.go" || p.Network != nil {
 		t.Fatalf("the delegated task resumed as %+v; it has no network", p)
 	}
 	helperRT.release <- "reviewed"
-	settle(child.TaskID, "completed")
+	settle(parent, child.TaskID, "completed")
 	// A task from a person does get the network.
 	_, fromOwner, err := owner.send(ctx, nil, sendTaskIn{taskTarget: taskTarget{Service: "helper"}, Text: "from the owner"})
 	if err != nil {
@@ -462,7 +491,7 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 		t.Fatalf("a task from a person ran without the network: %+v", p)
 	}
 	helperRT.release <- "done"
-	settle(fromOwner.TaskID, "completed")
+	settle(owner, fromOwner.TaskID, "completed")
 }
 
 // No more tasks go out than the bound allows, however many sends run at

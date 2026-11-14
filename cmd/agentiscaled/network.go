@@ -191,12 +191,16 @@ func (n *taskNetwork) grant(ctx context.Context, agent string, task a2a.TaskID, 
 	if ttl <= 0 {
 		return nil, nil, errors.New("no running time left")
 	}
+	claim, err := taskClaim(depth, task)
+	if err != nil {
+		return nil, nil, err
+	}
 	expires := time.Now().Add(ttl)
-	token, err := n.mint(ctx, expires)
+	token, err := n.mint(ctx, claim, expires)
 	if err != nil {
 		return nil, nil, fmt.Errorf("mint the task's network token: %w", err)
 	}
-	access, closeGrant := n.open(token, agent, n.sentBy(task), expires, depth)
+	access, closeGrant := n.open(token, agent, n.sentBy(task), expires)
 	release := func() {
 		// Closing does not wait for calls in flight: it cancels them.
 		closeGrant()
@@ -235,14 +239,14 @@ func (n *taskNetwork) forget(task a2a.TaskID) {
 // open serves the network's agents to the bearer of token until expires or
 // until close, with the token as the caller's credential for every call, and
 // only the tasks in sent to follow, answer or cancel.
-func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Time, depth int) (access *networkAccess, close func()) {
+func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Time) (access *networkAccess, close func()) {
 	// Every call made for the grant ends with it, also one stalled on a
 	// peer.
 	life, endLife := context.WithCancel(context.Background())
 	tasks := &a2aTasks{
 		http: meshTokenClient(life, n.socket, token), base: "http://agentiscaled",
 		local: meshTokenClient(life, n.agentSocket, token),
-		depth: depth, self: agent, sent: sent,
+		self:  agent, sent: sent,
 	}
 	server := mcp.NewServer(&mcp.Implementation{Name: networkServerName, Version: "0.1.0"},
 		&mcp.ServerOptions{Instructions: networkInstructions})
@@ -289,12 +293,12 @@ func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Ti
 }
 
 // mint asks the node for its own credential narrowed to A2A calls until
-// expires and sealed, so that the run cannot narrow it into anything else
-// (RFC 8693 token exchange at the node's /oauth/token, which needs no
-// control plane).
-func (n *taskNetwork) mint(ctx context.Context, expires time.Time) (string, error) {
+// expires, for the task claim names, and sealed, so that the run cannot
+// narrow it into anything else or rename its task (RFC 8693 token exchange
+// at the node's /oauth/token, which needs no control plane).
+func (n *taskNetwork) mint(ctx context.Context, claim string, expires time.Time) (string, error) {
 	rule, err := protojson.Marshal(&api.TaskAuthorizationRule{
-		Name:       "agentiscale-task",
+		Name:       claim,
 		ExpireTime: timestamppb.New(expires),
 		Rules:      []*api.TaskRule{{AllowedServices: []string{networkScope}}},
 	})
