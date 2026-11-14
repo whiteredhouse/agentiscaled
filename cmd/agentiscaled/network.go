@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/google/agentmesh/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -62,12 +63,49 @@ type taskNetwork struct {
 
 	mu     sync.Mutex
 	grants map[[sha256.Size]byte]*networkGrant
+	// sent holds, for each running task of a hosted agent, the tasks it has
+	// sent, across the turns of the task and so across their tokens. The
+	// node is the sender of all of them, as of its owner's own tasks and
+	// those of its other agents, so the agent may follow, answer or cancel
+	// only these.
+	sent map[a2a.TaskID]*sentTasks
 }
 
 // networkGrant is one turn's token and the MCP server it opens.
 type networkGrant struct {
 	expires time.Time
 	handler *mcp.StreamableHTTPHandler
+	close   func()
+}
+
+// sentTasks are the tasks one task of a hosted agent has sent, with the
+// target each was sent to.
+type sentTasks struct {
+	mu    sync.Mutex
+	tasks map[string]taskTarget
+}
+
+// maxSentTasks bounds the tasks one task of a hosted agent may send.
+const maxSentTasks = 64
+
+func (s *sentTasks) add(id string, target taskTarget) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.tasks) >= maxSentTasks {
+		return fmt.Errorf("refused: your task has already sent %d tasks", maxSentTasks)
+	}
+	s.tasks[id] = target
+	return nil
+}
+
+// check says whether the task is one these were sent as, to target.
+func (s *sentTasks) check(id string, target taskTarget) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sent, ok := s.tasks[id]; !ok || sent != target {
+		return fmt.Errorf("task %s is not one you sent to %s; use the task_id, service and peer_id of a task your send_task created", id, target.Service)
+	}
+	return nil
 }
 
 // serveTaskNetwork serves the network's agents to hosted runs on a loopback
@@ -82,6 +120,7 @@ func serveTaskNetwork(ctx context.Context, socket, agentSocket string, discover 
 		url:    "http://" + ln.Addr().String() + "/mcp",
 		node:   socketClient(socket),
 		grants: map[[sha256.Size]byte]*networkGrant{},
+		sent:   map[a2a.TaskID]*sentTasks{},
 	}
 	n.node.Timeout = 10 * time.Second
 	srv := &http.Server{Handler: n, ReadHeaderTimeout: 10 * time.Second}
@@ -108,12 +147,12 @@ func (n *taskNetwork) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := sha256.Sum256([]byte(bearer))
 	n.mu.Lock()
 	g := n.grants[key]
-	if g != nil && !time.Now().Before(g.expires) {
-		delete(n.grants, key)
-		g = nil
-	}
+	expired := g != nil && !time.Now().Before(g.expires)
 	n.mu.Unlock()
-	if g == nil {
+	if expired {
+		g.close()
+	}
+	if g == nil || expired {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -122,8 +161,9 @@ func (n *taskNetwork) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // grant mints a token for a turn of agent's task that may run for at most
 // ttl, whose calls go out at delegation depth depth, and opens the network to
-// it. release revokes the token; call it when the turn ends.
-func (n *taskNetwork) grant(ctx context.Context, agent string, ttl time.Duration, depth int) (*networkAccess, func(), error) {
+// it. release revokes the token; call it when the turn ends, and forget when
+// the task ends.
+func (n *taskNetwork) grant(ctx context.Context, agent string, task a2a.TaskID, ttl time.Duration, depth int) (*networkAccess, func(), error) {
 	if ttl <= 0 {
 		return nil, nil, errors.New("no running time left")
 	}
@@ -132,7 +172,7 @@ func (n *taskNetwork) grant(ctx context.Context, agent string, ttl time.Duration
 	if err != nil {
 		return nil, nil, fmt.Errorf("mint the task's network token: %w", err)
 	}
-	access, closeGrant := n.open(token, agent, expires, depth)
+	access, closeGrant := n.open(token, agent, n.sentBy(task), expires, depth)
 	release := func() {
 		closeGrant()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -145,13 +185,36 @@ func (n *taskNetwork) grant(ctx context.Context, agent string, ttl time.Duration
 	return access, release, nil
 }
 
+// sentBy is the record of the tasks task has sent.
+func (n *taskNetwork) sentBy(task a2a.TaskID) *sentTasks {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	s := n.sent[task]
+	if s == nil {
+		s = &sentTasks{tasks: map[string]taskTarget{}}
+		n.sent[task] = s
+	}
+	return s
+}
+
+// forget drops the record of the tasks task has sent, once it has ended.
+func (n *taskNetwork) forget(task a2a.TaskID) {
+	if n == nil {
+		return
+	}
+	n.mu.Lock()
+	delete(n.sent, task)
+	n.mu.Unlock()
+}
+
 // open serves the network's agents to the bearer of token until expires or
-// until close, with the token as the caller's credential for every call.
-func (n *taskNetwork) open(token, agent string, expires time.Time, depth int) (access *networkAccess, close func()) {
+// until close, with the token as the caller's credential for every call, and
+// only the tasks in sent to follow, answer or cancel.
+func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Time, depth int) (access *networkAccess, close func()) {
 	tasks := &a2aTasks{
 		http: meshTokenClient(n.socket, token), base: "http://agentiscaled",
 		local: meshTokenClient(n.agentSocket, token),
-		depth: depth, self: agent,
+		depth: depth, self: agent, sent: sent,
 	}
 	server := mcp.NewServer(&mcp.Implementation{Name: networkServerName, Version: "0.1.0"},
 		&mcp.ServerOptions{Instructions: networkInstructions})
@@ -164,14 +227,21 @@ func (n *taskNetwork) open(token, agent string, expires time.Time, depth int) (a
 	})
 	addA2ATools(server, tasks)
 	key := sha256.Sum256([]byte(token))
-	n.mu.Lock()
-	n.grants[key] = &networkGrant{expires: expires, handler: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)}
-	n.mu.Unlock()
-	return &networkAccess{URL: n.url, Token: token}, func() {
+	// Sessions a runtime leaves open end with the grant, or when idle for
+	// longer than a task may run.
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{SessionTimeout: taskDeadline})
+	closeGrant := func() {
 		n.mu.Lock()
 		delete(n.grants, key)
 		n.mu.Unlock()
+		for session := range server.Sessions() {
+			_ = session.Close()
+		}
 	}
+	n.mu.Lock()
+	n.grants[key] = &networkGrant{expires: expires, handler: handler, close: closeGrant}
+	n.mu.Unlock()
+	return &networkAccess{URL: n.url, Token: token}, closeGrant
 }
 
 // mint asks the node for its own credential narrowed to A2A calls until

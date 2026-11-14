@@ -264,8 +264,14 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p := <-helperRT.prompts; p.Text != "help with x" || p.Network != nil {
-		t.Fatalf("the helper got %+v; at the delegation bound it has no network", p)
+	select {
+	case p := <-helperRT.prompts:
+		if p.Text != "help with x" || p.Network != nil {
+			t.Fatalf("the helper got %+v; at the delegation bound it has no network", p)
+		}
+	case <-ctx.Done():
+		_, state, err := owner.get(context.Background(), nil, getTaskIn{taskIn: taskIn{taskTarget: taskTarget{Service: "caller"}, TaskID: sent.TaskID}})
+		t.Fatalf("the helper never got the caller's task; the caller's task: %+v %v", state, err)
 	}
 	_, done, err := owner.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: taskTarget{Service: "caller"}, TaskID: sent.TaskID}, WaitSeconds: 10})
 	if err != nil || done.Terminal != "completed" || done.Result != "caller got: helped" {
@@ -320,4 +326,85 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 	if _, err := network.post(ctx, "/oauth/token", form); err == nil {
 		t.Error("a sealed task token was narrowed further")
 	}
+
+	// The tasks a hosted agent sent are its task's, over all its turns and
+	// their tokens; no other task of the node's is.
+	toolCall := func(session *mcp.ClientSession, name string, args map[string]any) (taskOut, error) {
+		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+		if err != nil {
+			return taskOut{}, err
+		}
+		if res.IsError {
+			return taskOut{}, errors.New(res.Content[0].(*mcp.TextContent).Text)
+		}
+		var out taskOut
+		return out, json.Unmarshal([]byte(res.Content[0].(*mcp.TextContent).Text), &out)
+	}
+	turn := func(parent a2a.TaskID) (*mcp.ClientSession, func()) {
+		token, err := network.mint(ctx, time.Now().Add(time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		access, closeGrant := network.open(token, "caller", network.sentBy(parent), time.Now().Add(time.Minute), 1)
+		session, err := networkSession(ctx, access)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return session, func() { session.Close(); closeGrant() }
+	}
+	first, endFirst := turn("parent")
+	helperRT.ask <- "Which file?"
+	child, err := toolCall(first, "send_task", map[string]any{"service": "helper", "text": "child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-helperRT.prompts
+	endFirst()
+	next, endNext := turn("parent")
+	defer endNext()
+	if got, err := toolCall(next, "get_task", map[string]any{"service": "helper", "task_id": child.TaskID, "wait_seconds": 5}); err != nil || got.State != "input_required" {
+		t.Fatalf("the task's next turn following its own task: %+v %v", got, err)
+	}
+	other, endOther := turn("other")
+	defer endOther()
+	_, owners, err := owner.send(ctx, nil, sendTaskIn{taskTarget: taskTarget{Service: "helper"}, Text: "the owner's"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-helperRT.prompts
+	for _, id := range []string{child.TaskID, owners.TaskID} {
+		for _, call := range []struct {
+			tool string
+			args map[string]any
+		}{
+			{"get_task", map[string]any{"service": "helper", "task_id": id}},
+			{"cancel_task", map[string]any{"service": "helper", "task_id": id}},
+			{"send_task", map[string]any{"service": "helper", "task_id": id, "text": "an answer"}},
+		} {
+			if _, err := toolCall(other, call.tool, call.args); err == nil || !strings.Contains(err.Error(), "not one you sent") {
+				t.Errorf("%s on task %s of another: %v", call.tool, id, err)
+			}
+		}
+	}
+	helperRT.release <- "done"
+
+	// An answer cannot make a delegated task shallower: the helper's task
+	// from the caller resumes without the network, though the node's owner
+	// answers it (as the same sender) at depth 0.
+	if _, _, err := owner.send(ctx, nil, sendTaskIn{taskTarget: taskTarget{Service: "helper"}, Text: "main.go", TaskID: child.TaskID}); err != nil {
+		t.Fatal(err)
+	}
+	if p := <-helperRT.prompts; p.Text != "main.go" || p.Network != nil {
+		t.Fatalf("the delegated task resumed as %+v; it has no network", p)
+	}
+	helperRT.release <- "reviewed"
+	// A task from a person does get the network.
+	_, _, err = owner.send(ctx, nil, sendTaskIn{taskTarget: taskTarget{Service: "helper"}, Text: "from the owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := <-helperRT.prompts; p.Network == nil {
+		t.Fatalf("a task from a person ran without the network: %+v", p)
+	}
+	helperRT.release <- "done"
 }

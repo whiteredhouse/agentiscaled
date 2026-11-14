@@ -42,6 +42,17 @@ type a2aTasks struct {
 	// self is the hosted agent these tools serve, which may not send tasks
 	// to itself; empty for a person's client.
 	self string
+	// sent, for a hosted agent, holds the tasks its task has sent, the only
+	// ones it may follow, answer or cancel; nil for a person's client.
+	sent *sentTasks
+}
+
+// mayUse refuses a hosted agent a task it did not send.
+func (t *a2aTasks) mayUse(target taskTarget, id string) error {
+	if t.sent == nil {
+		return nil
+	}
+	return t.sent.check(id, target)
 }
 
 type taskTarget struct {
@@ -217,6 +228,11 @@ func (t *a2aTasks) send(ctx context.Context, _ *mcp.CallToolRequest, in sendTask
 	if strings.TrimSpace(in.Text) == "" {
 		return nil, taskOut{}, errors.New("text is empty")
 	}
+	if in.TaskID != "" {
+		if err := t.mayUse(in.taskTarget, in.TaskID); err != nil {
+			return nil, taskOut{}, err
+		}
+	}
 	c, err := t.client(ctx, in.taskTarget)
 	if err != nil {
 		return nil, taskOut{}, err
@@ -234,6 +250,11 @@ func (t *a2aTasks) send(ctx context.Context, _ *mcp.CallToolRequest, in sendTask
 	if !ok {
 		return nil, taskOut{}, fmt.Errorf("the agent answered with %T, not a task", res)
 	}
+	if t.sent != nil && in.TaskID == "" {
+		if err := t.sent.add(string(task.ID), in.taskTarget); err != nil {
+			return nil, taskOut{}, err
+		}
+	}
 	return toolResult(describeTask(task))
 }
 
@@ -250,6 +271,9 @@ func (t *a2aTasks) get(ctx context.Context, req *mcp.CallToolRequest, in getTask
 				_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{ProgressToken: token, Progress: float64(n), Message: step})
 			}
 		}
+	}
+	if err := t.mayUse(in.taskTarget, in.TaskID); err != nil {
+		return nil, taskOut{}, err
 	}
 	wait := min(time.Duration(max(in.WaitSeconds, 0))*time.Second, maxWait)
 	out, err := t.watch(ctx, in.taskTarget, a2a.TaskID(in.TaskID), wait, notify)
@@ -358,6 +382,9 @@ func follow(ctx context.Context, c *a2aclient.Client, id a2a.TaskID, deadline ti
 }
 
 func (t *a2aTasks) cancel(ctx context.Context, _ *mcp.CallToolRequest, in taskIn) (*mcp.CallToolResult, taskOut, error) {
+	if err := t.mayUse(in.taskTarget, in.TaskID); err != nil {
+		return nil, taskOut{}, err
+	}
 	c, err := t.client(ctx, in.taskTarget)
 	if err != nil {
 		return nil, taskOut{}, err

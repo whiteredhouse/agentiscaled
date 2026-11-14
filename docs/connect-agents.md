@@ -322,6 +322,8 @@ own agentiscale MCP server included if you added it.
 
 Delegation stops after one hop: tasks an agent sends say they were delegated once,
 and the agent that gets one works on it without the network, so it cannot pass it
-on. An agent cannot send a task to itself. A node running an agentiscaled from
+on, also after it asks a question and gets an answer. An agent cannot send a task
+to itself. An agent can follow, answer or cancel only the tasks its own task has
+sent, though the node is the sender of all of them, its owner's tasks included. A node running an agentiscaled from
 before this change refuses every delegated task: update the nodes whose agents
 should take tasks from other agents.
