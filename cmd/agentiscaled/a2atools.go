@@ -117,7 +117,20 @@ func (t *a2aTasks) client(ctx context.Context, target taskTarget) (*a2aclient.Cl
 }
 
 // route keeps card reads and task operations on the same authenticated path.
+// Only that route may answer: the client it returns follows no redirect,
+// since one could turn a call into a request through the node to another
+// service, with this caller's credential.
 func (t *a2aTasks) route(ctx context.Context, target taskTarget) (string, *http.Client, error) {
+	endpoint, client, err := t.selectRoute(ctx, target)
+	if err != nil {
+		return "", nil, err
+	}
+	noRedirects := *client
+	noRedirects.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return endpoint, &noRedirects, nil
+}
+
+func (t *a2aTasks) selectRoute(ctx context.Context, target taskTarget) (string, *http.Client, error) {
 	if _, err := peer.Decode(target.PeerID); target.PeerID != "" && err != nil {
 		return "", nil, fmt.Errorf("peer_id %q is not a peer ID", target.PeerID)
 	}
@@ -188,11 +201,7 @@ func (t *a2aTasks) card(ctx context.Context, _ *mcp.CallToolRequest, target task
 	if err != nil {
 		return nil, nil, err
 	}
-	// Only the selected local/mesh route may answer. A redirect must not
-	// become a request to a different route, host or advertised interface.
-	client := *transport
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	response, err := client.Do(request)
+	response, err := transport.Do(request)
 	if err != nil {
 		return nil, nil, fmt.Errorf("get agent card of %s on node %s: %w", target.Service, target.PeerID, err)
 	}

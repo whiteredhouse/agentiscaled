@@ -75,7 +75,8 @@ func TestRemoteCallSkipsStuckLocalSocket(t *testing.T) {
 			defer c.Close() // hold the connection open without answering
 		}
 	}()
-	tasks := &a2aTasks{http: http.DefaultClient, base: "http://agentiscaled", local: socketClient(socket)}
+	mesh := &http.Client{Transport: &http.Transport{}}
+	tasks := &a2aTasks{http: mesh, base: "http://agentiscaled", local: socketClient(socket)}
 	remote := "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"
 	start := time.Now()
 	endpoint, client, err := tasks.route(context.Background(), taskTarget{PeerID: remote, Service: "codex"})
@@ -85,7 +86,7 @@ func TestRemoteCallSkipsStuckLocalSocket(t *testing.T) {
 	if time.Since(start) > 2*time.Second {
 		t.Fatalf("route took %s", time.Since(start))
 	}
-	if client != http.DefaultClient || !strings.Contains(endpoint, "/mesh/"+remote+"/a2a/codex") {
+	if client.Transport != mesh.Transport || !strings.Contains(endpoint, "/mesh/"+remote+"/a2a/codex") {
 		t.Fatalf("route = %s, want the mesh route", endpoint)
 	}
 }

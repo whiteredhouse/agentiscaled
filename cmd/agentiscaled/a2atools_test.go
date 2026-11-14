@@ -180,6 +180,39 @@ func TestAgentCardRejectsRedirectsAndMalformedResponses(t *testing.T) {
 	})
 }
 
+// A task call, like a card read, stays on the route it chose: a redirect
+// from the agent is an error, not a request to another service through the
+// node.
+func TestTaskCallsRejectRedirects(t *testing.T) {
+	var redirected atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/other-route" {
+			redirected.Add(1)
+			http.Error(w, "followed", http.StatusTeapot)
+			return
+		}
+		http.Redirect(w, r, "/other-route", http.StatusTemporaryRedirect)
+	}))
+	defer server.Close()
+	tools := &a2aTasks{http: server.Client(), base: server.URL}
+	target := taskTarget{PeerID: testSender, Service: "agent"}
+	ctx := context.Background()
+	for name, call := range map[string]func() error{
+		"send":   func() error { _, _, err := tools.send(ctx, nil, sendTaskIn{taskTarget: target, Text: "x"}); return err },
+		"answer": func() error { _, _, err := tools.send(ctx, nil, sendTaskIn{taskTarget: target, Text: "x", TaskID: "t-1"}); return err },
+		"get":    func() error { _, _, err := tools.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: target, TaskID: "t-1"}}); return err },
+		"wait":   func() error { _, _, err := tools.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: target, TaskID: "t-1"}, WaitSeconds: 1}); return err },
+		"cancel": func() error { _, _, err := tools.cancel(ctx, nil, taskIn{taskTarget: target, TaskID: "t-1"}); return err },
+	} {
+		if err := call(); err == nil {
+			t.Errorf("%s: no error from a redirect", name)
+		}
+		if n := redirected.Swap(0); n != 0 {
+			t.Errorf("%s followed a redirect %d times", name, n)
+		}
+	}
+}
+
 func TestAgentCardHonorsClientCancellation(t *testing.T) {
 	started := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
