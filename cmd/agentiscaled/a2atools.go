@@ -350,10 +350,14 @@ var streamCheckEvery = 5 * time.Second
 // fails, or the deadline passes, and reports each status it carries.
 func follow(ctx context.Context, c *a2aclient.Client, id a2a.TaskID, deadline time.Time, report func(a2a.TaskStatus)) {
 	ctx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
+	// The check below ends with follow, not after it.
+	checked := make(chan struct{})
+	defer func() { cancel(); <-checked }()
+	every := streamCheckEvery
 	go func() {
+		defer close(checked)
 		none := 0
-		t := time.NewTicker(streamCheckEvery)
+		t := time.NewTicker(every)
 		defer t.Stop()
 		for {
 			select {
