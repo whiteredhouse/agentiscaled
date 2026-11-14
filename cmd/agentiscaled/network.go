@@ -79,23 +79,37 @@ type networkGrant struct {
 }
 
 // sentTasks are the tasks one task of a hosted agent has sent, with the
-// target each was sent to.
+// target each was sent to, and the sends still on their way.
 type sentTasks struct {
-	mu    sync.Mutex
-	tasks map[string]taskTarget
+	mu      sync.Mutex
+	tasks   map[string]taskTarget
+	sending int
 }
 
 // maxSentTasks bounds the tasks one task of a hosted agent may send.
 const maxSentTasks = 64
 
-func (s *sentTasks) add(id string, target taskTarget) error {
+// reserve takes a place for one more task before it is sent, so that no
+// send goes out past the bound, however many run at once. sent records the
+// task the send created; a send that created none must call drop instead.
+func (s *sentTasks) reserve() (sent func(id string, target taskTarget), drop func(), err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.tasks) >= maxSentTasks {
-		return fmt.Errorf("refused: your task has already sent %d tasks", maxSentTasks)
+	if len(s.tasks)+s.sending >= maxSentTasks {
+		return nil, nil, fmt.Errorf("refused: your task may send at most %d tasks", maxSentTasks)
 	}
-	s.tasks[id] = target
-	return nil
+	s.sending++
+	var once sync.Once
+	end := func(record func()) {
+		once.Do(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.sending--
+			record()
+		})
+	}
+	return func(id string, target taskTarget) { end(func() { s.tasks[id] = target }) },
+		func() { end(func() {}) }, nil
 }
 
 // check says whether the task is one these were sent as, to target.
@@ -174,6 +188,7 @@ func (n *taskNetwork) grant(ctx context.Context, agent string, task a2a.TaskID, 
 	}
 	access, closeGrant := n.open(token, agent, n.sentBy(task), expires, depth)
 	release := func() {
+		// Closing does not wait for calls in flight: it cancels them.
 		closeGrant()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -211,9 +226,12 @@ func (n *taskNetwork) forget(task a2a.TaskID) {
 // until close, with the token as the caller's credential for every call, and
 // only the tasks in sent to follow, answer or cancel.
 func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Time, depth int) (access *networkAccess, close func()) {
+	// Every call made for the grant ends with it, also one stalled on a
+	// peer.
+	life, endLife := context.WithCancel(context.Background())
 	tasks := &a2aTasks{
-		http: meshTokenClient(n.socket, token), base: "http://agentiscaled",
-		local: meshTokenClient(n.agentSocket, token),
+		http: meshTokenClient(life, n.socket, token), base: "http://agentiscaled",
+		local: meshTokenClient(life, n.agentSocket, token),
 		depth: depth, self: agent, sent: sent,
 	}
 	server := mcp.NewServer(&mcp.Implementation{Name: networkServerName, Version: "0.1.0"},
@@ -234,9 +252,14 @@ func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Ti
 		n.mu.Lock()
 		delete(n.grants, key)
 		n.mu.Unlock()
-		for session := range server.Sessions() {
-			_ = session.Close()
-		}
+		endLife()
+		// A session closes once its calls have returned, which their
+		// cancelled requests make them do; nothing waits for that.
+		go func() {
+			for session := range server.Sessions() {
+				_ = session.Close()
+			}
+		}()
 	}
 	n.mu.Lock()
 	n.grants[key] = &networkGrant{expires: expires, handler: handler, close: closeGrant}
@@ -345,20 +368,43 @@ func (n *taskNetwork) listAgents(ctx context.Context, tasks *a2aTasks) (*mcp.Cal
 }
 
 // meshTokenClient dials socket and presents token on every request as the
-// caller's Agent Mesh credential, which the node checks and acts under.
-func meshTokenClient(socket, token string) *http.Client {
+// caller's Agent Mesh credential, which the node checks and acts under. Each
+// request ends when life does, its response included.
+func meshTokenClient(life context.Context, socket, token string) *http.Client {
 	c := socketClient(socket)
-	c.Transport = meshToken{c.Transport, token}
+	c.Transport = meshToken{c.Transport, token, life}
 	return c
 }
 
 type meshToken struct {
 	next  http.RoundTripper
 	token string
+	life  context.Context
 }
 
 func (m meshToken) RoundTrip(r *http.Request) (*http.Response, error) {
-	r = r.Clone(r.Context())
+	ctx, cancel := context.WithCancel(r.Context())
+	stop := context.AfterFunc(m.life, cancel)
+	done := func() { stop(); cancel() }
+	r = r.Clone(ctx)
 	r.Header.Set(api.HeaderMeshAuthentication, "Bearer "+m.token)
-	return m.next.RoundTrip(r)
+	resp, err := m.next.RoundTrip(r)
+	if err != nil {
+		done()
+		return nil, err
+	}
+	resp.Body = &bodyThen{ReadCloser: resp.Body, then: done}
+	return resp, nil
+}
+
+// bodyThen calls then once the body is closed.
+type bodyThen struct {
+	io.ReadCloser
+	then func()
+}
+
+func (b *bodyThen) Close() error {
+	err := b.ReadCloser.Close()
+	b.then()
+	return err
 }

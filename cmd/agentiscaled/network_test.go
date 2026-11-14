@@ -5,11 +5,13 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -295,8 +297,8 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 			t.Errorf("%s with the ended task's token: HTTP %d, want 403", what, resp.StatusCode)
 		}
 	}
-	expectRefused("local agent", meshTokenClient(agentSocket, taskToken), http.MethodPost, "http://agentiscaled/a2a/"+pid+"/helper")
-	expectRefused("remote agent", meshTokenClient(socket, taskToken), http.MethodGet, "http://agentiscaled/mesh/"+pid+"/a2a/helper/.well-known/agent-card.json")
+	expectRefused("local agent", meshTokenClient(ctx, agentSocket, taskToken), http.MethodPost, "http://agentiscaled/a2a/"+pid+"/helper")
+	expectRefused("remote agent", meshTokenClient(ctx, socket, taskToken), http.MethodGet, "http://agentiscaled/mesh/"+pid+"/a2a/helper/.well-known/agent-card.json")
 
 	// A running task's token allows only A2A calls, and is sealed.
 	live, err := network.mint(ctx, time.Now().Add(time.Minute))
@@ -350,7 +352,28 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return session, func() { session.Close(); closeGrant() }
+		// The grant ends first, as when a turn ends while its runtime is
+		// still connected.
+		return session, func() { closeGrant(); session.Close() }
+	}
+	// Each read of the helper's next turn, and each wait for a helper's task
+	// to settle, ends with the test's deadline.
+	nextPrompt := func() taskRequest {
+		t.Helper()
+		select {
+		case p := <-helperRT.prompts:
+			return p
+		case <-ctx.Done():
+			t.Fatal("the helper did not start")
+			return taskRequest{}
+		}
+	}
+	settle := func(id, want string) {
+		t.Helper()
+		_, got, err := owner.get(ctx, nil, getTaskIn{taskIn: taskIn{taskTarget: taskTarget{Service: "helper"}, TaskID: id}, WaitSeconds: 10})
+		if err != nil || got.State != want {
+			t.Fatalf("helper task %s: %+v %v, want %s", id, got, err, want)
+		}
 	}
 	first, endFirst := turn("parent")
 	helperRT.ask <- "Which file?"
@@ -358,11 +381,12 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-helperRT.prompts
+	nextPrompt()
+	settle(child.TaskID, "input_required")
 	endFirst()
 	next, endNext := turn("parent")
 	defer endNext()
-	if got, err := toolCall(next, "get_task", map[string]any{"service": "helper", "task_id": child.TaskID, "wait_seconds": 5}); err != nil || got.State != "input_required" {
+	if got, err := toolCall(next, "get_task", map[string]any{"service": "helper", "task_id": child.TaskID}); err != nil || got.State != "input_required" {
 		t.Fatalf("the task's next turn following its own task: %+v %v", got, err)
 	}
 	other, endOther := turn("other")
@@ -371,7 +395,7 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-helperRT.prompts
+	nextPrompt()
 	for _, id := range []string{child.TaskID, owners.TaskID} {
 		for _, call := range []struct {
 			tool string
@@ -386,7 +410,35 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 			}
 		}
 	}
+
 	helperRT.release <- "done"
+	settle(owners.TaskID, "completed")
+
+	// A call in flight ends with its grant, without waiting for the peer:
+	// here a get_task that would wait 40 seconds for a busy helper.
+	slow, err := toolCall(next, "send_task", map[string]any{"service": "helper", "text": "slow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextPrompt()
+	stuck := make(chan error, 1)
+	go func() {
+		_, err := toolCall(next, "get_task", map[string]any{"service": "helper", "task_id": slow.TaskID, "wait_seconds": 40})
+		stuck <- err
+	}()
+	time.Sleep(300 * time.Millisecond)
+	start := time.Now()
+	endNext()
+	select {
+	case <-stuck:
+		if waited := time.Since(start); waited > 5*time.Second {
+			t.Errorf("a call in flight held its grant's end for %s", waited)
+		}
+	case <-ctx.Done():
+		t.Fatal("a call in flight outlived its grant")
+	}
+	helperRT.release <- "done"
+	settle(slow.TaskID, "completed")
 
 	// An answer cannot make a delegated task shallower: the helper's task
 	// from the caller resumes without the network, though the node's owner
@@ -394,17 +446,61 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 	if _, _, err := owner.send(ctx, nil, sendTaskIn{taskTarget: taskTarget{Service: "helper"}, Text: "main.go", TaskID: child.TaskID}); err != nil {
 		t.Fatal(err)
 	}
-	if p := <-helperRT.prompts; p.Text != "main.go" || p.Network != nil {
+	if p := nextPrompt(); p.Text != "main.go" || p.Network != nil {
 		t.Fatalf("the delegated task resumed as %+v; it has no network", p)
 	}
 	helperRT.release <- "reviewed"
+	settle(child.TaskID, "completed")
 	// A task from a person does get the network.
-	_, _, err = owner.send(ctx, nil, sendTaskIn{taskTarget: taskTarget{Service: "helper"}, Text: "from the owner"})
+	_, fromOwner, err := owner.send(ctx, nil, sendTaskIn{taskTarget: taskTarget{Service: "helper"}, Text: "from the owner"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p := <-helperRT.prompts; p.Network == nil {
+	if p := nextPrompt(); p.Network == nil {
 		t.Fatalf("a task from a person ran without the network: %+v", p)
 	}
 	helperRT.release <- "done"
+	settle(fromOwner.TaskID, "completed")
+}
+
+// No more tasks go out than the bound allows, however many sends run at
+// once, and a send that fails gives its place back.
+func TestSentTasksBound(t *testing.T) {
+	s := &sentTasks{tasks: map[string]taskTarget{}}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	reserved := 0
+	for i := range maxSentTasks + 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sent, _, err := s.reserve()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			reserved++
+			mu.Unlock()
+			sent(fmt.Sprint(i), taskTarget{Service: "helper"})
+		}()
+	}
+	wg.Wait()
+	if reserved != maxSentTasks || len(s.tasks) != maxSentTasks {
+		t.Fatalf("%d sends went out, %d recorded; the bound is %d", reserved, len(s.tasks), maxSentTasks)
+	}
+	if _, _, err := s.reserve(); err == nil {
+		t.Fatal("a send went out past the bound")
+	}
+	s = &sentTasks{tasks: map[string]taskTarget{}}
+	for range maxSentTasks {
+		_, drop, err := s.reserve()
+		if err != nil {
+			t.Fatal(err)
+		}
+		drop()
+		drop() // once only
+	}
+	if _, _, err := s.reserve(); err != nil || s.sending != 1 {
+		t.Fatalf("failed sends kept their places: %v, %d sending", err, s.sending)
+	}
 }

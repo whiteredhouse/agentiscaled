@@ -228,11 +228,19 @@ func (t *a2aTasks) send(ctx context.Context, _ *mcp.CallToolRequest, in sendTask
 	if strings.TrimSpace(in.Text) == "" {
 		return nil, taskOut{}, errors.New("text is empty")
 	}
+	// A hosted agent's new task takes its place before it goes out.
+	sent, drop := func(string, taskTarget) {}, func() {}
 	if in.TaskID != "" {
 		if err := t.mayUse(in.taskTarget, in.TaskID); err != nil {
 			return nil, taskOut{}, err
 		}
+	} else if t.sent != nil {
+		var err error
+		if sent, drop, err = t.sent.reserve(); err != nil {
+			return nil, taskOut{}, err
+		}
 	}
+	defer drop()
 	c, err := t.client(ctx, in.taskTarget)
 	if err != nil {
 		return nil, taskOut{}, err
@@ -250,10 +258,8 @@ func (t *a2aTasks) send(ctx context.Context, _ *mcp.CallToolRequest, in sendTask
 	if !ok {
 		return nil, taskOut{}, fmt.Errorf("the agent answered with %T, not a task", res)
 	}
-	if t.sent != nil && in.TaskID == "" {
-		if err := t.sent.add(string(task.ID), in.taskTarget); err != nil {
-			return nil, taskOut{}, err
-		}
+	if in.TaskID == "" {
+		sent(string(task.ID), in.taskTarget)
 	}
 	return toolResult(describeTask(task))
 }
