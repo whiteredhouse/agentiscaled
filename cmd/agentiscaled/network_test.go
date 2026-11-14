@@ -226,6 +226,8 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Every call served has returned before the test ends.
+	defer network.wait()
 	helperRT := newFixture()
 	callerRT := &caller{helper: helperRT, tokens: make(chan string, 1)}
 	targets := map[string]string{}

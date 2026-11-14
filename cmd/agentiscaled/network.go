@@ -61,6 +61,9 @@ type taskNetwork struct {
 	discover func(context.Context) ([]*api.DiscoveredProvider, error)
 	node     *http.Client
 
+	// calls are the tool calls being served, of every grant.
+	calls sync.WaitGroup
+
 	mu     sync.Mutex
 	grants map[[sha256.Size]byte]*networkGrant
 	// sent holds, for each running task of a hosted agent, the tasks it has
@@ -251,6 +254,17 @@ func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Ti
 		return n.listAgents(ctx, tasks)
 	})
 	addA2ATools(server, tasks)
+	// A call ends with the grant, also one waiting for a task to settle.
+	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			n.calls.Add(1)
+			defer n.calls.Done()
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			defer context.AfterFunc(life, cancel)()
+			return next(ctx, method, req)
+		}
+	})
 	key := sha256.Sum256([]byte(token))
 	// Sessions a runtime leaves open end with the grant, or when idle for
 	// longer than a task may run.
@@ -415,3 +429,6 @@ func (b *bodyThen) Close() error {
 	b.then()
 	return err
 }
+
+// wait waits for the tool calls being served to return.
+func (n *taskNetwork) wait() { n.calls.Wait() }
