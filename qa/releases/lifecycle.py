@@ -146,9 +146,12 @@ def compile_companion(root, report):
     command.mkdir()
     shutil.copyfile(fixtures / "lifecycle_mesh.go", command / "main.go")
     shutil.copyfile(fixtures / "lifecycle_mesh_test.go", command / "main_test.go")
+    # The whiteredhouse/agentmesh fork ships export/standalone itself; older
+    # vendored copies need the alias added.
     alias = mesh_source / "export/standalone"
-    alias.mkdir()
-    shutil.copyfile(fixtures / "standalone_alias.go", alias / "standalone.go")
+    if not alias.is_dir():
+        alias.mkdir()
+        shutil.copyfile(fixtures / "standalone_alias.go", alias / "standalone.go")
     output = root / "mesh-companion"
     run("go", "test", "-mod=readonly", "./cmd/qa-lifecycle", cwd=mesh_source, timeout=600)
     # Build exactly one companion command, never ./cmd/agentiscaled or ./....
