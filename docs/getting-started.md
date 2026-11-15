@@ -239,6 +239,87 @@ after `reset`:
 agentiscaled up -join-code-path ./join-code
 ```
 
+## Nodes that join with a workload token
+
+A trusted workload can add short-lived nodes to your network without storing a join
+code: a GitHub Actions workflow, or an AWS IAM role used by anything that runs with
+it. Each node is removed when its lifetime ends (two hours unless you choose
+otherwise), and a trust admits a limited number of nodes at once. Trust the workload
+in the console, under **Settings > Trusted workloads**; it then shows the step to add.
+
+### A GitHub Actions workflow
+
+Trust the workflow: its repository and the repository's and owner's numeric IDs
+(filled in for a public repository), the workflow file and branch, and the GitHub
+environment its job runs in.
+
+The job asks GitHub for a token for the control service, writes it to a file, and
+joins with it and your network's ID, which the console shows under your network's
+name. Each node needs a token of its own.
+
+```yaml
+jobs:
+  agents:
+    runs-on: ubuntu-latest
+    environment: ci # the environment the trust names
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # Install agentiscaled first (see Install).
+      - name: Join the network
+        run: |
+          curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://control.agentiscale.net" \
+            | jq -r .value > "$RUNNER_TEMP/agentiscale-token"
+          agentiscaled up -foreground -y -clients none -data-dir "$RUNNER_TEMP/node" \
+            -network YOUR_NETWORK_ID -oidc-token-path "$RUNNER_TEMP/agentiscale-token"
+          agentiscaled run -data-dir "$RUNNER_TEMP/node" > "$RUNNER_TEMP/node.log" 2>&1 &
+```
+
+If the control service's answer is lost, `up` sends the same token again and gets the
+same membership back; a refused token is final, and the console shows why under the
+trust.
+
+### An AWS IAM role
+
+AWS can issue a token for an IAM role through outbound identity federation, so an EC2
+instance, an ECS task, a Lambda function or any other code with the role's credentials
+can join. Choose **AWS** as the issuer and trust the role with its account ID, its name (with its path, if any) and the account's issuer
+identifier, which `aws iam get-outbound-web-identity-federation-info` shows. Turn the
+federation on once per account with `aws iam enable-outbound-web-identity-federation`,
+and let the role ask for tokens for the control service only:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "sts:GetWebIdentityToken",
+      "Resource": "*",
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "sts:IdentityTokenAudience": "https://control.agentiscale.net"
+        },
+        "Null": { "sts:IdentityTokenAudience": "false" }
+      }
+    }
+  ]
+}
+```
+
+Then, with the role's credentials, get a token and join with it, once per node:
+
+```sh
+token="$(mktemp)"
+aws sts get-web-identity-token --audience https://control.agentiscale.net \
+  --signing-algorithm ES384 --query WebIdentityToken --output text > "$token"
+agentiscaled up -foreground -y -clients none -data-dir "$HOME/agentiscale-node" \
+  -network YOUR_NETWORK_ID -oidc-token-path "$token"
+agentiscaled run -data-dir "$HOME/agentiscale-node" > "$HOME/agentiscale-node.log" 2>&1 &
+```
+
 ## Delete your account
 
 Delete your account and network in the console, under **Account details > Delete
