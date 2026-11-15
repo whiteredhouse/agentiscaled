@@ -40,12 +40,16 @@ type config struct {
 	bootstrapTokenPath string
 	control            string
 	joinCodePath       string
-	dataDir            string
-	configFile         string
-	bindAddr           string
-	apiTokenPath       string
-	listen             string
-	logLevel           string
+	// oidcTokenPath holds an OIDC token from a workload the owner trusts
+	// (a GitHub Actions job or an AWS IAM role), which enrolls a node into
+	// networkID.
+	oidcTokenPath string
+	dataDir       string
+	configFile    string
+	bindAddr      string
+	apiTokenPath  string
+	listen        string
+	logLevel      string
 	// agents are the agents the node offers to the network, each under
 	// its own name.
 	agents      []agentConfig
@@ -128,7 +132,7 @@ func main() {
 	agent := agentFlags(fs)
 	fs.StringVar(&c.controlPlane, "control-plane", "", "https URL of the network's mesh (agentmesh-one)")
 	fs.StringVar(&c.bootstrapTokenPath, "bootstrap-token-path", "", "File holding the bootstrap token; used only when the node has no identity yet")
-	fs.StringVar(&c.control, "control", "", "URL of the agentiscale control service (default with --join-code-path: "+defaultControl+")")
+	fs.StringVar(&c.control, "control", "", "URL of the agentiscale control service (default with --join-code-path or --oidc-token-path: "+defaultControl+")")
 	flag.Parse()
 	if a := agent(); a != nil {
 		c.agents = []agentConfig{*a}
@@ -136,7 +140,7 @@ func main() {
 	// A join code is redeemed at a control service, the hosted one unless
 	// told otherwise. Without one, a node given --control-plane and
 	// --bootstrap-token-path talks to its mesh alone.
-	if c.control == "" && c.joinCodePath != "" {
+	if c.control == "" && (c.joinCodePath != "" || c.oidcTokenPath != "") {
 		c.control = defaultControl
 	}
 	if err := run(ctx, c); err != nil {
@@ -148,6 +152,8 @@ func main() {
 // foreground mode and `agentiscaled up`.
 func nodeFlags(fs *flag.FlagSet, c *config) {
 	fs.StringVar(&c.joinCodePath, "join-code-path", "", "File holding a join code from your network; used only when the node has no identity yet")
+	fs.StringVar(&c.oidcTokenPath, "oidc-token-path", "", "File holding an OIDC token whose audience is the control service URL, from a GitHub Actions workflow or AWS IAM role your network trusts; used only when the node has no identity yet")
+	fs.StringVar(&c.networkID, "network", "", "ID of the network to join with --oidc-token-path")
 	fs.StringVar(&c.dataDir, "data-dir", defaultDataDir(), "Directory for the node's key, identity and socket")
 	fs.StringVar(&c.configFile, "config", "", "Optional agentmesh-node.yaml (static services, labels)")
 	fs.StringVar(&c.bindAddr, "bind-addr", "127.0.0.1:8080", "Local TCP address of the node API; empty serves only the Unix socket")
@@ -623,7 +629,31 @@ func enrollOnly(ctx context.Context, c config) (networkID string, err error) {
 // --bootstrap-token-path does.
 func enroll(ctx context.Context, c config, store *meshnode.Store, priv crypto.PrivKey, options func([]byte, []multiaddr.Multiaddr) meshnode.Options) (networkID string, err error) {
 	var token string
+	if c.joinCodePath != "" && c.oidcTokenPath != "" {
+		return "", errors.New("pass --join-code-path or --oidc-token-path, not both")
+	}
 	switch {
+	case c.oidcTokenPath != "":
+		if c.control == "" || c.networkID == "" {
+			return "", errors.New("--oidc-token-path needs --network, the ID of the network that trusts the workflow or role, and --control")
+		}
+		idToken, err := readSecret(c.oidcTokenPath)
+		if err != nil {
+			return "", err
+		}
+		if idToken == "" {
+			return "", fmt.Errorf("%s is empty", c.oidcTokenPath)
+		}
+		peerID, err := peer.IDFromPrivateKey(priv)
+		if err != nil {
+			return "", err
+		}
+		joined, err := enrollOIDC(ctx, c.control, idToken, c.networkID, peerID.String(), c.machineName)
+		if err != nil {
+			return "", err
+		}
+		c.controlPlane, token, networkID = joined.MeshURL, joined.BootstrapToken, joined.NetworkID
+		log.Printf("OIDC token accepted for network %s; this node is removed at %s", joined.NetworkID, joined.ExpiresAt)
 	case c.joinCodePath != "":
 		if c.control == "" {
 			return "", errors.New("--join-code-path needs --control, the control service URL")
@@ -658,7 +688,7 @@ func enroll(ctx context.Context, c config, store *meshnode.Store, priv crypto.Pr
 			return "", err
 		}
 	default:
-		return "", errors.New("no identity yet: pass --join-code-path, or --control-plane and --bootstrap-token-path, to enroll")
+		return "", errors.New("no identity yet: pass --join-code-path, --oidc-token-path with --network, or --control-plane and --bootstrap-token-path, to enroll")
 	}
 	// EnrollBootstrap stores the credential before it joins a router, so
 	// save the URL first: a failed join must not leave a credential without it.
@@ -685,6 +715,34 @@ type joinAnswer struct {
 	NetworkID      string `json:"network_id"`
 	MeshURL        string `json:"mesh_url"`
 	BootstrapToken string `json:"bootstrap_token"`
+	// ExpiresAt is when a workflow's node is removed.
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+// enrollOIDC asks the control service to admit this node with an OIDC
+// token from a GitHub Actions workflow or AWS IAM role the owner trusts. The token admits one node only, so the same token is
+// sent again, for the same peer, when the answer is lost or the network is
+// still starting; the control service then answers as for the first
+// request. A refusal is final.
+func enrollOIDC(ctx context.Context, control, idToken, networkID, peerID, machineName string) (joinAnswer, error) {
+	body := map[string]string{"id_token": idToken, "peer_id": peerID, "network_id": networkID}
+	if machineName != "" {
+		body["machine_name"] = machineName
+	}
+	deadline := time.Now().Add(enrollWait)
+	for {
+		answer, status, err := postJoin(ctx, strings.TrimSuffix(control, "/")+"/v1/enroll/oidc", "", body)
+		retry := status == 0 || status == http.StatusServiceUnavailable || status >= 500
+		if err == nil || !retry || ctx.Err() != nil || time.Now().After(deadline) {
+			return answer, err
+		}
+		log.Printf("enroll: %v; trying again", err)
+		select {
+		case <-ctx.Done():
+			return answer, ctx.Err()
+		case <-time.After(enrollRetry):
+		}
+	}
 }
 
 // redeemJoinCode asks the control service to admit this node to the code's

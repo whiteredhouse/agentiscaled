@@ -480,8 +480,8 @@ type joinedNode struct {
 }
 
 // ensureJoined enrolls the node unless it already has an identity: with a
-// join code if one is given, otherwise on the owner's sign-in through the
-// browser. A joined node is left as it is.
+// join code or an OIDC token if one is given, otherwise on the
+// owner's sign-in through the browser. A joined node is left as it is.
 func ensureJoined(ctx context.Context, c *config, auth authConfig, out io.Writer) (joinedNode, error) {
 	if err := os.MkdirAll(c.dataDir, 0o700); err != nil {
 		return joinedNode{}, err
@@ -513,7 +513,7 @@ func ensureJoined(ctx context.Context, c *config, auth authConfig, out io.Writer
 		}
 		return joinedNode{peerID: pid.String(), networkID: network, meshURL: meshURL}, nil
 	}
-	if c.joinCodePath == "" {
+	if c.joinCodePath == "" && c.oidcTokenPath == "" {
 		token, err := deviceLogin(ctx, auth, out)
 		if err != nil {
 			return joinedNode{}, err
