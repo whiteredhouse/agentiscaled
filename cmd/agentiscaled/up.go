@@ -616,13 +616,43 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	s, err := loadSettings(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintf(out, "No node set up in %s. Run 'agentiscaled up'.\n", dir)
-		return nil
-	} else if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	saved := err == nil
+	h, err := loadHalt(dir)
+	if err != nil {
+		return err
+	}
+	// Nodes started directly with flags have an enrollment (and, while they
+	// run, a socket) but no saved settings. With neither there is no node here.
+	if !saved && h == nil && !exists(filepath.Join(dir, meshnode.StoreFile)) &&
+		!exists(filepath.Join(dir, meshnode.DefaultSocketName)) {
+		fmt.Fprintf(out, "No node set up in %s. Run 'agentiscaled up'.\n", dir)
+		return nil
+	}
 	fmt.Fprintf(out, "Data:     %s\n", dir)
+	serviceRuns := false
+	if saved {
+		serviceRuns = printSavedNodeStatus(out, dir, s)
+	}
+	if h != nil {
+		fmt.Fprintf(out, "Mesh connection: %s\n", h.Message)
+		return nil
+	}
+	switch err := nodeReady(ctx, dir); {
+	case err == nil:
+		fmt.Fprintln(out, "Mesh connection: connected")
+	case serviceRuns && errors.Is(err, errNodeNotRunning):
+		// The node opens its socket once it has reached its network.
+		fmt.Fprintf(out, "Mesh connection: node starting; see %s\n", filepath.Join(dir, logFile))
+	default:
+		fmt.Fprintf(out, "Mesh connection: %v\n", err)
+	}
+	return nil
+}
+
+func printSavedNodeStatus(out io.Writer, dir string, s settings) bool {
 	if s.PeerID == "" {
 		fmt.Fprintf(out, "Node:     not joined (%s)\n", s.MachineName)
 		fmt.Fprint(out, rejoinSteps(dir, true))
@@ -640,31 +670,22 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 	} else if len(s.Agents) > 0 {
 		fmt.Fprintln(out, "Tasks:    accepted")
 	}
-	serviceRuns := false
 	if svc := newService(dir); svc != nil {
-		var state string
-		state, serviceRuns = svc.state()
+		state, serviceRuns := svc.state()
 		fmt.Fprintf(out, "Service:  %s, %s\n", svc.name(), state)
+		return serviceRuns
 	}
-	if h, err := loadHalt(dir); err != nil {
-		return err
-	} else if h != nil {
-		fmt.Fprintf(out, "Mesh connection: %s\n", h.Message)
-		return nil
-	}
-	switch err := nodeReady(ctx, dir); {
-	case err == nil:
-		fmt.Fprintln(out, "Mesh connection: connected")
-	case serviceRuns && errors.Is(err, errNodeNotRunning):
-		// The node opens its socket once it has reached its network.
-		fmt.Fprintf(out, "Mesh connection: node starting; see %s\n", filepath.Join(dir, logFile))
-	default:
-		fmt.Fprintf(out, "Mesh connection: %v\n", err)
-	}
-	return nil
+	return false
 }
 
 var errNodeNotRunning = errors.New("node not running")
+
+// exists reports whether path is there; an error other than its absence
+// counts as there, so status goes on to say what it can.
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return !errors.Is(err, os.ErrNotExist)
+}
 
 // nodeReady asks the running node, over its Unix socket, whether it holds an
 // authenticated connection to its network's router.

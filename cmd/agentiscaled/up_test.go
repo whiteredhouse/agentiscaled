@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,7 +16,56 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	meshnode "github.com/google/agentmesh/export/node"
 )
+
+func TestStatusWithoutSavedSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		readyCode int
+		want      string
+	}{
+		{"connected", http.StatusOK, "connected"},
+		{"disconnected", http.StatusServiceUnavailable, "not connected to the mesh"},
+		{"stopped", -1, "node not running"},
+		{"fresh", 0, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := shortTempDir(t)
+			if tc.readyCode < 0 {
+				// Stopped cleanly: the socket is gone, the enrollment stays.
+				if err := os.WriteFile(filepath.Join(dir, meshnode.StoreFile), []byte("{}"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.readyCode > 0 {
+				listener, err := net.Listen("unix", filepath.Join(dir, meshnode.DefaultSocketName))
+				if err != nil {
+					t.Fatal(err)
+				}
+				mux := http.NewServeMux()
+				mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(tc.readyCode)
+				})
+				server := &http.Server{Handler: mux}
+				go func() { _ = server.Serve(listener) }()
+				t.Cleanup(func() { server.Close() })
+			}
+			out := statusOf(t, dir)
+			if tc.want == "" {
+				// No socket and no settings: no node here at all.
+				if want := "No node set up in " + dir; !strings.HasPrefix(out, want) {
+					t.Errorf("status = %q, want %q", out, want)
+				}
+				return
+			}
+			if !strings.Contains(out, "Mesh connection: "+tc.want+"\n") {
+				t.Errorf("status = %q, want mesh connection %q", out, tc.want)
+			}
+		})
+	}
+}
 
 // fakeIdP is a stand-in for the identity provider's device authorization endpoints. Each
 // token poll takes the next answer from polls; the last one repeats.
