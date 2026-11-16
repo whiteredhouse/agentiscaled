@@ -4,6 +4,7 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/json"
+	"errors"
 	"flag"
 	"net"
 	"net/http"
@@ -335,5 +336,104 @@ func TestTerminalSafe(t *testing.T) {
 		if got := terminalSafe(in); got != want {
 			t.Errorf("terminalSafe(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A call that ends while the agent has not yet confirmed the task says the
+// task may still run; an answer to a known task cancels it.
+func TestTaskSendStopsWhileTheSendIsInFlight(t *testing.T) {
+	net := newFakeNetwork(t)
+	remote := randomPeer(t)
+	net.offer(remote)
+	var cancelled atomic.Value
+	release := make(chan struct{})
+	defer close(release)
+	net.mu.Lock()
+	net.routes[remote] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var call struct {
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		json.NewDecoder(r.Body).Decode(&call)
+		switch call.Method {
+		case "SendMessage":
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		case "CancelTask":
+			cancelled.Store(string(call.Params))
+			http.Error(w, "gone", http.StatusBadGateway)
+		default:
+			http.Error(w, "unexpected "+call.Method, http.StatusBadRequest)
+		}
+	})
+	net.mu.Unlock()
+
+	err := startTaskSend("", "-data-dir", net.dir, "-timeout", "300ms", "helper", "hi").wait(t)
+	if err == nil || !strings.Contains(err.Error(), "no answer within 300ms before helper confirmed the task, which may still run") {
+		t.Fatalf("new task: %v", err)
+	}
+	if cancelled.Load() != nil {
+		t.Fatal("cancelled a task without its ID")
+	}
+	err = startTaskSend("", "-data-dir", net.dir, "-timeout", "300ms", "-task", "t-7", "helper", "21").wait(t)
+	if err == nil || !strings.Contains(err.Error(), "task t-7: no answer within 300ms") {
+		t.Fatalf("answer: %v", err)
+	}
+	if p, _ := cancelled.Load().(string); !strings.Contains(p, `"t-7"`) {
+		t.Fatalf("cancel of the answered task: %q", p)
+	}
+}
+
+// -wait-agent bounds the search, however short, with several lookups in it.
+func TestTaskSendWaitsForTheAgentOnlyAsLongAsAsked(t *testing.T) {
+	net := newFakeNetwork(t)
+	start := time.Now()
+	err := startTaskSend("", "-data-dir", net.dir, "-wait-agent", "1s", "helper", "hi").wait(t)
+	if took := time.Since(start); err == nil || !strings.Contains(err.Error(), "no node of your network offers an agent named helper") || took > 1500*time.Millisecond {
+		t.Fatalf("after %s: %v", took, err)
+	}
+	if n := net.lookups.Load(); n < 3 {
+		t.Fatalf("%d lookups in 1s", n)
+	}
+}
+
+func TestAnswerCommandQuotesTheTaskID(t *testing.T) {
+	o := taskSendOptions{dataDir: defaultDataDir()}
+	got := answerCommand(o, taskTarget{Service: "helper"}, "$(touch pwned)\x1b[2J; rm -rf ~")
+	want := `agentiscaled task send -task '$(touch pwned); rm -rf ~' helper "<your answer>"`
+	if got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+	o.dataDir = "/tmp/my node"
+	got = answerCommand(o, taskTarget{PeerID: "12D3Koo", Service: "helper"}, "a-1")
+	if want := `agentiscaled task send -data-dir '/tmp/my node' -task a-1 -peer 12D3Koo helper "<your answer>"`; got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+func TestReportTheAnswer(t *testing.T) {
+	task := taskOut{TaskID: "t", State: "completed", Terminal: "completed", Result: "\x1b[31mred\x1b[0m done\n"}
+	var b strings.Builder
+	if err := report(&b, taskSendOptions{}, task, nil); err != nil || b.String() != "\x1b[31mred\x1b[0m done\n" {
+		t.Fatalf("to a pipe: %q %v", b.String(), err)
+	}
+	b.Reset()
+	if err := report(&b, taskSendOptions{terminal: true}, task, nil); err != nil || b.String() != "red done\n" {
+		t.Fatalf("to a terminal: %q %v", b.String(), err)
+	}
+	for _, o := range []taskSendOptions{{}, {json: true}} {
+		if err := report(failingWriter{}, o, task, nil); err == nil || !strings.Contains(err.Error(), "disk full") {
+			t.Errorf("json=%t: write error lost: %v", o.json, err)
+		}
+	}
+	failed := errors.New("task t ended failed")
+	if err := report(failingWriter{}, taskSendOptions{json: true}, task, failed); err != failed {
+		t.Errorf("the task's own error should win: %v", err)
 	}
 }

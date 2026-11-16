@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -54,6 +55,9 @@ type taskSendOptions struct {
 	timeout   time.Duration
 	waitAgent time.Duration
 	json      bool
+	// terminal is set when standard output is a terminal, which the
+	// answer must not drive.
+	terminal bool
 }
 
 // runTaskSend is `agentiscaled task send`: it calls an agent from a script or
@@ -114,6 +118,9 @@ func runTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 	if err := waitForSocket(ctx, socket, nodeStartWait); err != nil {
 		return fmt.Errorf("no running agentiscaled at %s: start it first (%w)", socket, err)
 	}
+	if f, ok := out.(*os.File); ok {
+		o.terminal = isTerminal(f)
+	}
 	node := socketClient(socket)
 	tasks := &a2aTasks{http: node, base: "http://agentiscaled", local: socketClient(filepath.Join(o.dataDir, localAgentSocketName))}
 	return sendAndFollow(ctx, tasks, agent, text, o, out, errOut)
@@ -132,12 +139,21 @@ func sendAndFollow(ctx context.Context, tasks *a2aTasks, agent, text string, o t
 	}
 	_, sent, err := tasks.send(ctx, nil, sendTaskIn{taskTarget: target, Text: text, TaskID: o.taskID})
 	if err != nil {
-		return timedOut(err, ctx, o.timeout)
+		if ctx.Err() == nil {
+			return err
+		}
+		// The agent may have taken the task before the caller went: stop
+		// the task it knows, and say that a new one may still run.
+		if o.taskID != "" {
+			return stopTask(ctx, tasks, target, o, out, taskOut{TaskID: o.taskID}, err)
+		}
+		return fmt.Errorf("%s before %s confirmed the task, which may still run: %w", endedBy(ctx, o.timeout), agent, err)
 	}
+	id := terminalSafe(sent.TaskID)
 	if o.taskID == "" {
-		fmt.Fprintf(errOut, "sent task %s to %s %s\n", sent.TaskID, agent, where)
+		fmt.Fprintf(errOut, "sent task %s to %s %s\n", id, agent, where)
 	} else {
-		fmt.Fprintf(errOut, "answered task %s of %s %s\n", sent.TaskID, agent, where)
+		fmt.Fprintf(errOut, "answered task %s of %s %s\n", id, agent, where)
 	}
 
 	last := ""
@@ -155,59 +171,91 @@ func sendAndFollow(ctx context.Context, tasks *a2aTasks, agent, text string, o t
 			<-ctx.Done()
 			break
 		}
-		task, err = tasks.watch(ctx, target, a2a.TaskID(sent.TaskID), wait, notify)
-		if err != nil {
+		var next taskOut
+		if next, err = tasks.watch(ctx, target, a2a.TaskID(sent.TaskID), wait, notify); err != nil {
 			break
 		}
+		task = next
 	}
 	if ctx.Err() != nil {
 		// The caller is gone, or out of time: the agent should stop too.
-		why := "interrupted"
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			why = fmt.Sprintf("no answer within %s", o.timeout)
-		}
-		stopCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), cancelTimeout)
-		defer stop()
-		if _, cancelled, cerr := tasks.cancel(stopCtx, nil, taskIn{taskTarget: target, TaskID: sent.TaskID}); cerr == nil {
-			task = cancelled
-			return report(out, o.json, task, fmt.Errorf("task %s: %s; cancelled it", sent.TaskID, why))
-		}
-		return report(out, o.json, task, fmt.Errorf("task %s: %s; cancelling it failed, it may still run", sent.TaskID, why))
+		return stopTask(ctx, tasks, target, o, out, task, nil)
 	}
 	if err != nil {
 		return err
 	}
 	switch {
 	case task.Terminal == "completed":
-		return report(out, o.json, task, nil)
+		return report(out, o, task, nil)
 	case task.State == stateName(a2a.TaskStateInputRequired):
-		answer := []string{"agentiscaled task send"}
-		if o.dataDir != defaultDataDir() {
-			answer = append(answer, "-data-dir", shellQuote(o.dataDir))
-		}
-		answer = append(answer, "-task", task.TaskID)
-		if target.PeerID != "" {
-			answer = append(answer, "-peer", target.PeerID)
-		}
-		answer = append(answer, agent, `"<your answer>"`)
-		return report(out, o.json, task, fmt.Errorf("%s asks: %s\nanswer with: %s", agent, terminalSafe(task.Message), strings.Join(answer, " ")))
+		return report(out, o, task, fmt.Errorf("%s asks: %s\nanswer with: %s", agent, terminalSafe(task.Message), answerCommand(o, target, task.TaskID)))
 	default:
 		why := task.Terminal
 		if task.Message != "" {
 			why += ": " + terminalSafe(task.Message)
 		}
-		return report(out, o.json, task, fmt.Errorf("task %s ended %s", task.TaskID, why))
+		return report(out, o, task, fmt.Errorf("task %s ended %s", terminalSafe(task.TaskID), why))
 	}
 }
 
-// report prints the task: its result alone, or with asJSON all of it, and
-// returns err.
-func report(out io.Writer, asJSON bool, task taskOut, err error) error {
-	if asJSON {
+// answerCommand is the command that answers the question of task id. The
+// ID comes from the agent: quoted, it stays one argument of the command the
+// caller pastes.
+func answerCommand(o taskSendOptions, target taskTarget, id string) string {
+	answer := []string{"agentiscaled task send"}
+	if o.dataDir != defaultDataDir() {
+		answer = append(answer, "-data-dir", shellQuote(o.dataDir))
+	}
+	answer = append(answer, "-task", shellQuote(terminalSafe(id)))
+	if target.PeerID != "" {
+		answer = append(answer, "-peer", target.PeerID)
+	}
+	return strings.Join(append(answer, target.Service, `"<your answer>"`), " ")
+}
+
+// endedBy says what ended a call whose context is done.
+func endedBy(ctx context.Context, timeout time.Duration) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Sprintf("no answer within %s", timeout)
+	}
+	return "interrupted"
+}
+
+// stopTask cancels task once ctx is done, so that the agent stops when the
+// caller does, and reports how that went; cause is what the caller was
+// doing when it stopped, if it failed.
+func stopTask(ctx context.Context, tasks *a2aTasks, target taskTarget, o taskSendOptions, out io.Writer, task taskOut, cause error) error {
+	why := endedBy(ctx, o.timeout)
+	if cause != nil {
+		why += fmt.Sprintf(" (%v)", cause)
+	}
+	id := terminalSafe(task.TaskID)
+	stopCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), cancelTimeout)
+	defer stop()
+	if _, cancelled, err := tasks.cancel(stopCtx, nil, taskIn{taskTarget: target, TaskID: task.TaskID}); err == nil {
+		return report(out, o, cancelled, fmt.Errorf("task %s: %s; cancelled it", id, why))
+	}
+	return report(out, o, task, fmt.Errorf("task %s: %s; cancelling it failed, it may still run", id, why))
+}
+
+// report prints the task: its result alone, or with -json all of it, and
+// returns err, or else an error writing it. On a terminal the result loses
+// the escape sequences that could drive it; a pipe or file gets it as the
+// agent wrote it.
+func report(out io.Writer, o taskSendOptions, task taskOut, err error) error {
+	var werr error
+	if o.json {
 		b, _ := json.MarshalIndent(task, "", "  ")
-		fmt.Fprintf(out, "%s\n", b)
+		_, werr = fmt.Fprintf(out, "%s\n", b)
 	} else if err == nil && task.Result != "" {
-		fmt.Fprintln(out, strings.TrimRight(task.Result, "\n"))
+		result := task.Result
+		if o.terminal {
+			result = terminalSafe(result)
+		}
+		_, werr = fmt.Fprintln(out, strings.TrimRight(result, "\n"))
+	}
+	if err == nil && werr != nil {
+		return fmt.Errorf("write the answer: %w", werr)
 	}
 	return err
 }
@@ -231,10 +279,22 @@ func findAgent(ctx context.Context, tasks *a2aTasks, agent, peer string, wait ti
 	if err == nil && slices.Contains(info.Services, agent) {
 		return taskTarget{Service: agent}, "on this node", nil
 	}
-	until := time.Now().Add(wait)
+	// -wait-agent bounds the search, lookups included, and leaves room for
+	// a few of them however short it is.
+	find, every := ctx, findEvery
+	if wait > 0 {
+		var cancel context.CancelFunc
+		find, cancel = context.WithTimeout(ctx, wait)
+		defer cancel()
+		every = min(findEvery, max(wait/5, 50*time.Millisecond))
+	}
+	var missing error
 	for {
-		peers, err := discoverAgent(ctx, tasks.http, tasks.base, agent, info.PeerID)
+		peers, err := discoverAgent(find, tasks.http, tasks.base, agent, info.PeerID)
 		switch {
+		case err != nil && find.Err() != nil && ctx.Err() == nil && missing != nil:
+			// The search's own time ran out during a lookup.
+			return taskTarget{}, "", missing
 		case err != nil:
 		case len(peers) == 1:
 			return taskTarget{PeerID: peers[0], Service: agent}, "on node " + peers[0], nil
@@ -242,14 +302,15 @@ func findAgent(ctx context.Context, tasks *a2aTasks, agent, peer string, wait ti
 			return taskTarget{}, "", fmt.Errorf("%d nodes offer %s: pick one with -peer (%s)", len(peers), agent, strings.Join(peers, ", "))
 		default:
 			err = fmt.Errorf("no node of your network offers an agent named %s: it is not online or not shared (see agentiscaled agent list on its machine)", agent)
+			missing = err
 		}
-		if !time.Now().Add(findEvery).Before(until) {
+		if wait <= 0 || ctx.Err() != nil {
 			return taskTarget{}, "", err
 		}
 		select {
-		case <-ctx.Done():
-			return taskTarget{}, "", fmt.Errorf("%w (%v)", err, ctx.Err())
-		case <-time.After(findEvery):
+		case <-find.Done():
+			return taskTarget{}, "", err
+		case <-time.After(every):
 		}
 	}
 }
