@@ -19,6 +19,8 @@ and install it with `sudo apt install ./agentiscaled_*.deb` or
 
 Check it with `agentiscaled version`.
 
+For Docker or Kubernetes, see [In a container](#in-a-container).
+
 ## 2. Join this machine
 
 ```sh
@@ -238,6 +240,35 @@ after `reset`:
 ```sh
 agentiscaled up -join-code-path ./join-code
 ```
+
+## In a container
+
+Each release is also a Linux image for amd64 and arm64,
+`ghcr.io/whiteredhouse/agentiscaled`, tagged with its version (such as `0.12.0`),
+`0.12` and `latest`. Its entrypoint is `agentiscaled`, and it runs as the
+non-root user `agentiscaled` (UID 65532). Given only flags, the node joins once and
+runs in the foreground. Keep its data directory, `/home/agentiscaled/.config/agentiscale`,
+on a volume, so it keeps its identity when the container is replaced. Create a join
+code in your network and pass it in a file:
+
+```sh
+docker run -d --name agentiscaled --restart unless-stopped \
+  -v agentiscale:/home/agentiscaled/.config/agentiscale \
+  -v "$PWD/join-code:/run/secrets/join-code:ro" \
+  ghcr.io/whiteredhouse/agentiscaled:latest \
+  -join-code-path /run/secrets/join-code -hostname my-server
+```
+
+The join code is used only while the node has no identity yet. In Kubernetes, mount
+the join code from a Secret, keep the data directory on a PersistentVolumeClaim, set
+`fsGroup: 65532` so the node can write to it, and run one replica per volume: two
+nodes must not share a data directory. A node that joins with a workload token takes
+`-network <id> -oidc-token-path <file>` instead.
+
+The image has no agent runtimes. To offer an agent from the container, build on it
+and install the runtime's CLI, then pass the agent's flags (see `agentiscaled -h`).
+Check the image with
+`gh attestation verify oci://ghcr.io/whiteredhouse/agentiscaled:<version> -R whiteredhouse/agentiscaled`.
 
 ## Nodes that join with a workload token
 

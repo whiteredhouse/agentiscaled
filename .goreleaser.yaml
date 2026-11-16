@@ -1,5 +1,8 @@
 # Release build for agentiscaled: a v* tag builds macOS and Linux
-# binaries, .deb and .rpm packages, checksums, and a Homebrew cask.
+# binaries, .deb and .rpm packages, checksums, a Homebrew cask, and a
+# Linux container image (ghcr.io/whiteredhouse/agentiscaled) for amd64 and
+# arm64. The image is pushed under its version only; the release workflow
+# moves the latest and X.Y tags once the release is published.
 # The release workflow publishes the draft and updates the tap after attestation.
 version: 2
 project_name: agentiscaled
@@ -47,6 +50,28 @@ nfpms:
         dst: /usr/share/doc/agentiscaled/LICENSE
       - src: NOTICE
         dst: /usr/share/doc/agentiscaled/NOTICE
+
+dockers_v2:
+  - id: agentiscaled
+    ids: [agentiscaled]
+    dockerfile: Dockerfile
+    images: [ghcr.io/whiteredhouse/agentiscaled]
+    tags: ["{{ .Version }}"]
+    platforms: [linux/amd64, linux/arm64]
+    extra_files: [LICENSE, NOTICE]
+    labels:
+      org.opencontainers.image.title: agentiscaled
+      org.opencontainers.image.description: The agentiscale node. Joins agents to your private agentiscale network.
+      org.opencontainers.image.source: https://github.com/whiteredhouse/agentiscaled
+      org.opencontainers.image.url: https://github.com/whiteredhouse/agentiscaled
+      org.opencontainers.image.licenses: Apache-2.0
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .CommitDate }}"
+    annotations:
+      index:org.opencontainers.image.description: The agentiscale node. Joins agents to your private agentiscale network.
+      index:org.opencontainers.image.source: https://github.com/whiteredhouse/agentiscaled
+      index:org.opencontainers.image.licenses: Apache-2.0
 
 homebrew_casks:
   - name: agentiscaled
