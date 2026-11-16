@@ -186,17 +186,31 @@ install_package() {
 	case $manager in
 	apt-get) $as_root apt-get install -y --allow-downgrades "$tmp/$file" ;;
 	dnf | yum) $as_root "$manager" install -y "$tmp/$file" ;;
-	# The checksum stands in for a repository signature.
-	zypper) $as_root zypper --non-interactive install --allow-unsigned-rpm "$tmp/$file" ;;
+	# The checksum stands in for a repository signature; --oldpackage lets a
+	# pinned version replace a newer one.
+	zypper) $as_root zypper --non-interactive install --oldpackage --allow-unsigned-rpm "$tmp/$file" ;;
 	esac || fail "$manager couldn't install $file"
 	# Where the packages put the binary; the tests move it.
 	bin=${AGENTISCALE_PACKAGE_BIN:-/usr/bin/agentiscaled}
-	# Some package managers leave a newer installed version in place.
-	case $("$bin" version 2>&1 | head -n 1) in
-	"agentiscaled ${version#v} "*) ;;
-	*) fail "$manager kept another agentiscaled version; remove the agentiscaled package first to install $version" ;;
-	esac
+	# dnf and yum install leave a newer installed version in place:
+	# downgrade to the pinned one.
+	if ! is_version "$bin" && { [ "$manager" = dnf ] || [ "$manager" = yum ]; }; then
+		echo "A newer agentiscaled is installed; downgrading it with $manager"
+		$as_root "$manager" downgrade -y "$tmp/$file" || fail "$manager couldn't downgrade to $file"
+	fi
+	is_version "$bin" ||
+		fail "$manager kept another agentiscaled version ($first); remove the agentiscaled package first to install $version"
 	report "$bin"
+}
+
+# is_version BINARY runs BINARY version, keeps its first line in first, and
+# succeeds if it is the release being installed.
+is_version() {
+	first=$("$1" version 2>&1 | head -n 1) || true
+	case $first in
+	"agentiscaled ${version#v} "*) return 0 ;;
+	*) return 1 ;;
+	esac
 }
 
 install_binary() {
@@ -204,26 +218,40 @@ install_binary() {
 	echo "Downloading agentiscaled $version for $os/$arch"
 	fetch "$releases/download/$version/$archive" "$tmp/$archive"
 	verify "$archive"
-	if [ -d "$dir/agentiscaled" ] && [ ! -L "$dir/agentiscaled" ]; then
+	# -d follows a symlink: mv would put the binary inside a linked directory.
+	if [ -d "$dir/agentiscaled" ]; then
 		fail "$dir/agentiscaled is a directory; move it away or pass another -dir"
 	fi
 	tar -xzf "$tmp/$archive" -C "$tmp" agentiscaled || fail "couldn't unpack agentiscaled from $archive"
 	chmod 755 "$tmp/agentiscaled"
-	# Copy next to the target, then rename over it: a running node keeps its
-	# old binary, and nothing ever sees a half-written file.
-	cp "$tmp/agentiscaled" "$dir/.agentiscaled.new.$$" || fail "couldn't write to $dir"
-	mv -f "$dir/.agentiscaled.new.$$" "$dir/agentiscaled"
+	# Copy next to the target, check that the copy runs there, then rename
+	# it over the target: a binary that doesn't run never replaces a working
+	# one, a running node keeps its old binary, and nothing ever sees a
+	# half-written file.
+	staged="$dir/.agentiscaled.new.$$"
+	cp "$tmp/agentiscaled" "$staged" || fail "couldn't write to $dir"
+	if ! out=$("$staged" version 2>&1); then
+		rm -f "$staged"
+		fail "the downloaded agentiscaled doesn't run here, so $dir/agentiscaled is unchanged: $(printf '%s\n' "$out" | head -n 1)"
+	fi
+	mv -f "$staged" "$dir/agentiscaled" || {
+		rm -f "$staged"
+		fail "couldn't replace $dir/agentiscaled"
+	}
 	report "$dir/agentiscaled"
 }
 
 # report BINARY says what was installed and whether `agentiscaled` runs it.
 report() {
-	out=$("$1" version 2>&1) || fail "installed $1, but it doesn't run: $(printf '%s' "$out" | head -n 1)"
+	out=$("$1" version 2>&1) || fail "installed $1, but it doesn't run: $(printf '%s\n' "$out" | head -n 1)"
 	echo "Installed $(printf '%s\n' "$out" | head -n 1) to $1"
 	found=$(command -v agentiscaled 2>/dev/null || true)
+	# -ef: the same file, also through a symlinked PATH entry. dash, bash,
+	# zsh and busybox sh all have it.
+	# shellcheck disable=SC3013
 	if [ -z "$found" ]; then
 		echo "${1%/*} is not on your PATH: add it, or run $1"
-	elif [ "$found" != "$1" ]; then
+	elif ! [ "$found" -ef "$1" ]; then
 		echo "Your PATH finds another agentiscaled first, at $found: remove it, or run $1"
 	fi
 }

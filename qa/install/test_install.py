@@ -206,8 +206,36 @@ class InstallTest(Base):
         self.publish(VERSION, b"#!/bin/sh\necho 'exec format error' >&2\nexit 126\n")
         result = self.install("-dir", str(self.tmp / "bin"))
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("doesn't run: exec format error", result.stderr)
+        self.assertIn("doesn't run here, so", result.stderr)
+        self.assertIn("is unchanged: exec format error", result.stderr)
         self.assertNotIn("Installed", result.stdout)
+
+    def test_failed_upgrade_keeps_the_working_binary(self):
+        (self.tmp / "bin").mkdir()
+        old = self.tmp / "bin" / "agentiscaled"
+        old.write_text("#!/bin/sh\necho 'agentiscaled 1.0.0 (commit old, fake)'\n")
+        old.chmod(0o755)
+        self.publish(VERSION, b"#!/bin/sh\nexit 126\n")
+        result = self.install("-dir", str(self.tmp / "bin"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("commit old", old.read_text())
+        self.assertEqual(os.listdir(self.tmp / "bin"), ["agentiscaled"])
+
+    def test_symlink_to_a_directory_in_the_way_fails(self):
+        (self.tmp / "elsewhere").mkdir()
+        (self.tmp / "bin").mkdir()
+        (self.tmp / "bin" / "agentiscaled").symlink_to(self.tmp / "elsewhere")
+        result = self.install("-dir", str(self.tmp / "bin"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("is a directory", result.stderr)
+        self.assertEqual(os.listdir(self.tmp / "elsewhere"), [])
+        self.assertEqual(os.listdir(self.tmp / "bin"), ["agentiscaled"])
+
+    def test_symlinked_path_entry_is_the_installed_binary(self):
+        (self.tmp / "link").symlink_to(self.tmp / "bin")
+        result = self.install("-dir", str(self.tmp / "bin"), PATH=f"{self.tmp / 'link'}:{os.environ['PATH']}")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("PATH", result.stdout)
 
     def test_broken_sha256sum_falls_back(self):
         stub = self.tmp / "stub"
@@ -255,7 +283,7 @@ class PackageTest(Base):
     managers are scripts that record how they were called."""
 
     def machine(self, system="Linux", arch="x86_64", uid=1000, managers=("apt-get",), sudo=True,
-                installs=True):
+                installs=True, only_downgrade_installs=False):
         stub = self.tmp / "stub"
         stub.mkdir()
         for tool in TOOLS:
@@ -275,6 +303,8 @@ class PackageTest(Base):
         if sudo:
             script("sudo", f'echo "sudo $*" >>{log}\nexec "$@"\n')
         copy = f'for a; do last=$a; done\ncp "$last" {self.pkg_bin}\nchmod 755 {self.pkg_bin}\n'
+        if only_downgrade_installs:
+            copy = f'[ "$1" = downgrade ] || exit 0\n' + copy
         for name in managers:
             script(name, f'echo "{name} $*" >>{log}\n' + (copy if installs else ""))
         self.env["PATH"] = str(stub)
@@ -310,11 +340,26 @@ class PackageTest(Base):
         self.assertEqual(self.install().returncode, 0)
         self.assertRegex(self.calls(log)[-1], r"^yum install -y /.*/agentiscaled-9\.8\.7-1\.x86_64\.rpm$")
 
+    def test_dnf_and_yum_downgrade_to_a_pin(self):
+        for manager in ("dnf", "yum"):
+            with self.subTest(manager):
+                shutil.rmtree(self.tmp / "stub", ignore_errors=True)
+                shutil.rmtree(self.tmp / "usr-bin", ignore_errors=True)
+                log = self.machine(managers=(manager,), only_downgrade_installs=True)
+                self.pkg_bin.write_text("#!/bin/sh\necho 'agentiscaled 10.0.0 (commit newer, fake)'\n")
+                self.pkg_bin.chmod(0o755)
+                log.unlink(missing_ok=True)
+                result = self.install()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = [c for c in self.calls(log) if not c.startswith("sudo ")]
+                self.assertEqual([c.split()[:2] for c in calls], [[manager, "install"], [manager, "downgrade"]])
+                self.assertEqual(self.pkg_bin.read_bytes(), FAKE_BINARY)
+
     def test_zypper(self):
         log = self.machine(managers=("zypper",))
         self.assertEqual(self.install().returncode, 0)
         self.assertRegex(self.calls(log)[-1],
-                         r"^zypper --non-interactive install --allow-unsigned-rpm /.*/agentiscaled-9\.8\.7-1\.x86_64\.rpm$")
+                         r"^zypper --non-interactive install --oldpackage --allow-unsigned-rpm /.*/agentiscaled-9\.8\.7-1\.x86_64\.rpm$")
 
     def test_dir_or_binary_method_skips_the_package(self):
         log = self.machine()
