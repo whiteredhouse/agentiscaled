@@ -1,14 +1,14 @@
 name: Release verification
 
+# On a pull request this checks the verification itself against published
+# releases; CI's release-check builds a PR's release config.
 on:
   pull_request:
     paths:
       - 'qa/releases/**'
       - 'spec/exacly/**'
-      - '.goreleaser.yaml'
       - '.github/actions/release-setup/**'
       - '.github/scripts/publish-release.py'
-      - '.github/workflows/release.yml'
       - '.github/workflows/release-*.yml'
   schedule:
     - cron: '37 */6 * * *'
