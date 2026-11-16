@@ -1,19 +1,29 @@
 #!/bin/sh
 # Installs agentiscaled from a GitHub release on Linux or macOS (x64 or
-# ARM64), after checking the archive against the release's checksums.txt.
+# ARM64), after checking the download against the release's checksums.txt.
 #
 #   curl -fsSL https://raw.githubusercontent.com/whiteredhouse/agentiscaled/main/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/whiteredhouse/agentiscaled/main/install.sh | sh -s -- -version v0.11.0 -dir ~/bin
+#   curl -fsSL https://raw.githubusercontent.com/whiteredhouse/agentiscaled/main/install.sh | sh -s -- -version v0.11.0
+#
+# On Debian, Ubuntu, Fedora, RHEL and openSUSE it installs the release's
+# .deb or .rpm with the system's package manager, through sudo, so the
+# package manager knows the file and can remove it. Elsewhere (macOS, other
+# Linux, no sudo), or with -dir, it puts the agentiscaled binary in a
+# directory and needs no root.
 #
 # Options (or the environment variable in brackets):
 #   -version VERSION  release to install, like v0.11.0, or latest (default)
 #                     [AGENTISCALE_VERSION]
-#   -dir DIR          directory to put the agentiscaled binary in
-#                     [AGENTISCALE_INSTALL_DIR]. Default: /usr/local/bin if
-#                     you can write to it, else ~/.local/bin
+#   -dir DIR          put the binary in DIR, without a package
+#                     [AGENTISCALE_INSTALL_DIR]
+#   -method METHOD    package, binary or auto (default): auto picks package
+#                     on Linux with apt, dnf, yum or zypper and root or sudo,
+#                     unless -dir is given [AGENTISCALE_INSTALL_METHOD]
 #
-# It needs curl, tar and one of sha256sum, shasum or openssl. It asks for no
-# password: pick a directory you can write to.
+# Without a package and without -dir, the binary goes in /usr/local/bin if
+# you can write to it, else ~/.local/bin.
+#
+# It needs curl, tar and one of sha256sum, shasum or openssl.
 #
 # The whole script is a function called on its last line, so a download cut
 # short runs nothing.
@@ -24,39 +34,39 @@ main() {
 	releases=${AGENTISCALE_RELEASES_URL:-$repo/releases}
 	version=${AGENTISCALE_VERSION:-latest}
 	dir=${AGENTISCALE_INSTALL_DIR:-}
+	method=${AGENTISCALE_INSTALL_METHOD:-auto}
 
 	while [ $# -gt 0 ]; do
 		case $1 in
-		-version | --version)
+		-version | --version | -dir | --dir | -method | --method)
 			[ $# -ge 2 ] || fail "$1 needs a value"
-			version=$2
+			option "${1#"${1%%[!-]*}"}" "$2"
 			shift 2
 			;;
-		-version=* | --version=*)
-			version=${1#*=}
-			shift
-			;;
-		-dir | --dir)
-			[ $# -ge 2 ] || fail "$1 needs a value"
-			dir=$2
-			shift 2
-			;;
-		-dir=* | --dir=*)
-			dir=${1#*=}
+		-version=* | --version=* | -dir=* | --dir=* | -method=* | --method=*)
+			name=${1%%=*}
+			option "${name#"${name%%[!-]*}"}" "${1#*=}"
 			shift
 			;;
 		-h | -help | --help)
-			echo "usage: install.sh [-version VERSION] [-dir DIR]"
+			echo "usage: install.sh [-version VERSION] [-dir DIR] [-method auto|package|binary]"
 			echo "  -version  release to install, like v0.11.0, or latest (default)"
-			echo "  -dir      where to put agentiscaled (default /usr/local/bin if writable, else ~/.local/bin)"
+			echo "  -dir      put the binary in DIR, without a package"
+			echo "  -method   package (.deb/.rpm through sudo), binary, or auto (default)"
 			return 0
 			;;
-		*) fail "unknown option $1 (options: -version, -dir)" ;;
+		*) fail "unknown option $1 (options: -version, -dir, -method)" ;;
 		esac
 	done
+	case $method in
+	auto | package | binary) ;;
+	*) fail "method must be auto, package or binary, not '$method'" ;;
+	esac
+	if [ -n "$dir" ] && [ "$method" = package ]; then
+		fail "-dir installs the binary without a package; leave out one of -dir and -method package"
+	fi
 
 	command -v curl >/dev/null 2>&1 || fail "curl is needed to download the release"
-	command -v tar >/dev/null 2>&1 || fail "tar is needed to unpack the release"
 
 	case $(uname -s) in
 	Linux) os=linux ;;
@@ -82,41 +92,141 @@ main() {
 	printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' ||
 		fail "version must be a release like v0.11.0 or latest, not '$version'"
 
-	if [ -z "$dir" ]; then
-		if [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
-			dir=/usr/local/bin
-		else
-			dir=${HOME:?HOME is not set; pass -dir}/.local/bin
+	choose_package
+	if [ -z "$manager" ]; then
+		[ "$method" != package ] || fail "$why"
+		command -v tar >/dev/null 2>&1 || fail "tar is needed to unpack the release"
+		if [ -z "$dir" ]; then
+			if [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
+				dir=/usr/local/bin
+			else
+				dir=${HOME:?HOME is not set; pass -dir}/.local/bin
+			fi
 		fi
+		mkdir -p "$dir" || fail "couldn't create $dir; pass -dir with a directory you can write to"
+		[ -w "$dir" ] || fail "can't write to $dir; pass -dir with a directory you can write to"
 	fi
-	mkdir -p "$dir" || fail "couldn't create $dir; pass -dir with a directory you can write to"
-	[ -w "$dir" ] || fail "can't write to $dir; pass -dir with a directory you can write to"
 
 	tmp=$(mktemp -d "${TMPDIR:-/tmp}/agentiscaled-install.XXXXXX")
 	trap 'rm -rf "$tmp"' EXIT
 	trap 'exit 1' HUP INT TERM
+	fetch "$releases/download/$version/checksums.txt" "$tmp/checksums.txt"
 
+	if [ -n "$manager" ]; then
+		install_package
+	else
+		install_binary
+	fi
+}
+
+option() {
+	case $1 in
+	version) version=$2 ;;
+	dir) dir=$2 ;;
+	method) method=$2 ;;
+	esac
+}
+
+# choose_package sets manager (empty for a plain binary), the package file
+# and the command prefix that gives root, or why there is no package.
+choose_package() {
+	manager='' why=''
+	[ "$method" != binary ] && [ -z "$dir" ] || return 0
+	if [ "$os" != linux ]; then
+		why="there are no packages for macOS; leave out -method package"
+		return 0
+	fi
+	case $version in
+	*-*)
+		why="prereleases have no package this script installs; leave out -method package"
+		return 0
+		;;
+	esac
+	v=${version#v}
+	if command -v apt-get >/dev/null 2>&1; then
+		manager=apt-get file="agentiscaled_${v}_${arch}.deb"
+	elif command -v dnf >/dev/null 2>&1; then
+		manager=dnf
+	elif command -v yum >/dev/null 2>&1; then
+		manager=yum
+	elif command -v zypper >/dev/null 2>&1; then
+		manager=zypper
+	else
+		why="found no apt-get, dnf, yum or zypper to install a package with"
+		return 0
+	fi
+	if [ "$manager" != apt-get ]; then
+		case $arch in
+		amd64) file="agentiscaled-${v}-1.x86_64.rpm" ;;
+		arm64) file="agentiscaled-${v}-1.aarch64.rpm" ;;
+		esac
+	fi
+	if [ "$(id -u)" = 0 ]; then
+		as_root=''
+	elif command -v sudo >/dev/null 2>&1; then
+		as_root=sudo
+	elif command -v doas >/dev/null 2>&1; then
+		as_root=doas
+	else
+		manager=''
+		why="installing a package needs root, and there is no sudo or doas"
+	fi
+}
+
+install_package() {
+	echo "Downloading agentiscaled $version ($file)"
+	fetch "$releases/download/$version/$file" "$tmp/$file"
+	verify "$file"
+	# apt reads the file as its own unprivileged user.
+	chmod 755 "$tmp"
+	chmod 644 "$tmp/$file"
+	echo "Installing it with $manager${as_root:+ through $as_root}"
+	case $manager in
+	apt-get) $as_root apt-get install -y --allow-downgrades "$tmp/$file" ;;
+	dnf | yum) $as_root "$manager" install -y "$tmp/$file" ;;
+	# The checksum stands in for a repository signature.
+	zypper) $as_root zypper --non-interactive install --allow-unsigned-rpm "$tmp/$file" ;;
+	esac || fail "$manager couldn't install $file"
+	# Where the packages put the binary; the tests move it.
+	bin=${AGENTISCALE_PACKAGE_BIN:-/usr/bin/agentiscaled}
+	# Some package managers leave a newer installed version in place.
+	case $("$bin" version 2>&1 | head -n 1) in
+	"agentiscaled ${version#v} "*) ;;
+	*) fail "$manager kept another agentiscaled version; remove the agentiscaled package first to install $version" ;;
+	esac
+	report "$bin"
+}
+
+install_binary() {
 	archive="agentiscaled_${version#v}_${os}_${arch}.tar.gz"
 	echo "Downloading agentiscaled $version for $os/$arch"
-	fetch "$releases/download/$version/checksums.txt" "$tmp/checksums.txt"
 	fetch "$releases/download/$version/$archive" "$tmp/$archive"
-	want=$(awk -v f="$archive" '$2 == f || $2 == "*" f { print $1 }' "$tmp/checksums.txt")
-	[ -n "$want" ] || fail "checksums.txt of $version lists no $archive"
-	got=$(sha256 "$tmp/$archive")
-	[ "$want" = "$got" ] || fail "checksum mismatch for $archive: checksums.txt says $want, the download is $got"
-
+	verify "$archive"
 	tar -xzf "$tmp/$archive" -C "$tmp" agentiscaled || fail "couldn't unpack agentiscaled from $archive"
 	chmod 755 "$tmp/agentiscaled"
 	# Copy next to the target, then rename over it: a running node keeps its
 	# old binary, and nothing ever sees a half-written file.
 	cp "$tmp/agentiscaled" "$dir/.agentiscaled.new.$$" || fail "couldn't write to $dir"
 	mv -f "$dir/.agentiscaled.new.$$" "$dir/agentiscaled"
-	echo "Installed $("$dir/agentiscaled" version 2>&1 | head -n 1) to $dir/agentiscaled"
+	report "$dir/agentiscaled"
+}
 
-	case ":${PATH:-}:" in
-	*":$dir:"*) ;;
-	*) echo "$dir is not on your PATH: add it, or run $dir/agentiscaled" ;;
-	esac
+# report BINARY says what was installed and whether `agentiscaled` runs it.
+report() {
+	echo "Installed $("$1" version 2>&1 | head -n 1) to $1"
+	found=$(command -v agentiscaled 2>/dev/null || true)
+	if [ -z "$found" ]; then
+		echo "${1%/*} is not on your PATH: add it, or run $1"
+	elif [ "$found" != "$1" ]; then
+		echo "Your PATH finds another agentiscaled first, at $found: remove it, or run $1"
+	fi
+}
+
+verify() {
+	want=$(awk -v f="$1" '$2 == f || $2 == "*" f { print $1 }' "$tmp/checksums.txt")
+	[ -n "$want" ] || fail "checksums.txt of $version lists no $1"
+	got=$(sha256 "$tmp/$1")
+	[ "$want" = "$got" ] || fail "checksum mismatch for $1: checksums.txt says $want, the download is $got"
 }
 
 fail() {

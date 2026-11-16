@@ -17,17 +17,28 @@ your machine from the [latest release](https://github.com/whiteredhouse/agentisc
 and install it with `sudo apt install ./agentiscaled_*.deb` or
 `sudo dnf install ./agentiscaled_*.rpm`.
 
-Or, on Linux or macOS without Homebrew or a package manager, with the install
-script, which checks the download against the release's `checksums.txt`:
+Or, on Linux or macOS without Homebrew, with the install script, which checks the
+download against the release's `checksums.txt`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/whiteredhouse/agentiscaled/main/install.sh | sh
 ```
 
-It puts `agentiscaled` in `/usr/local/bin` if you can write to it, else in
-`~/.local/bin`, and asks for no password. Add `-s -- -version v0.11.0` after `sh` to
-pin a release, or `-s -- -dir DIR` to pick the directory. A script or CI job can set
-`AGENTISCALE_VERSION` and `AGENTISCALE_INSTALL_DIR` instead.
+On Debian, Ubuntu, Fedora, RHEL and openSUSE it installs the release's `.deb` or `.rpm`
+with apt, dnf, yum or zypper, through sudo, which may ask for your password. Run it
+again to upgrade; `sudo apt remove agentiscaled` or `sudo dnf remove agentiscaled`
+removes it. On macOS, on other Linux, or without sudo, it puts `agentiscaled` in
+`/usr/local/bin` if you can write to it, else in `~/.local/bin`, and needs no root.
+
+Add options after `sh -s --`:
+
+- `-version v0.11.0` installs that release instead of the latest.
+- `-dir DIR` puts the binary in `DIR`, without a package or root.
+- `-method binary` skips the package; `-method package` fails rather than fall back
+  to the binary.
+
+A script or CI job can set `AGENTISCALE_VERSION`, `AGENTISCALE_INSTALL_DIR` and
+`AGENTISCALE_INSTALL_METHOD` instead.
 
 Check it with `agentiscaled version`.
 
