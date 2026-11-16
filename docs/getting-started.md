@@ -253,9 +253,10 @@ Trust the workflow: its repository and the repository's and owner's numeric IDs
 (filled in for a public repository), the workflow file and branch, and the GitHub
 environment its job runs in.
 
-The job asks GitHub for a token for the control service, writes it to a file, and
-joins with it and your network's ID, which the console shows under your network's
-name. Each node needs a token of its own.
+The job asks GitHub for a token for your network, writes it to a file, and joins with
+it and your network's ID, which the console shows under your network's name. The
+token's audience is the control service's URL followed by `/networks/` and that ID, so
+it can join only that network. Each node needs a token of its own.
 
 ```yaml
 jobs:
@@ -270,7 +271,7 @@ jobs:
       - name: Join the network
         run: |
           curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://control.agentiscale.net" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://control.agentiscale.net/networks/YOUR_NETWORK_ID" \
             | jq -r .value > "$RUNNER_TEMP/agentiscale-token"
           agentiscaled up -foreground -y -clients none -data-dir "$RUNNER_TEMP/node" \
             -network YOUR_NETWORK_ID -oidc-token-path "$RUNNER_TEMP/agentiscale-token"
@@ -288,7 +289,7 @@ instance, an ECS task, a Lambda function or any other code with the role's crede
 can join. Choose **AWS** as the issuer and trust the role with its account ID, its name (with its path, if any) and the account's issuer
 identifier, which `aws iam get-outbound-web-identity-federation-info` shows. Turn the
 federation on once per account with `aws iam enable-outbound-web-identity-federation`,
-and let the role ask for tokens for the control service only:
+and let the role ask for tokens for your network only:
 
 ```json
 {
@@ -300,7 +301,7 @@ and let the role ask for tokens for the control service only:
       "Resource": "*",
       "Condition": {
         "ForAllValues:StringEquals": {
-          "sts:IdentityTokenAudience": "https://control.agentiscale.net"
+          "sts:IdentityTokenAudience": "https://control.agentiscale.net/networks/YOUR_NETWORK_ID"
         },
         "Null": { "sts:IdentityTokenAudience": "false" }
       }
@@ -313,7 +314,8 @@ Then, with the role's credentials, get a token and join with it, once per node:
 
 ```sh
 token="$(mktemp)"
-aws sts get-web-identity-token --audience https://control.agentiscale.net \
+aws sts get-web-identity-token \
+  --audience https://control.agentiscale.net/networks/YOUR_NETWORK_ID \
   --signing-algorithm ES384 --query WebIdentityToken --output text > "$token"
 agentiscaled up -foreground -y -clients none -data-dir "$HOME/agentiscale-node" \
   -network YOUR_NETWORK_ID -oidc-token-path "$token"
