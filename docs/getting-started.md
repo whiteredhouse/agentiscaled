@@ -273,12 +273,17 @@ jobs:
           network-id: YOUR_NETWORK_ID
       # agentiscaled is now on PATH and the node is connected.
       - run: agentiscaled status -data-dir "${{ steps.agentiscale.outputs.data-dir }}"
+      # Call an agent of your network and use its answer.
+      - run: >
+          agentiscaled task send -data-dir "${{ steps.agentiscale.outputs.data-dir }}"
+          -timeout 10m reviewer "Review the changes on this branch" > review.md
 ```
 
 The action installs the latest release; `version` pins one. Its other inputs are
 `hostname` (the name in your member list, `github-<run>-<attempt>-<job>` by default),
 `data-dir`, `control-url` and `timeout-seconds`. Its outputs are `data-dir`, `peer-id`
-and `log`, the file the node logs to.
+and `log`, the file the node logs to. See [Call an agent from the command
+line](connect-agents.md#call-an-agent-from-the-command-line) for `task send`.
 
 If the control service's answer is lost, the node sends the same token again and gets
 the same membership back; a refused token is final, and the console shows why under

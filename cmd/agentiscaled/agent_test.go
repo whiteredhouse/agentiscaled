@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -463,7 +464,7 @@ func TestOwnerStopCancelsAndRefuses(t *testing.T) {
 	h := newAgentHarness(t, testSender)
 	task := h.send(t, "", "review", nil)
 	<-h.fix.prompts
-	if err := runTasks([]string{"stop", "-data-dir", h.dir}, new(strings.Builder)); err != nil {
+	if err := runTasks(context.Background(), []string{"stop", "-data-dir", h.dir}, nil, new(strings.Builder), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	stopped := h.await(t, task.ID, a2a.TaskStateCanceled)
@@ -480,7 +481,7 @@ func TestOwnerStopCancelsAndRefuses(t *testing.T) {
 		t.Fatalf("card while stopped: %d", code)
 	}
 
-	if err := runTasks([]string{"resume", "-data-dir", h.dir}, new(strings.Builder)); err != nil {
+	if err := runTasks(context.Background(), []string{"resume", "-data-dir", h.dir}, nil, new(strings.Builder), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if code := get(t, h.url+"/.well-known/agent-card.json", "secret"); code != http.StatusOK {
