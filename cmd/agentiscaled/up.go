@@ -616,35 +616,14 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	s, err := loadSettings(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintf(out, "No node set up in %s. Run 'agentiscaled up'.\n", dir)
-		return nil
-	} else if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	fmt.Fprintf(out, "Data:     %s\n", dir)
-	if s.PeerID == "" {
-		fmt.Fprintf(out, "Node:     not joined (%s)\n", s.MachineName)
-		fmt.Fprint(out, rejoinSteps(dir, true))
-	} else {
-		fmt.Fprintf(out, "Node:     %s (%s)\n", s.PeerID, s.MachineName)
-		fmt.Fprintf(out, "Network:  %s\n", s.network())
-		fmt.Fprintf(out, "Mesh:     %s\n", s.MeshURL)
-	}
-	for _, a := range s.Agents {
-		fmt.Fprintf(out, "Agent:    %s (%s) in %s\n", a.Name, a.Runtime, a.Dir)
-	}
-	// The owner's stop holds for all of the node's agents.
-	if b, err := os.ReadFile(stopFilePath(dir)); err == nil {
-		fmt.Fprintf(out, "Tasks:    stopped since %s; 'agentiscaled task resume' takes them again\n", strings.TrimSpace(string(b)))
-	} else if len(s.Agents) > 0 {
-		fmt.Fprintln(out, "Tasks:    accepted")
-	}
 	serviceRuns := false
-	if svc := newService(dir); svc != nil {
-		var state string
-		state, serviceRuns = svc.state()
-		fmt.Fprintf(out, "Service:  %s, %s\n", svc.name(), state)
+	// Nodes started directly with flags have a socket but no saved settings.
+	if err == nil {
+		serviceRuns = printSavedNodeStatus(out, dir, s)
 	}
 	if h, err := loadHalt(dir); err != nil {
 		return err
@@ -662,6 +641,32 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 		fmt.Fprintf(out, "Mesh connection: %v\n", err)
 	}
 	return nil
+}
+
+func printSavedNodeStatus(out io.Writer, dir string, s settings) bool {
+	if s.PeerID == "" {
+		fmt.Fprintf(out, "Node:     not joined (%s)\n", s.MachineName)
+		fmt.Fprint(out, rejoinSteps(dir, true))
+	} else {
+		fmt.Fprintf(out, "Node:     %s (%s)\n", s.PeerID, s.MachineName)
+		fmt.Fprintf(out, "Network:  %s\n", s.network())
+		fmt.Fprintf(out, "Mesh:     %s\n", s.MeshURL)
+	}
+	for _, a := range s.Agents {
+		fmt.Fprintf(out, "Agent:    %s (%s) in %s\n", a.Name, a.Runtime, a.Dir)
+	}
+	// The owner's stop holds for all of the node's agents.
+	if b, err := os.ReadFile(stopFilePath(dir)); err == nil {
+		fmt.Fprintf(out, "Tasks:    stopped since %s; 'agentiscaled task resume' takes them again\n", strings.TrimSpace(string(b)))
+	} else if len(s.Agents) > 0 {
+		fmt.Fprintln(out, "Tasks:    accepted")
+	}
+	if svc := newService(dir); svc != nil {
+		state, serviceRuns := svc.state()
+		fmt.Fprintf(out, "Service:  %s, %s\n", svc.name(), state)
+		return serviceRuns
+	}
+	return false
 }
 
 var errNodeNotRunning = errors.New("node not running")

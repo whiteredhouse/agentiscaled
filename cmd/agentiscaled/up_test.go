@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,7 +16,41 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	meshnode "github.com/google/agentmesh/export/node"
 )
+
+func TestStatusWithoutSavedSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		readyCode int
+		want      string
+	}{
+		{"connected", http.StatusOK, "connected"},
+		{"disconnected", http.StatusServiceUnavailable, "not connected to the mesh"},
+		{"stopped", 0, "node not running"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := shortTempDir(t)
+			if tc.readyCode != 0 {
+				listener, err := net.Listen("unix", filepath.Join(dir, meshnode.DefaultSocketName))
+				if err != nil {
+					t.Fatal(err)
+				}
+				mux := http.NewServeMux()
+				mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(tc.readyCode)
+				})
+				server := &http.Server{Handler: mux}
+				go server.Serve(listener)
+				t.Cleanup(func() { server.Close() })
+			}
+			if out := statusOf(t, dir); !strings.Contains(out, "Mesh connection: "+tc.want+"\n") {
+				t.Errorf("status = %q, want mesh connection %q", out, tc.want)
+			}
+		})
+	}
+}
 
 // fakeIdP is a stand-in for the identity provider's device authorization endpoints. Each
 // token poll takes the next answer from polls; the last one repeats.
