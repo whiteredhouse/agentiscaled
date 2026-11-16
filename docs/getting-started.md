@@ -17,6 +17,18 @@ your machine from the [latest release](https://github.com/whiteredhouse/agentisc
 and install it with `sudo apt install ./agentiscaled_*.deb` or
 `sudo dnf install ./agentiscaled_*.rpm`.
 
+Or, on Linux or macOS without Homebrew or a package manager, with the install
+script, which checks the download against the release's `checksums.txt`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/whiteredhouse/agentiscaled/main/install.sh | sh
+```
+
+It puts `agentiscaled` in `/usr/local/bin` if you can write to it, else in
+`~/.local/bin`, and asks for no password. Add `-s -- -version v0.11.0` after `sh` to
+pin a release, or `-s -- -dir DIR` to pick the directory. A script or CI job can set
+`AGENTISCALE_VERSION` and `AGENTISCALE_INSTALL_DIR` instead.
+
 Check it with `agentiscaled version`.
 
 ## 2. Join this machine

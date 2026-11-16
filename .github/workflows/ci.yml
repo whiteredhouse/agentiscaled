@@ -54,6 +54,21 @@ jobs:
           go build ./...
           go test -race ./internal/controlplane ./internal/router ./internal/identity ./internal/node
 
+  install-script:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the script
+        if: runner.os == 'Linux'
+        run: shellcheck install.sh
+      - name: Test install.sh
+        env:
+          INSTALL_TEST_LIVE: "1"
+        run: python3 -I qa/install/test_install.py -v
+
   release-check:
     runs-on: ubuntu-latest
     steps:
