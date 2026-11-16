@@ -255,7 +255,8 @@ environment its job runs in.
 
 Then add the [agentiscale action](https://github.com/whiteredhouse/agentiscale-action)
 to the job. It installs agentiscaled, asks GitHub for a token for your network, joins
-with it and runs the node in the background until the job ends. Your network's ID is shown in the console under your network's name.
+with it and runs the node in the background until the job ends. Your network's ID is
+shown in the console under your network's name.
 
 ```yaml
 jobs:
@@ -276,29 +277,12 @@ jobs:
 
 The action installs the latest release; `version` pins one. Its other inputs are
 `hostname` (the name in your member list, `github-<run>-<attempt>-<job>` by default),
-`data-dir`, `control-url` and `timeout-seconds`. Its outputs are
-`data-dir`, `peer-id` and `log`, the file the node logs to.
+`data-dir`, `control-url` and `timeout-seconds`. Its outputs are `data-dir`, `peer-id`
+and `log`, the file the node logs to.
 
-Without the action, the job does the same in a few lines: it asks GitHub for a token
-whose audience is the control service's URL followed by `/networks/` and your
-network's ID, so the token can join only that network, and joins with it. Each node
-needs a token of its own.
-
-```yaml
-      # Install agentiscaled first (see Install).
-      - name: Join the network
-        run: |
-          curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://control.agentiscale.net/networks/YOUR_NETWORK_ID" \
-            | jq -r .value > "$RUNNER_TEMP/agentiscale-token"
-          agentiscaled up -foreground -y -clients none -data-dir "$RUNNER_TEMP/node" \
-            -network YOUR_NETWORK_ID -oidc-token-path "$RUNNER_TEMP/agentiscale-token"
-          agentiscaled run -data-dir "$RUNNER_TEMP/node" > "$RUNNER_TEMP/node.log" 2>&1 &
-```
-
-If the control service's answer is lost, `up` sends the same token again and gets the
-same membership back; a refused token is final, and the console shows why under the
-trust.
+If the control service's answer is lost, the node sends the same token again and gets
+the same membership back; a refused token is final, and the console shows why under
+the trust.
 
 ### An AWS IAM role
 
