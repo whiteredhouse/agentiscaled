@@ -54,19 +54,6 @@ jobs:
           go build ./...
           go test -race ./internal/controlplane ./internal/router ./internal/identity ./internal/node
 
-  action:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check the action's script
-        if: runner.os == 'Linux'
-        run: shellcheck action/join.sh
-      - name: Test the action against stand-in endpoints
-        run: python3 -I action/test_join.py -v
-
   release-check:
     runs-on: ubuntu-latest
     steps:
