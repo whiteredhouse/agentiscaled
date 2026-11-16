@@ -28,11 +28,18 @@ func TestStatusWithoutSavedSettings(t *testing.T) {
 	}{
 		{"connected", http.StatusOK, "connected"},
 		{"disconnected", http.StatusServiceUnavailable, "not connected to the mesh"},
-		{"stopped", 0, ""},
+		{"stopped", -1, "node not running"},
+		{"fresh", 0, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := shortTempDir(t)
-			if tc.readyCode != 0 {
+			if tc.readyCode < 0 {
+				// Stopped cleanly: the socket is gone, the enrollment stays.
+				if err := os.WriteFile(filepath.Join(dir, meshnode.StoreFile), []byte("{}"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.readyCode > 0 {
 				listener, err := net.Listen("unix", filepath.Join(dir, meshnode.DefaultSocketName))
 				if err != nil {
 					t.Fatal(err)

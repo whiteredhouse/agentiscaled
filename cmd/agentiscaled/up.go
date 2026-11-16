@@ -624,13 +624,12 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	// Nodes started directly with flags have a socket (or a halt note) but
-	// no saved settings. With none of them there is no node here.
-	if !saved && h == nil {
-		if _, err := os.Stat(filepath.Join(dir, meshnode.DefaultSocketName)); errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(out, "No node set up in %s. Run 'agentiscaled up'.\n", dir)
-			return nil
-		}
+	// Nodes started directly with flags have an enrollment (and, while they
+	// run, a socket) but no saved settings. With neither there is no node here.
+	if !saved && h == nil && !exists(filepath.Join(dir, meshnode.StoreFile)) &&
+		!exists(filepath.Join(dir, meshnode.DefaultSocketName)) {
+		fmt.Fprintf(out, "No node set up in %s. Run 'agentiscaled up'.\n", dir)
+		return nil
 	}
 	fmt.Fprintf(out, "Data:     %s\n", dir)
 	serviceRuns := false
@@ -680,6 +679,13 @@ func printSavedNodeStatus(out io.Writer, dir string, s settings) bool {
 }
 
 var errNodeNotRunning = errors.New("node not running")
+
+// exists reports whether path is there; an error other than its absence
+// counts as there, so status goes on to say what it can.
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return !errors.Is(err, os.ErrNotExist)
+}
 
 // nodeReady asks the running node, over its Unix socket, whether it holds an
 // authenticated connection to its network's router.
