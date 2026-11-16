@@ -186,12 +186,16 @@ install_package() {
 	bin=${AGENTISCALE_PACKAGE_BIN:-/usr/bin/agentiscaled}
 	echo "Installing it with $manager${as_root:+ through $as_root}"
 	case $manager in
-	apt-get) $as_root apt-get install -y --allow-downgrades "$tmp/$file" || fail "apt-get couldn't install $file" ;;
+	# --reinstall also puts back a packaged binary that something replaced.
+	apt-get)
+		$as_root apt-get install -y --reinstall --allow-downgrades "$tmp/$file" ||
+			fail "apt-get couldn't install $file"
+		;;
 	dnf | yum) rpm_install ;;
 	# The checksum stands in for a repository signature; --oldpackage lets a
-	# pinned version replace a newer one.
+	# pinned version replace a newer one, and --force reinstalls the same one.
 	zypper)
-		$as_root zypper --non-interactive install --oldpackage --allow-unsigned-rpm "$tmp/$file" ||
+		$as_root zypper --non-interactive install --oldpackage --force --allow-unsigned-rpm "$tmp/$file" ||
 			fail "zypper couldn't install $file"
 		;;
 	esac

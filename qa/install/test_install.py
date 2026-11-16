@@ -324,7 +324,7 @@ class PackageTest(Base):
         self.assertIn("Installing it with apt-get through sudo", result.stdout)
         calls = self.calls(log)
         self.assertEqual(len(calls), 2, calls)
-        self.assertRegex(calls[0], r"^sudo apt-get install -y --allow-downgrades /.*/agentiscaled_9\.8\.7_amd64\.deb$")
+        self.assertRegex(calls[0], r"^sudo apt-get install -y --reinstall --allow-downgrades /.*/agentiscaled_9\.8\.7_amd64\.deb$")
         self.assertEqual(calls[1], calls[0][len("sudo "):])
         self.assertEqual(self.pkg_bin.read_bytes(), FAKE_BINARY)
         self.assertIn(f"Installed agentiscaled 9.8.7 (commit test, fake) to {self.pkg_bin}", result.stdout)
@@ -401,7 +401,7 @@ class PackageTest(Base):
         log = self.machine(managers=("zypper",))
         self.assertEqual(self.install().returncode, 0)
         self.assertRegex(self.calls(log)[-1],
-                         r"^zypper --non-interactive install --oldpackage --allow-unsigned-rpm /.*/agentiscaled-9\.8\.7-1\.x86_64\.rpm$")
+                         r"^zypper --non-interactive install --oldpackage --force --allow-unsigned-rpm /.*/agentiscaled-9\.8\.7-1\.x86_64\.rpm$")
 
     def test_dir_or_binary_method_skips_the_package(self):
         log = self.machine()
