@@ -267,12 +267,16 @@ docker run -d --name agentiscaled --restart unless-stopped \
 ```
 
 These commands are for Docker running as root without user namespace remapping, where
-UID 65532 in the container is UID 65532 on the host. With
-[rootless Docker](https://docs.docker.com/engine/security/rootless/) or
-[`userns-remap`](https://docs.docker.com/engine/security/userns-remap/), the container's
-UID 65532 is a different host UID: give the directory and the file to that UID
-instead, which is the start of your subordinate UID range (`/etc/subuid`) plus 65532,
-minus 1 for rootless Docker.
+UID 65532 in the container is UID 65532 on the host. Otherwise the container's UID 65532
+is a different host UID: give the directory and the file to that UID instead. Look up
+the start of the right account's range in `/etc/subuid`:
+
+- With [`userns-remap`](https://docs.docker.com/engine/security/userns-remap/), the
+  account set in the daemon's `userns-remap` option (`dockremap` when it is
+  `default`). The host UID is the start of its range plus 65532.
+- With [rootless Docker](https://docs.docker.com/engine/security/rootless/), the user
+  that runs the rootless daemon. The host UID is the start of its range plus 65531,
+  because container UID 0 is that user itself.
 
 The join code is read only while the node has no identity yet. Once the node has
 joined, delete the file with `sudo rm agentiscale-join/join-code`, but keep the
