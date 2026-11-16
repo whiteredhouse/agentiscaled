@@ -259,10 +259,15 @@ docker run -d --name agentiscaled --restart unless-stopped \
   -join-code-path /run/secrets/join-code -hostname my-server
 ```
 
-The join code is used only while the node has no identity yet. In Kubernetes, mount
-the join code from a Secret, keep the data directory on a PersistentVolumeClaim, set
-`fsGroup: 65532` so the node can write to it, and run one replica per volume: two
-nodes must not share a data directory. A node that joins with a workload token takes
+The node runs as UID 65532, so it must be able to read the join code file. On Linux,
+keep the file private and give it to that user:
+`sudo chown 65532 join-code && chmod 600 join-code`. The join code is used only while
+the node has no identity yet; delete the file once the node has joined.
+
+In Kubernetes, mount the join code from a Secret with `defaultMode: 0440`, keep the
+data directory on a PersistentVolumeClaim, and set `fsGroup: 65532` so the node can
+read the Secret and write to the volume. Run one replica per volume: two nodes must
+not share a data directory. A node that joins with a workload token takes
 `-network <id> -oidc-token-path <file>` instead.
 
 The image has no agent runtimes. To offer an agent from the container, build on it

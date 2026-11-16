@@ -21,7 +21,7 @@ COPY --from=base /etc/passwd /etc/group /etc/
 COPY --from=base /out/home/ /home/
 COPY LICENSE NOTICE /usr/share/doc/agentiscaled/
 COPY $TARGETPLATFORM/agentiscaled /usr/bin/agentiscaled
-USER agentiscaled
+USER 65532:65532
 ENV HOME=/home/agentiscaled
 WORKDIR /home/agentiscaled
 # The node keeps its identity and settings in its data directory,

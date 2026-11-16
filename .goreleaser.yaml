@@ -72,6 +72,8 @@ dockers_v2:
       index:org.opencontainers.image.description: The agentiscale node. Joins agents to your private agentiscale network.
       index:org.opencontainers.image.source: https://github.com/whiteredhouse/agentiscaled
       index:org.opencontainers.image.licenses: Apache-2.0
+      # The release workflow reads it to move latest and X.Y only forward.
+      index:org.opencontainers.image.version: "{{ .Version }}"
 
 homebrew_casks:
   - name: agentiscaled

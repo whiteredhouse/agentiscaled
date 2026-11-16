@@ -153,4 +153,24 @@ jobs:
           version=${TAG#v}
           # The version tag must still name the image this run attested.
           [ "$(docker buildx imagetools inspect "$image:$version" --format '{{json .Manifest.Digest}}')" = "\"$DIGEST\"" ]
-          docker buildx imagetools create -t "$image:latest" -t "$image:${version%.*}" "$image@$DIGEST"
+          # A rerun of an older release must not move a tag back: each tag
+          # moves only if it is missing or names an older version.
+          for alias in latest "${version%.*}"; do
+            if raw=$(docker buildx imagetools inspect "$image:$alias" --raw 2>"$RUNNER_TEMP/inspect.err"); then
+              current=$(jq -r '.annotations["org.opencontainers.image.version"] // empty' <<<"$raw")
+              if [ -z "$current" ]; then
+                echo "::error::$image:$alias has no version annotation"
+                exit 1
+              fi
+            elif grep -q 'not found' "$RUNNER_TEMP/inspect.err"; then
+              current=
+            else
+              cat "$RUNNER_TEMP/inspect.err" >&2
+              exit 1
+            fi
+            if [ -n "$current" ] && [ "$(printf '%s\n' "$current" "$version" | sort -V | tail -n 1)" != "$version" ]; then
+              echo "$image:$alias stays at $current, newer than $version"
+              continue
+            fi
+            docker buildx imagetools create -t "$image:$alias" "$image@$DIGEST"
+          done
