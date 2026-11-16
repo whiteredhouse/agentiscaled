@@ -84,19 +84,29 @@ func runClients(ctx context.Context, args []string, out io.Writer) error {
 }
 
 // parseInterleaved parses flags given before, between or after the
-// arguments, and answers the arguments.
+// arguments, and answers the arguments; "--" ends the flags, so that an
+// argument such as a message can start with a dash.
 func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
-	var rest []string
-	for {
+	var pos []string
+	for len(args) > 0 {
+		if args[0] == "--" {
+			return append(pos, args[1:]...), nil
+		}
+		if len(args[0]) < 2 || args[0][0] != '-' {
+			pos = append(pos, args[0])
+			args = args[1:]
+			continue
+		}
 		if err := fs.Parse(args); err != nil {
 			return nil, err
 		}
-		if fs.NArg() == 0 {
-			return rest, nil
+		rest := fs.Args()
+		if n := len(args) - len(rest); n > 0 && args[n-1] == "--" {
+			return append(pos, rest...), nil
 		}
-		rest = append(rest, fs.Arg(0))
-		args = fs.Args()[1:]
+		args = rest
 	}
+	return pos, nil
 }
 
 // systemClients are the clients this system can have, by their -clients

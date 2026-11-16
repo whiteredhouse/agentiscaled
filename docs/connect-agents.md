@@ -61,6 +61,34 @@ with the header `X-Mesh-Authentication: Bearer <token>`, where the token is in
 `<data-dir>/api-token`. Prefer `agentiscaled mcp`, which keeps the token out of
 client configuration files.
 
+## Call an agent from the command line
+
+`agentiscaled task send` calls an agent of your network without an agent client,
+for example from a script or a CI job. It sends the task through the running node,
+shows the agent's steps on standard error while it works, and prints its answer on
+standard output:
+
+```sh
+agentiscaled task send codex "Review the uncommitted changes in ~/src/app"
+git diff | agentiscaled task send reviewer -   # the message from standard input
+```
+
+The agent is one this node offers, or one another node of your network offers; if
+several nodes offer an agent of that name, the command lists their peer IDs and you
+choose one with `-peer <peer ID>`. Pass the
+node's `-data-dir` if it is not the default one. The other flags:
+
+- `-timeout` (default 15m): give up after this long. The command then cancels the
+  task, so the agent stops too, as it does when you press Ctrl-C.
+- `-wait-agent`: keep looking this long for a remote agent that is not on the
+  network yet, such as one on a node that is still joining.
+- `-json`: print the task's ID, state, last message and result as JSON instead of
+  the answer alone.
+
+It exits with status 0 only when the task completes. If the agent asks a question
+instead, the command prints it with the command that answers it, `task send -task
+<task ID> <agent> "<answer>"`, which then follows the task again.
+
 ## If it does not connect
 
 - `agentiscaled mcp` exits with "no running agentiscaled": start the node first.

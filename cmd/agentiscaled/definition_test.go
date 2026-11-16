@@ -353,7 +353,7 @@ func TestStatusShowsTaskStop(t *testing.T) {
 	if err := runStatus(context.Background(), []string{"-data-dir", dir}, &out); err != nil || !strings.Contains(out.String(), "Tasks:    accepted\n") || !strings.Contains(out.String(), "Data:     "+dir+"\n") {
 		t.Fatalf("status: %v\n%s", err, &out)
 	}
-	if err := runTasks([]string{"stop", "-data-dir", dir}, io.Discard); err != nil {
+	if err := runTasks(context.Background(), []string{"stop", "-data-dir", dir}, nil, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	out.Reset()

@@ -79,7 +79,8 @@ Commands:
   reset    drop the node's identity so 'up' joins it again as a new node; its settings stay
   run      run the node in the foreground with the settings 'up' saved
   mcp      serve the node's MCP tools on stdio, for agent clients
-  task     control task execution on this node (status, stop, resume)
+  task     send a task to an agent and print its answer (send), or control task
+           execution on this node (status, stop, resume)
 
 Without a command, agentiscaled runs the node in the foreground with the
 flags given (see agentiscaled -h).
@@ -95,7 +96,7 @@ func main() {
 			// Standard output carries MCP messages; errors go to standard error.
 			err = runMCP(ctx, args)
 		case "task":
-			err = runTasks(args, os.Stdout)
+			err = runTasks(ctx, args, os.Stdin, os.Stdout, os.Stderr)
 		case "up":
 			err = runUp(ctx, args, os.Stdout)
 		case "client":

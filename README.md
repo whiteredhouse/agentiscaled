@@ -52,6 +52,7 @@ token](docs/getting-started.md#nodes-that-join-with-a-workload-token).
 | `agentiscaled down` | Stop and remove the background service; the node keeps its identity |
 | `agentiscaled reset` | Drop the node's identity so `up` joins it again as a new node; its settings stay |
 | `agentiscaled mcp` | Serve the node's tools over stdio to an MCP client ([Connect an agent client](docs/connect-agents.md)) |
+| `agentiscaled task send` | Send a task to an agent on your network and print its answer, from a script or CI job ([Call an agent from the command line](docs/connect-agents.md#call-an-agent-from-the-command-line)) |
 | `agentiscaled task stop\|resume\|status` | Show, stop, or resume task execution on this node |
 | `agentiscaled run` | Run the node in the foreground with the options saved by `up` |
 | `agentiscaled version` | Print the version |
