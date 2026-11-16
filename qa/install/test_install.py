@@ -283,7 +283,7 @@ class PackageTest(Base):
     managers are scripts that record how they were called."""
 
     def machine(self, system="Linux", arch="x86_64", uid=1000, managers=("apt-get",), sudo=True,
-                installs=True, only_downgrade_installs=False):
+                installs=True, rpm_version=None):
         stub = self.tmp / "stub"
         stub.mkdir()
         for tool in TOOLS:
@@ -303,8 +303,10 @@ class PackageTest(Base):
         if sudo:
             script("sudo", f'echo "sudo $*" >>{log}\nexec "$@"\n')
         copy = f'for a; do last=$a; done\ncp "$last" {self.pkg_bin}\nchmod 755 {self.pkg_bin}\n'
-        if only_downgrade_installs:
-            copy = f'[ "$1" = downgrade ] || exit 0\n' + copy
+        if rpm_version is None:
+            script("rpm", 'echo "package agentiscaled is not installed"\nexit 1\n')
+        else:
+            script("rpm", f"printf %s {rpm_version}\n")
         for name in managers:
             script(name, f'echo "{name} $*" >>{log}\n' + (copy if installs else ""))
         self.env["PATH"] = str(stub)
@@ -319,7 +321,7 @@ class PackageTest(Base):
         log = self.machine()
         result = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Installing it with apt-get through sudo", result.stdout)
+        self.assertIn("Installing it with apt-get install through sudo", result.stdout)
         calls = self.calls(log)
         self.assertEqual(len(calls), 2, calls)
         self.assertRegex(calls[0], r"^sudo apt-get install -y --allow-downgrades /.*/agentiscaled_9\.8\.7_amd64\.deb$")
@@ -340,20 +342,43 @@ class PackageTest(Base):
         self.assertEqual(self.install().returncode, 0)
         self.assertRegex(self.calls(log)[-1], r"^yum install -y /.*/agentiscaled-9\.8\.7-1\.x86_64\.rpm$")
 
-    def test_dnf_and_yum_downgrade_to_a_pin(self):
+    def rpm_machine(self, manager, installed, not_older):
+        shutil.rmtree(self.tmp / "stub", ignore_errors=True)
+        shutil.rmtree(self.tmp / "usr-bin", ignore_errors=True)
+        log = self.machine(managers=(), rpm_version=installed)
+        log.unlink(missing_ok=True)
+        # As yum 3 does: install with the same or a newer version installed
+        # is "Nothing to do" and exits 1.
+        (self.tmp / "stub" / manager).write_text(
+            "#!/bin/sh\n"
+            + f'echo "{manager} $*" >>{log}\n'
+            + (f'if [ "$1" = install ]; then echo "Nothing to do"; exit 1; fi\n' if not_older else "")
+            + f'for a; do last=$a; done\ncp "$last" {self.pkg_bin}\nchmod 755 {self.pkg_bin}\n')
+        (self.tmp / "stub" / manager).chmod(0o755)
+        if installed:
+            self.pkg_bin.write_text(f"#!/bin/sh\necho 'agentiscaled {installed} (commit installed, fake)'\n")
+            self.pkg_bin.chmod(0o755)
+        return log
+
+    def test_dnf_and_yum_by_installed_version(self):
         for manager in ("dnf", "yum"):
-            with self.subTest(manager):
-                shutil.rmtree(self.tmp / "stub", ignore_errors=True)
-                shutil.rmtree(self.tmp / "usr-bin", ignore_errors=True)
-                log = self.machine(managers=(manager,), only_downgrade_installs=True)
-                self.pkg_bin.write_text("#!/bin/sh\necho 'agentiscaled 10.0.0 (commit newer, fake)'\n")
-                self.pkg_bin.chmod(0o755)
-                log.unlink(missing_ok=True)
-                result = self.install()
-                self.assertEqual(result.returncode, 0, result.stderr)
-                calls = [c for c in self.calls(log) if not c.startswith("sudo ")]
-                self.assertEqual([c.split()[:2] for c in calls], [[manager, "install"], [manager, "downgrade"]])
-                self.assertEqual(self.pkg_bin.read_bytes(), FAKE_BINARY)
+            for installed, verbs, binary in [
+                (None, ["install"], FAKE_BINARY),          # not installed
+                ("1.0.0", ["install"], FAKE_BINARY),       # older: upgrade
+                ("10.0.0", ["downgrade"], FAKE_BINARY),    # newer: pin wins
+                ("9.10.0", ["downgrade"], FAKE_BINARY),    # compared as numbers
+                ("9.8.7", [], None),                       # same: nothing to do
+            ]:
+                with self.subTest(manager=manager, installed=installed):
+                    log = self.rpm_machine(manager, installed, not_older=installed not in (None, "1.0.0"))
+                    before = self.pkg_bin.read_bytes() if self.pkg_bin.exists() else None
+                    result = self.install()
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    calls = [c for c in self.calls(log) if not c.startswith("sudo ")]
+                    self.assertEqual([c.split()[1] for c in calls], verbs)
+                    self.assertEqual(self.pkg_bin.read_bytes(), binary or before)
+                    if not verbs:
+                        self.assertIn("agentiscaled 9.8.7 is already installed", result.stdout)
 
     def test_zypper(self):
         log = self.machine(managers=("zypper",))
