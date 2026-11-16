@@ -321,7 +321,7 @@ class PackageTest(Base):
         log = self.machine()
         result = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Installing it with apt-get install through sudo", result.stdout)
+        self.assertIn("Installing it with apt-get through sudo", result.stdout)
         calls = self.calls(log)
         self.assertEqual(len(calls), 2, calls)
         self.assertRegex(calls[0], r"^sudo apt-get install -y --allow-downgrades /.*/agentiscaled_9\.8\.7_amd64\.deb$")
@@ -342,43 +342,60 @@ class PackageTest(Base):
         self.assertEqual(self.install().returncode, 0)
         self.assertRegex(self.calls(log)[-1], r"^yum install -y /.*/agentiscaled-9\.8\.7-1\.x86_64\.rpm$")
 
-    def rpm_machine(self, manager, installed, not_older):
+    def rpm_machine(self, manager, installed, order, binary_version=None):
+        """A stand-in dnf or yum with RPM's answers: order says how rpm
+        orders the installed package against 9.8.7 (None, "older", "newer"
+        or "same"). Like yum 3, a command that has nothing to do exits 1."""
         shutil.rmtree(self.tmp / "stub", ignore_errors=True)
         shutil.rmtree(self.tmp / "usr-bin", ignore_errors=True)
         log = self.machine(managers=(), rpm_version=installed)
         log.unlink(missing_ok=True)
-        # As yum 3 does: install with the same or a newer version installed
-        # is "Nothing to do" and exits 1.
+        works = {None: "install", "older": "install", "newer": "downgrade", "same": "reinstall"}[order]
         (self.tmp / "stub" / manager).write_text(
             "#!/bin/sh\n"
             + f'echo "{manager} $*" >>{log}\n'
-            + (f'if [ "$1" = install ]; then echo "Nothing to do"; exit 1; fi\n' if not_older else "")
+            + f'if [ "$1" != {works} ]; then echo "Nothing to do"; exit 1; fi\n'
             + f'for a; do last=$a; done\ncp "$last" {self.pkg_bin}\nchmod 755 {self.pkg_bin}\n')
         (self.tmp / "stub" / manager).chmod(0o755)
         if installed:
-            self.pkg_bin.write_text(f"#!/bin/sh\necho 'agentiscaled {installed} (commit installed, fake)'\n")
+            self.pkg_bin.write_text(
+                f"#!/bin/sh\necho 'agentiscaled {binary_version or installed} (commit installed, fake)'\n")
             self.pkg_bin.chmod(0o755)
         return log
 
-    def test_dnf_and_yum_by_installed_version(self):
+    def test_dnf_and_yum_let_rpm_order_versions(self):
         for manager in ("dnf", "yum"):
-            for installed, verbs, binary in [
-                (None, ["install"], FAKE_BINARY),          # not installed
-                ("1.0.0", ["install"], FAKE_BINARY),       # older: upgrade
-                ("10.0.0", ["downgrade"], FAKE_BINARY),    # newer: pin wins
-                ("9.10.0", ["downgrade"], FAKE_BINARY),    # compared as numbers
-                ("9.8.7", [], None),                       # same: nothing to do
+            for installed, order, binary_version, verbs in [
+                (None, None, None, ["install"]),
+                ("1.0.0", "older", None, ["install"]),
+                # A prerelease is older than its release in rpm's order,
+                # though its trailing .1 would sort after 9.8.7 as numbers.
+                ("9.8.7~rc.1", "older", "9.8.7-rc.1", ["install"]),
+                ("10.0.0", "newer", None, ["install", "downgrade"]),
+                ("9.10.0", "newer", None, ["install", "downgrade"]),
+                ("9.8.7", "same", None, []),
+                # rpm records 9.8.7, but a binary install replaced the file.
+                ("9.8.7", "same", "10.0.0", ["install", "downgrade", "reinstall"]),
             ]:
-                with self.subTest(manager=manager, installed=installed):
-                    log = self.rpm_machine(manager, installed, not_older=installed not in (None, "1.0.0"))
-                    before = self.pkg_bin.read_bytes() if self.pkg_bin.exists() else None
+                with self.subTest(manager=manager, installed=installed, binary=binary_version):
+                    log = self.rpm_machine(manager, installed, order, binary_version)
                     result = self.install()
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     calls = [c for c in self.calls(log) if not c.startswith("sudo ")]
                     self.assertEqual([c.split()[1] for c in calls], verbs)
-                    self.assertEqual(self.pkg_bin.read_bytes(), binary or before)
+                    self.assertIn("agentiscaled 9.8.7 ", subprocess.run(
+                        [str(self.pkg_bin), "version"], capture_output=True, text=True).stdout)
                     if not verbs:
                         self.assertIn("agentiscaled 9.8.7 is already installed", result.stdout)
+
+    def test_dnf_failing_every_way_fails(self):
+        log = self.rpm_machine("dnf", "10.0.0", "newer")
+        (self.tmp / "stub" / "dnf").write_text(f'#!/bin/sh\necho "dnf $*" >>{log}\nexit 1\n')
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("install, downgrade and reinstall all failed", result.stderr)
+        self.assertEqual([c.split()[1] for c in self.calls(log) if not c.startswith("sudo ")],
+                         ["install", "downgrade", "reinstall"])
 
     def test_zypper(self):
         log = self.machine(managers=("zypper",))

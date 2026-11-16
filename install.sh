@@ -184,42 +184,39 @@ install_package() {
 	chmod 644 "$tmp/$file"
 	# Where the packages put the binary; the tests move it.
 	bin=${AGENTISCALE_PACKAGE_BIN:-/usr/bin/agentiscaled}
-	# dnf and yum install neither downgrade nor reinstall, and yum 3 exits 1
-	# with "Nothing to do": pick the command from the installed version.
-	verb=install
-	if [ "$manager" = dnf ] || [ "$manager" = yum ]; then
-		installed=$(rpm -q --qf '%{VERSION}' agentiscaled 2>/dev/null) || installed=''
-		if [ "$installed" = "${version#v}" ]; then
-			echo "agentiscaled ${version#v} is already installed"
-			report "$bin"
-			return 0
-		elif [ -n "$installed" ] && newer "$installed" "${version#v}"; then
-			verb=downgrade
-		fi
-	fi
-	echo "Installing it with $manager $verb${as_root:+ through $as_root}"
+	echo "Installing it with $manager${as_root:+ through $as_root}"
 	case $manager in
-	apt-get) $as_root apt-get install -y --allow-downgrades "$tmp/$file" ;;
-	dnf | yum) $as_root "$manager" "$verb" -y "$tmp/$file" ;;
+	apt-get) $as_root apt-get install -y --allow-downgrades "$tmp/$file" || fail "apt-get couldn't install $file" ;;
+	dnf | yum) rpm_install ;;
 	# The checksum stands in for a repository signature; --oldpackage lets a
 	# pinned version replace a newer one.
-	zypper) $as_root zypper --non-interactive install --oldpackage --allow-unsigned-rpm "$tmp/$file" ;;
-	esac || fail "$manager couldn't $verb $file"
+	zypper)
+		$as_root zypper --non-interactive install --oldpackage --allow-unsigned-rpm "$tmp/$file" ||
+			fail "zypper couldn't install $file"
+		;;
+	esac
 	is_version "$bin" ||
 		fail "$manager kept another agentiscaled version ($first); remove the agentiscaled package first to install $version"
 	report "$bin"
 }
 
-# newer A B succeeds if version A (like 1.2.3) is later than B.
-newer() {
-	awk -v a="$1" -v b="$2" 'BEGIN {
-		n = split(a, x, "."); m = split(b, y, ".")
-		for (i = 1; i <= (n > m ? n : m); i++) {
-			if (x[i] + 0 > y[i] + 0) exit 0
-			if (x[i] + 0 < y[i] + 0) exit 1
-		}
-		exit 1
-	}'
+# rpm_install installs the package with dnf or yum. Their install neither
+# downgrades nor reinstalls, and yum 3 exits 1 with "Nothing to do" then,
+# so it tries install, downgrade and reinstall in turn until the binary is
+# the release. rpm itself decides which applies, prereleases included; the
+# script never orders versions.
+rpm_install() {
+	if [ "$(rpm -q --qf '%{VERSION}' agentiscaled 2>/dev/null || true)" = "${version#v}" ] && is_version "$bin"; then
+		echo "agentiscaled ${version#v} is already installed"
+		return 0
+	fi
+	for verb in install downgrade reinstall; do
+		[ "$verb" = install ] || echo "Trying $manager $verb"
+		if $as_root "$manager" "$verb" -y "$tmp/$file" && is_version "$bin"; then
+			return 0
+		fi
+	done
+	fail "$manager couldn't install $file (install, downgrade and reinstall all failed or left ${first:-no agentiscaled})"
 }
 
 # is_version BINARY runs BINARY version, keeps its first line in first, and
