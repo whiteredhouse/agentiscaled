@@ -152,7 +152,7 @@ func main() {
 // foreground mode and `agentiscaled up`.
 func nodeFlags(fs *flag.FlagSet, c *config) {
 	fs.StringVar(&c.joinCodePath, "join-code-path", "", "File holding a join code from your network; used only when the node has no identity yet")
-	fs.StringVar(&c.oidcTokenPath, "oidc-token-path", "", "File holding an OIDC token whose audience is the control service URL, from a GitHub Actions workflow or AWS IAM role your network trusts; used only when the node has no identity yet")
+	fs.StringVar(&c.oidcTokenPath, "oidc-token-path", "", "File holding an OIDC token whose audience is the control service URL followed by /networks/ and the --network ID, from a GitHub Actions workflow or AWS IAM role your network trusts; used only when the node has no identity yet")
 	fs.StringVar(&c.networkID, "network", "", "ID of the network to join with --oidc-token-path")
 	fs.StringVar(&c.dataDir, "data-dir", defaultDataDir(), "Directory for the node's key, identity and socket")
 	fs.StringVar(&c.configFile, "config", "", "Optional agentmesh-node.yaml (static services, labels)")
