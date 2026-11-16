@@ -253,20 +253,38 @@ Trust the workflow: its repository and the repository's and owner's numeric IDs
 (filled in for a public repository), the workflow file and branch, and the GitHub
 environment its job runs in.
 
-The job asks GitHub for a token for your network, writes it to a file, and joins with
-it and your network's ID, which the console shows under your network's name. The
-token's audience is the control service's URL followed by `/networks/` and that ID, so
-it can join only that network. Each node needs a token of its own.
+Then add the agentiscale action to the job. It installs agentiscaled, asks GitHub for a
+token for your network, joins with it and runs the node in the background until the
+job ends. Your network's ID is shown in the console under your network's name.
 
 ```yaml
 jobs:
   agents:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # or macos-latest
     environment: ci # the environment the trust names
     permissions:
       id-token: write
       contents: read
     steps:
+      - uses: whiteredhouse/agentiscaled@v0.12.0
+        id: agentiscale
+        with:
+          network-id: YOUR_NETWORK_ID
+      # agentiscaled is now on PATH and the node is connected.
+      - run: agentiscaled status -data-dir "${{ steps.agentiscale.outputs.data-dir }}"
+```
+
+The action installs the release it is pinned to; `version` picks another. Its other
+inputs are `hostname` (the name in your member list, `github-<run>-<attempt>-<job>`
+by default), `data-dir`, `control-url` and `timeout-seconds`. Its outputs are
+`data-dir`, `peer-id` and `log`, the file the node logs to.
+
+Without the action, the job does the same in a few lines: it asks GitHub for a token
+whose audience is the control service's URL followed by `/networks/` and your
+network's ID, so the token can join only that network, and joins with it. Each node
+needs a token of its own.
+
+```yaml
       # Install agentiscaled first (see Install).
       - name: Join the network
         run: |
