@@ -22,6 +22,24 @@ agent, accessible to local clients and other machines. See
 [Get started](docs/getting-started.md) for
 Linux packages, connecting your agent apps, and machines without a browser.
 
+## In GitHub Actions
+
+A job joins your network with
+[agentiscale-action](https://github.com/whiteredhouse/agentiscale-action), using
+GitHub's OIDC token instead of a stored secret, once your network trusts the workflow:
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  - uses: whiteredhouse/agentiscale-action@v1
+    with:
+      network-id: YOUR_NETWORK_ID
+```
+
+See [Nodes that join with a workload
+token](docs/getting-started.md#nodes-that-join-with-a-workload-token).
+
 ## Commands
 
 | Command | What it does |
