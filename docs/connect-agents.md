@@ -87,7 +87,7 @@ node's `-data-dir` if it is not the default one. The other flags:
 
 It exits with status 0 only when the task completes. If the agent asks a question
 instead, the command prints it with the command that answers it, `task send -task
-<task ID> <agent> "<answer>"`, which then follows the task again.
+<task ID> <agent> -- "<answer>"`, which then follows the task again.
 
 ## If it does not connect
 

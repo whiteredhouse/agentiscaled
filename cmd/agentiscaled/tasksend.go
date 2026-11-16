@@ -225,21 +225,44 @@ func sendAndFollow(ctx context.Context, tasks *a2aTasks, agent, text string, o t
 
 // answerCommand is the command that answers the question of task id. The
 // ID comes from the agent: quoted, it stays one argument of the command the
-// caller pastes. An ID with control characters cannot be shown as it is,
-// and no copy of it with them removed would name the task.
+// caller pastes, and -- keeps an answer that starts with a dash an answer.
+// An ID with characters a terminal cannot show is written with escapes,
+// for shells that read them ($'...' in bash and zsh), so that it is still
+// the exact ID.
 func answerCommand(o taskSendOptions, target taskTarget, id string) string {
-	if terminalSafe(id) != id || id == "" {
-		return "task send -task with the task ID from -json (it has characters a terminal cannot show)"
+	quoted, note := shellQuote(id), ""
+	if terminalSafe(id) != id {
+		quoted, note = ansiCQuote(id), " (in bash or zsh)"
 	}
 	answer := []string{"agentiscaled task send"}
 	if o.dataDir != defaultDataDir() {
 		answer = append(answer, "-data-dir", shellQuote(o.dataDir))
 	}
-	answer = append(answer, "-task", shellQuote(id))
+	answer = append(answer, "-task", quoted)
 	if target.PeerID != "" {
 		answer = append(answer, "-peer", target.PeerID)
 	}
-	return strings.Join(append(answer, target.Service, `"<your answer>"`), " ")
+	return strings.Join(append(answer, target.Service, "--", `"<your answer>"`), " ") + note
+}
+
+// ansiCQuote quotes s as $'...', which bash, zsh and ksh read back to the
+// same bytes: printable ASCII as it is, every other byte as \xHH.
+func ansiCQuote(s string) string {
+	var b strings.Builder
+	b.WriteString("$'")
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '\'' || c == '\\':
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		case c >= 0x20 && c < 0x7f:
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, `\x%02x`, c)
+		}
+	}
+	b.WriteByte('\'')
+	return b.String()
 }
 
 // endedBy says what ended a call whose context is done.

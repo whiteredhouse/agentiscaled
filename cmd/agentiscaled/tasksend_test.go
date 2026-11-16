@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -403,18 +404,42 @@ func TestTaskSendWaitsForTheAgentOnlyAsLongAsAsked(t *testing.T) {
 func TestAnswerCommandQuotesTheTaskID(t *testing.T) {
 	o := taskSendOptions{dataDir: defaultDataDir()}
 	got := answerCommand(o, taskTarget{Service: "helper"}, "$(touch pwned); rm -rf ~ 'x'")
-	want := `agentiscaled task send -task '$(touch pwned); rm -rf ~ '\''x'\''' helper "<your answer>"`
+	want := `agentiscaled task send -task '$(touch pwned); rm -rf ~ '\''x'\''' helper -- "<your answer>"`
 	if got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
-	// No copy of an ID with control characters names the task.
-	if got := answerCommand(o, taskTarget{Service: "helper"}, "t\x1b[2J"); strings.Contains(got, "t[2J") || !strings.Contains(got, "-json") {
-		t.Fatalf("control characters: %s", got)
+	// An ID with control characters is escaped, never shown raw or cut.
+	got = answerCommand(o, taskTarget{Service: "helper"}, "t\x1b[2J'é\\")
+	if want := `agentiscaled task send -task $'t\x1b[2J\'\xc3\xa9\\' helper -- "<your answer>" (in bash or zsh)`; got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 	o.dataDir = "/tmp/my node"
 	got = answerCommand(o, taskTarget{PeerID: "12D3Koo", Service: "helper"}, "a-1")
-	if want := `agentiscaled task send -data-dir '/tmp/my node' -task a-1 -peer 12D3Koo helper "<your answer>"`; got != want {
+	if want := `agentiscaled task send -data-dir '/tmp/my node' -task a-1 -peer 12D3Koo helper -- "<your answer>"`; got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}
+
+// bash reads an escaped ID back to the exact bytes, and the parser takes an
+// answer after -- that starts with a dash.
+func TestAnswerCommandRoundTrips(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	id := "t\x1b[2J'\"\\$(x)\x00é\n"
+	id = strings.ReplaceAll(id, "\x00", "") // bash strings stop at NUL
+	cmd := answerCommand(taskSendOptions{dataDir: defaultDataDir()}, taskTarget{Service: "helper"}, id)
+	args := strings.Fields(strings.SplitN(cmd, " -task ", 2)[1])
+	out, err := exec.Command(bash, "-c", `printf %s `+args[0]).Output()
+	if err != nil || string(out) != id {
+		t.Fatalf("bash read %q from %s, want %q (%v)", out, args[0], id, err)
+	}
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	fs.String("task", "", "")
+	pos, err := parseInterleaved(fs, []string{"-task", "x", "helper", "--", "-42"})
+	if err != nil || !slices.Equal(pos, []string{"helper", "-42"}) {
+		t.Fatalf("answer -42: %q %v", pos, err)
 	}
 }
 
