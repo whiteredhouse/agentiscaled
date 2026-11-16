@@ -89,22 +89,29 @@ func runClients(ctx context.Context, args []string, out io.Writer) error {
 func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
 	var pos []string
 	for len(args) > 0 {
-		if args[0] == "--" {
+		arg := args[0]
+		if arg == "--" {
 			return append(pos, args[1:]...), nil
 		}
-		if len(args[0]) < 2 || args[0][0] != '-' {
-			pos = append(pos, args[0])
+		if len(arg) < 2 || arg[0] != '-' {
+			pos = append(pos, arg)
 			args = args[1:]
 			continue
 		}
-		if err := fs.Parse(args); err != nil {
+		// One flag at a time, with its value when that is the next
+		// argument, so that a value such as "--" is never taken for the
+		// end of the flags.
+		n := 1
+		name, _, hasValue := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		if f := fs.Lookup(name); f != nil && !hasValue && len(args) > 1 {
+			if b, ok := f.Value.(interface{ IsBoolFlag() bool }); !ok || !b.IsBoolFlag() {
+				n = 2
+			}
+		}
+		if err := fs.Parse(args[:n]); err != nil {
 			return nil, err
 		}
-		rest := fs.Args()
-		if n := len(args) - len(rest); n > 0 && args[n-1] == "--" {
-			return append(pos, rest...), nil
-		}
-		args = rest
+		args = args[n:]
 	}
 	return pos, nil
 }

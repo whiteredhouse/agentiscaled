@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -228,11 +229,14 @@ func sendAndFollow(ctx context.Context, tasks *a2aTasks, agent, text string, o t
 // caller pastes, and -- keeps an answer that starts with a dash an answer.
 // An ID with characters a terminal cannot show is written with escapes,
 // for shells that read them ($'...' in bash and zsh), so that it is still
-// the exact ID.
+// the exact ID; no shell passes a NUL in an argument.
 func answerCommand(o taskSendOptions, target taskTarget, id string) string {
+	if strings.ContainsRune(id, 0) {
+		return fmt.Sprintf("no command can pass this task ID, which has a NUL character: %s", strconv.Quote(id))
+	}
 	quoted, note := shellQuote(id), ""
 	if terminalSafe(id) != id {
-		quoted, note = ansiCQuote(id), " (in bash or zsh)"
+		quoted, note = ansiCQuote(id), "\n(in bash or zsh: the task ID is escaped)"
 	}
 	answer := []string{"agentiscaled task send"}
 	if o.dataDir != defaultDataDir() {
