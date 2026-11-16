@@ -182,6 +182,44 @@ class InstallTest(Base):
                 self.assertIn(message, result.stderr)
                 self.assertFalse((self.tmp / "bin" / "agentiscaled").exists())
 
+    def test_cut_short_download_runs_nothing(self):
+        text = SCRIPT.read_text()
+        last_call = text.rindex('main "$@"')
+        for cut in (last_call + len("main"), last_call + len('main "$@"\n'), len(text) // 2):
+            with self.subTest(cut=cut):
+                # curl | sh with the stream ending early; the pin must not
+                # fall back to the latest release.
+                result = subprocess.run(["sh", "-s", "--", "-version", "v1.2.3", "-dir", str(self.tmp / "bin")],
+                                        input=text[:cut], env=self.env, capture_output=True, text=True, timeout=60)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(Releases.requests, [])
+                self.assertFalse((self.tmp / "bin").exists())
+
+    def test_directory_in_the_way_fails(self):
+        (self.tmp / "bin" / "agentiscaled").mkdir(parents=True)
+        result = self.install("-dir", str(self.tmp / "bin"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("is a directory", result.stderr)
+        self.assertEqual(os.listdir(self.tmp / "bin" / "agentiscaled"), [])
+
+    def test_binary_that_does_not_run_fails(self):
+        self.publish(VERSION, b"#!/bin/sh\necho 'exec format error' >&2\nexit 126\n")
+        result = self.install("-dir", str(self.tmp / "bin"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("doesn't run: exec format error", result.stderr)
+        self.assertNotIn("Installed", result.stdout)
+
+    def test_broken_sha256sum_falls_back(self):
+        stub = self.tmp / "stub"
+        stub.mkdir()
+        (stub / "sha256sum").write_text("#!/bin/sh\necho 'Bad CPU type in executable' >&2\nexit 126\n")
+        (stub / "sha256sum").chmod(0o755)
+        if not (shutil.which("shasum") or shutil.which("openssl")):
+            self.skipTest("no shasum or openssl to fall back to")
+        result = self.install("-dir", str(self.tmp / "bin"), PATH=f"{stub}:{os.environ['PATH']}")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.tmp / "bin" / "agentiscaled").is_file())
+
     @unittest.skipUnless(os.environ.get("INSTALL_TEST_LIVE") == "1", "set INSTALL_TEST_LIVE=1 to install the real latest release")
     def test_real_latest_release(self):
         env = {k: v for k, v in os.environ.items() if k != "AGENTISCALE_RELEASES_URL"}

@@ -25,8 +25,10 @@
 #
 # It needs curl, tar and one of sha256sum, shasum or openssl.
 #
-# The whole script is a function called on its last line, so a download cut
-# short runs nothing.
+# The whole script is one brace group: the shell reads it to the closing }
+# before running any of it, so a download cut short runs nothing, not even
+# main without its options.
+{
 set -eu
 
 main() {
@@ -202,6 +204,9 @@ install_binary() {
 	echo "Downloading agentiscaled $version for $os/$arch"
 	fetch "$releases/download/$version/$archive" "$tmp/$archive"
 	verify "$archive"
+	if [ -d "$dir/agentiscaled" ] && [ ! -L "$dir/agentiscaled" ]; then
+		fail "$dir/agentiscaled is a directory; move it away or pass another -dir"
+	fi
 	tar -xzf "$tmp/$archive" -C "$tmp" agentiscaled || fail "couldn't unpack agentiscaled from $archive"
 	chmod 755 "$tmp/agentiscaled"
 	# Copy next to the target, then rename over it: a running node keeps its
@@ -213,7 +218,8 @@ install_binary() {
 
 # report BINARY says what was installed and whether `agentiscaled` runs it.
 report() {
-	echo "Installed $("$1" version 2>&1 | head -n 1) to $1"
+	out=$("$1" version 2>&1) || fail "installed $1, but it doesn't run: $(printf '%s' "$out" | head -n 1)"
+	echo "Installed $(printf '%s\n' "$out" | head -n 1) to $1"
 	found=$(command -v agentiscaled 2>/dev/null || true)
 	if [ -z "$found" ]; then
 		echo "${1%/*} is not on your PATH: add it, or run $1"
@@ -238,16 +244,24 @@ fetch() {
 	curl -fsSL --retry 3 -o "$2" "$1" || fail "couldn't download $1"
 }
 
+# sha256 FILE prints FILE's SHA-256 with the first tool that works: one on
+# PATH can be missing, broken or for another platform.
 sha256() {
-	if command -v sha256sum >/dev/null 2>&1; then
-		sha256sum "$1" | awk '{ print $1 }'
-	elif command -v shasum >/dev/null 2>&1; then
-		shasum -a 256 "$1" | awk '{ print $1 }'
-	elif command -v openssl >/dev/null 2>&1; then
-		openssl dgst -sha256 "$1" | awk '{ print $NF }'
-	else
-		fail "sha256sum, shasum or openssl is needed to check the download"
-	fi
+	for tool in sha256sum shasum openssl; do
+		command -v "$tool" >/dev/null 2>&1 || continue
+		case $tool in
+		sha256sum) sum=$(sha256sum "$1" 2>/dev/null) ;;
+		shasum) sum=$(shasum -a 256 "$1" 2>/dev/null) ;;
+		openssl) sum=$(openssl dgst -sha256 -r "$1" 2>/dev/null) ;;
+		esac || continue
+		sum=${sum%%[!0-9a-f]*}
+		if [ ${#sum} -eq 64 ]; then
+			echo "$sum"
+			return 0
+		fi
+	done
+	fail "found no working sha256sum, shasum or openssl to check the download"
 }
 
 main "$@"
+}
