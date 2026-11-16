@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -106,6 +105,9 @@ func runTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 	if strings.TrimSpace(text) == "" {
 		return errors.New("the message is empty")
 	}
+	if o.taskID != "" && !taskID.MatchString(o.taskID) {
+		return fmt.Errorf("-task %q is not a task ID", o.taskID)
+	}
 	if o.timeout <= 0 {
 		return errors.New("-timeout must be positive")
 	}
@@ -175,7 +177,14 @@ func sendAndFollow(ctx context.Context, tasks *a2aTasks, agent, text string, o t
 		}
 		return fmt.Errorf("%s before %s confirmed the task, which may still run: %w", endedBy(ctx, o.timeout), agent, err)
 	}
-	id := terminalSafe(sent.TaskID)
+	id := sent.TaskID
+	if !taskID.MatchString(id) {
+		// Not a task this command can name: stop it rather than leave it.
+		stopCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), cancelTimeout)
+		defer stop()
+		tasks.cancel(stopCtx, nil, taskIn{taskTarget: target, TaskID: id})
+		return fmt.Errorf("%s answered with %q, which is not a task ID; cancelled it", agent, id)
+	}
 	if o.taskID == "" {
 		fmt.Fprintf(errOut, "sent task %s to %s %s\n", id, agent, where)
 	} else {
@@ -224,49 +233,23 @@ func sendAndFollow(ctx context.Context, tasks *a2aTasks, agent, text string, o t
 	}
 }
 
-// answerCommand is the command that answers the question of task id. The
-// ID comes from the agent: quoted, it stays one argument of the command the
-// caller pastes, and -- keeps an answer that starts with a dash an answer.
-// An ID with characters a terminal cannot show is written with escapes,
-// for shells that read them ($'...' in bash and zsh), so that it is still
-// the exact ID; no shell passes a NUL in an argument.
+// taskID is the form of the task IDs task send takes and shows: agentiscaled
+// agents name tasks with UUIDs. An ID in any other form, which only another
+// A2A server would send, is refused rather than shown or put in a command.
+var taskID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+
+// answerCommand is the command that answers the question of task id, a
+// plain taskID; -- keeps an answer that starts with a dash an answer.
 func answerCommand(o taskSendOptions, target taskTarget, id string) string {
-	if strings.ContainsRune(id, 0) {
-		return fmt.Sprintf("no command can pass this task ID, which has a NUL character: %s", strconv.Quote(id))
-	}
-	quoted, note := shellQuote(id), ""
-	if terminalSafe(id) != id {
-		quoted, note = ansiCQuote(id), "\n(in bash or zsh: the task ID is escaped)"
-	}
 	answer := []string{"agentiscaled task send"}
 	if o.dataDir != defaultDataDir() {
 		answer = append(answer, "-data-dir", shellQuote(o.dataDir))
 	}
-	answer = append(answer, "-task", quoted)
+	answer = append(answer, "-task", id)
 	if target.PeerID != "" {
 		answer = append(answer, "-peer", target.PeerID)
 	}
-	return strings.Join(append(answer, target.Service, "--", `"<your answer>"`), " ") + note
-}
-
-// ansiCQuote quotes s as $'...', which bash, zsh and ksh read back to the
-// same bytes: printable ASCII as it is, every other byte as \xHH.
-func ansiCQuote(s string) string {
-	var b strings.Builder
-	b.WriteString("$'")
-	for i := 0; i < len(s); i++ {
-		switch c := s[i]; {
-		case c == '\'' || c == '\\':
-			b.WriteByte('\\')
-			b.WriteByte(c)
-		case c >= 0x20 && c < 0x7f:
-			b.WriteByte(c)
-		default:
-			fmt.Fprintf(&b, `\x%02x`, c)
-		}
-	}
-	b.WriteByte('\'')
-	return b.String()
+	return strings.Join(append(answer, target.Service, "--", `"<your answer>"`), " ")
 }
 
 // endedBy says what ended a call whose context is done.

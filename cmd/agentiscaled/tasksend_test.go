@@ -403,53 +403,55 @@ func TestTaskSendWaitsForTheAgentOnlyAsLongAsAsked(t *testing.T) {
 	}
 }
 
-func TestAnswerCommandQuotesTheTaskID(t *testing.T) {
+func TestAnswerCommand(t *testing.T) {
 	o := taskSendOptions{dataDir: defaultDataDir()}
-	got := answerCommand(o, taskTarget{Service: "helper"}, "$(touch pwned); rm -rf ~ 'x'")
-	want := `agentiscaled task send -task '$(touch pwned); rm -rf ~ '\''x'\''' helper -- "<your answer>"`
-	if got != want {
+	if got, want := answerCommand(o, taskTarget{Service: "helper"}, "a-1"), `agentiscaled task send -task a-1 helper -- "<your answer>"`; got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
-	}
-	// An ID with control characters is escaped, never shown raw or cut.
-	got = answerCommand(o, taskTarget{Service: "helper"}, "t\x1b[2J'é\\")
-	if want := "agentiscaled task send -task $'t\\x1b[2J\\'\\xc3\\xa9\\\\' helper -- \"<your answer>\"\n(in bash or zsh: the task ID is escaped)"; got != want {
-		t.Fatalf("got  %s\nwant %s", got, want)
-	}
-	if got := answerCommand(o, taskTarget{Service: "helper"}, "a\x00b"); got != `no command can pass this task ID, which has a NUL character: "a\x00b"` {
-		t.Fatalf("NUL: %s", got)
 	}
 	o.dataDir = "/tmp/my node"
-	got = answerCommand(o, taskTarget{PeerID: "12D3Koo", Service: "helper"}, "a-1")
+	got := answerCommand(o, taskTarget{PeerID: "12D3Koo", Service: "helper"}, "a-1")
 	if want := `agentiscaled task send -data-dir '/tmp/my node' -task a-1 -peer 12D3Koo helper -- "<your answer>"`; got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 }
 
-// The whole command, run by bash, reaches task send's parser as the exact
-// task ID, the agent and the answer.
+// Only plain task IDs, such as the UUIDs agentiscaled agents use, are taken.
+func TestTaskIDs(t *testing.T) {
+	for _, id := range []string{"3f2b6c1e-9d4a-4c1b-8f0e-2a7d5b9c1e33", "a-1", "t.2:x_y"} {
+		if !taskID.MatchString(id) {
+			t.Errorf("%q refused", id)
+		}
+	}
+	for _, id := range []string{"", "--", "-json", "a b", "$(x)", "t\x1b[2J", "a\x00b", "a\n", "it's", strings.Repeat("a", 129)} {
+		if taskID.MatchString(id) {
+			t.Errorf("%q taken", id)
+		}
+	}
+	err := startTaskSend("", "-data-dir", t.TempDir(), "-task", "$(x)", "helper", "21").wait(t)
+	if err == nil || !strings.Contains(err.Error(), "not a task ID") {
+		t.Fatalf("-task $(x): %v", err)
+	}
+}
+
+// The whole command, run by bash, reaches task send's parser as the task
+// ID, the agent and the answer.
 func TestAnswerCommandRoundTrips(t *testing.T) {
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("no bash")
 	}
-	for _, id := range []string{"a-1", "--", "-json", "t\x1b[2J'\"\\$(x)é\n", "it's ok"} {
-		cmd, _, _ := strings.Cut(answerCommand(taskSendOptions{dataDir: defaultDataDir()}, taskTarget{Service: "helper"}, id), "\n")
-		cmd = strings.Replace(cmd, `"<your answer>"`, `-42`, 1)
-		out, err := exec.Command(bash, "-c", `agentiscaled() { printf '%s\0' "$@"; }; `+cmd).Output()
-		if err != nil {
-			t.Fatalf("%q: bash ran %s: %v", id, cmd, err)
-		}
-		args := strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")
-		if len(args) < 2 || args[0] != "task" || args[1] != "send" {
-			t.Fatalf("%q: %q", id, args)
-		}
-		fs := flag.NewFlagSet("t", flag.ContinueOnError)
-		task := fs.String("task", "", "")
-		fs.Bool("json", false, "")
-		pos, err := parseInterleaved(fs, args[2:])
-		if err != nil || *task != id || !slices.Equal(pos, []string{"helper", "-42"}) {
-			t.Fatalf("%q: task %q, args %q, %v", id, *task, pos, err)
-		}
+	cmd := answerCommand(taskSendOptions{dataDir: "/tmp/it's here"}, taskTarget{Service: "helper"}, "a-1")
+	cmd = strings.Replace(cmd, `"<your answer>"`, `-42`, 1)
+	out, err := exec.Command(bash, "-c", `agentiscaled() { printf '%s\0' "$@"; }; `+cmd).Output()
+	if err != nil {
+		t.Fatalf("bash ran %s: %v", cmd, err)
+	}
+	args := strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	task, dir := fs.String("task", "", ""), fs.String("data-dir", "", "")
+	pos, err := parseInterleaved(fs, args[2:])
+	if err != nil || *task != "a-1" || *dir != "/tmp/it's here" || !slices.Equal(pos, []string{"helper", "-42"}) {
+		t.Fatalf("task %q, dir %q, args %q, %v", *task, *dir, pos, err)
 	}
 }
 
