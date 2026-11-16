@@ -244,8 +244,8 @@ agentiscaled up -join-code-path ./join-code
 ## In a container
 
 Each release is also a Linux image for amd64 and arm64,
-`ghcr.io/whiteredhouse/agentiscaled`, tagged with its version (such as `0.12.0`),
-`0.12` and `latest`. Its entrypoint is `agentiscaled`, and it runs as the
+`ghcr.io/whiteredhouse/agentiscaled`, tagged with its version (`X.Y.Z`, without the
+`v`), with `X.Y` and with `latest`. Its entrypoint is `agentiscaled`, and it runs as the
 non-root user `agentiscaled` (UID 65532). Given only flags, the node joins once and
 runs in the foreground. Keep its data directory, `/home/agentiscaled/.config/agentiscale`,
 on a volume, so it keeps its identity when the container is replaced.
@@ -262,7 +262,7 @@ sudo chown -R 65532 agentiscale-join
 docker run -d --name agentiscaled --restart unless-stopped \
   -v agentiscale:/home/agentiscaled/.config/agentiscale \
   -v "$PWD/agentiscale-join:/run/secrets/agentiscale:ro" \
-  ghcr.io/whiteredhouse/agentiscaled:latest \
+  ghcr.io/whiteredhouse/agentiscaled \
   -join-code-path /run/secrets/agentiscale/join-code -hostname my-server
 ```
 

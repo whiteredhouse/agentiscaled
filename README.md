@@ -82,9 +82,9 @@ Use `gh attestation verify <file> -R whiteredhouse/agentiscaled` to verify a
 download.
 
 The `release` job also pushes the Linux image `ghcr.io/whiteredhouse/agentiscaled`
-for amd64 and arm64 under the version (`0.12.0`), with an SBOM and a provenance
+for amd64 and arm64 under its version (`X.Y.Z`, without the `v`), with an SBOM and a provenance
 attestation. Only after a stable release is published does the `image-tags` job
-point `latest` and `0.12` at it. A failed `image-tags` job can be rerun alone.
+point `latest` and `X.Y` at it, unless they already name a newer version. A failed `image-tags` job can be rerun alone.
 
 After GitHub publication, the `homebrew` job updates
 [whiteredhouse/homebrew-tap](https://github.com/whiteredhouse/homebrew-tap) for
