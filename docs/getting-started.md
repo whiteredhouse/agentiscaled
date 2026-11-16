@@ -19,6 +19,8 @@ and install it with `sudo apt install ./agentiscaled_*.deb` or
 
 Check it with `agentiscaled version`.
 
+For Docker or Kubernetes, see [In a container](#in-a-container).
+
 ## 2. Join this machine
 
 ```sh
@@ -238,6 +240,58 @@ after `reset`:
 ```sh
 agentiscaled up -join-code-path ./join-code
 ```
+
+## In a container
+
+Each release is also a Linux image for amd64 and arm64,
+`ghcr.io/whiteredhouse/agentiscaled`, tagged with its version (`X.Y.Z`, without the
+`v`), with `X.Y` and with `latest`. Its entrypoint is `agentiscaled`, and it runs as the
+non-root user `agentiscaled` (UID 65532). Given only flags, the node joins once and
+runs in the foreground. Keep its data directory, `/home/agentiscaled/.config/agentiscale`,
+on a volume, so it keeps its identity when the container is replaced.
+
+Create a join code in your network and save it as `join-code` in a directory of its
+own. The node runs as UID 65532, so on Linux make the file private first, then give
+the directory and the file to that user:
+
+```sh
+mkdir -m 700 agentiscale-join
+# save the join code as agentiscale-join/join-code, then:
+chmod 600 agentiscale-join/join-code
+sudo chown -R 65532 agentiscale-join
+docker run -d --name agentiscaled --restart unless-stopped \
+  -v agentiscale:/home/agentiscaled/.config/agentiscale \
+  -v "$PWD/agentiscale-join:/run/secrets/agentiscale:ro" \
+  ghcr.io/whiteredhouse/agentiscaled \
+  -join-code-path /run/secrets/agentiscale/join-code -hostname my-server
+```
+
+These commands are for Docker running as root without user namespace remapping, where
+UID 65532 in the container is UID 65532 on the host. Otherwise the container's UID 65532
+is a different host UID: give the directory and the file to that UID instead. Look up
+the start of the right account's range in `/etc/subuid`:
+
+- With [`userns-remap`](https://docs.docker.com/engine/security/userns-remap/), the
+  account set in the daemon's `userns-remap` option (`dockremap` when it is
+  `default`). The host UID is the start of its range plus 65532.
+- With [rootless Docker](https://docs.docker.com/engine/security/rootless/), the user
+  that runs the rootless daemon. The host UID is the start of its range plus 65531,
+  because container UID 0 is that user itself.
+
+The join code is read only while the node has no identity yet. Once the node has
+joined, delete the file with `sudo rm agentiscale-join/join-code`, but keep the
+directory: the container still mounts it when it restarts.
+
+In Kubernetes, mount the join code from a Secret with `defaultMode: 0440`, keep the
+data directory on a PersistentVolumeClaim, and set `fsGroup: 65532` so the node can
+read the Secret and write to the volume. Run one replica per volume: two nodes must
+not share a data directory. A node that joins with a workload token takes
+`-network <id> -oidc-token-path <file>` instead.
+
+The image has no agent runtimes. To offer an agent from the container, build on it
+and install the runtime's CLI, then pass the agent's flags (see `agentiscaled -h`).
+Check the image with
+`gh attestation verify oci://ghcr.io/whiteredhouse/agentiscaled:<version> -R whiteredhouse/agentiscaled`.
 
 ## Nodes that join with a workload token
 

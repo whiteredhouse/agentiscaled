@@ -1,5 +1,7 @@
 # A v* tag stages a draft and publishes it after verifying build provenance.
 # The stable Homebrew cask is published by a separate, retryable job.
+# The container image is pushed under its version while staging; the latest
+# and X.Y tags move to it only after a stable release is published.
 name: Release
 
 on:
@@ -20,8 +22,10 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+      packages: write
     outputs:
       publication-artifact-id: ${{ steps.inputs.outputs.artifact-id }}
+      image-digest: ${{ steps.image.outputs.digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -36,6 +40,13 @@ jobs:
           go-version-file: go.mod
       - name: Test
         run: go test -race ./...
+      # A multi-platform push needs a docker-container builder.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
       - name: Stage release assets and generate cask
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
@@ -52,6 +63,20 @@ jobs:
             dist/*.deb
             dist/*.rpm
             dist/checksums.txt
+      - name: Find the image digest
+        id: image
+        run: |
+          digest=$(jq -r '[.[] | select(.type == "Docker Image") | .extra.Digest] | unique | .[]' dist/artifacts.json)
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Expected one image digest, got: $digest"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: ghcr.io/whiteredhouse/agentiscaled
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
       - name: Stage the attestation bundle for publication
         env:
           ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
@@ -105,3 +130,47 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: python3 .github/scripts/publish-release.py tap release-inputs/homebrew/Casks/agentiscaled.rb
+
+  image-tags:
+    needs: [release, publish]
+    if: needs.publish.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Point latest and X.Y at the released image
+        env:
+          DIGEST: ${{ needs.release.outputs.image-digest }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          image=ghcr.io/whiteredhouse/agentiscaled
+          version=${TAG#v}
+          # The version tag must still name the image this run attested.
+          [ "$(docker buildx imagetools inspect "$image:$version" --format '{{json .Manifest.Digest}}')" = "\"$DIGEST\"" ]
+          # A rerun of an older release must not move a tag back: each tag
+          # moves only if it is missing or names an older version.
+          for alias in latest "${version%.*}"; do
+            if raw=$(docker buildx imagetools inspect "$image:$alias" --raw 2>"$RUNNER_TEMP/inspect.err"); then
+              current=$(jq -r '.annotations["org.opencontainers.image.version"] // empty' <<<"$raw")
+              if [ -z "$current" ]; then
+                echo "::error::$image:$alias has no version annotation"
+                exit 1
+              fi
+            elif grep -q 'not found' "$RUNNER_TEMP/inspect.err"; then
+              current=
+            else
+              cat "$RUNNER_TEMP/inspect.err" >&2
+              exit 1
+            fi
+            if [ -n "$current" ] && [ "$(printf '%s\n' "$current" "$version" | sort -V | tail -n 1)" != "$version" ]; then
+              echo "$image:$alias stays at $current, newer than $version"
+              continue
+            fi
+            docker buildx imagetools create -t "$image:$alias" "$image@$DIGEST"
+          done

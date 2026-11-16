@@ -20,7 +20,8 @@ keeps the node running in the background. Later, `agentiscaled client connect`
 connects an app installed after `up`, and `agentiscaled agent add` offers another
 agent, accessible to local clients and other machines. See
 [Get started](docs/getting-started.md) for
-Linux packages, connecting your agent apps, and machines without a browser.
+Linux packages, the container image (`ghcr.io/whiteredhouse/agentiscaled`),
+connecting your agent apps, and machines without a browser.
 
 ## In GitHub Actions
 
@@ -80,6 +81,11 @@ Linux binaries for arm64 and amd64, `.deb` and `.rpm` packages, and
 that GitHub reports the signed digest for every staged asset before publishing.
 Use `gh attestation verify <file> -R whiteredhouse/agentiscaled` to verify a
 download.
+
+The `release` job also pushes the Linux image `ghcr.io/whiteredhouse/agentiscaled`
+for amd64 and arm64 under its version (`X.Y.Z`, without the `v`), with an SBOM and a provenance
+attestation. Only after a stable release is published does the `image-tags` job
+point `latest` and `X.Y` at it, unless they already name a newer version. A failed `image-tags` job can be rerun alone.
 
 After GitHub publication, the `homebrew` job updates
 [whiteredhouse/homebrew-tap](https://github.com/whiteredhouse/homebrew-tap) for

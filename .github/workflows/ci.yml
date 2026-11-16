@@ -68,3 +68,8 @@ jobs:
           distribution: goreleaser
           version: v2.20.2
           args: release --snapshot --clean
+      - name: Run the container image
+        run: |
+          image=$(jq -r '.[] | select(.type == "Docker Image" and .extra.Platforms == ["linux/amd64"]) | .name' dist/artifacts.json)
+          docker run --rm "$image" version | grep -q '^agentiscaled .*linux/amd64)$'
+          [ "$(docker run --rm --entrypoint id "$image" -u)" = 65532 ]

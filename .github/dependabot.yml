@@ -1,0 +1,21 @@
+# Weekly update PRs for what the build pins: the container image's base
+# (by digest) and the actions the workflows use (by commit).
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: Docker
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/release-setup
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: Actions
