@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -401,10 +402,14 @@ func TestTaskSendWaitsForTheAgentOnlyAsLongAsAsked(t *testing.T) {
 
 func TestAnswerCommandQuotesTheTaskID(t *testing.T) {
 	o := taskSendOptions{dataDir: defaultDataDir()}
-	got := answerCommand(o, taskTarget{Service: "helper"}, "$(touch pwned)\x1b[2J; rm -rf ~")
-	want := `agentiscaled task send -task '$(touch pwned); rm -rf ~' helper "<your answer>"`
+	got := answerCommand(o, taskTarget{Service: "helper"}, "$(touch pwned); rm -rf ~ 'x'")
+	want := `agentiscaled task send -task '$(touch pwned); rm -rf ~ '\''x'\''' helper "<your answer>"`
 	if got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+	// No copy of an ID with control characters names the task.
+	if got := answerCommand(o, taskTarget{Service: "helper"}, "t\x1b[2J"); strings.Contains(got, "t[2J") || !strings.Contains(got, "-json") {
+		t.Fatalf("control characters: %s", got)
 	}
 	o.dataDir = "/tmp/my node"
 	got = answerCommand(o, taskTarget{PeerID: "12D3Koo", Service: "helper"}, "a-1")
@@ -435,5 +440,37 @@ func TestReportTheAnswer(t *testing.T) {
 	failed := errors.New("task t ended failed")
 	if err := report(failingWriter{}, taskSendOptions{json: true}, task, failed); err != failed {
 		t.Errorf("the task's own error should win: %v", err)
+	}
+}
+
+// Ctrl-C ends a wait for a message on standard input that never closes.
+func TestTaskSendStopsReadingStandardInputWhenInterrupted(t *testing.T) {
+	r, w := io.Pipe()
+	defer w.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- runTaskSend(ctx, []string{"-data-dir", t.TempDir(), "helper"}, r, io.Discard, io.Discard)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("still reading standard input after Ctrl-C")
+	}
+}
+
+// What the agent or network says in an error reaches the terminal without
+// its control sequences.
+func TestTaskSendErrorsAreTerminalSafe(t *testing.T) {
+	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
+	fix.err = errors.New("boom\x1b]0;owned\x07\x1b[2J")
+	err := startTaskSend("", "-data-dir", dir, "helper", "hi").wait(t)
+	if err == nil || strings.ContainsRune(err.Error(), 0x1b) || strings.ContainsRune(err.Error(), 0x07) || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("got %q", err)
 	}
 }

@@ -93,7 +93,7 @@ func runTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 		text = pos[1]
 	}
 	if text == "-" {
-		b, err := io.ReadAll(io.LimitReader(stdin, maxMessageBytes+1))
+		b, err := readMessage(ctx, stdin)
 		if err != nil {
 			return fmt.Errorf("read the message: %w", err)
 		}
@@ -123,7 +123,32 @@ func runTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 	}
 	node := socketClient(socket)
 	tasks := &a2aTasks{http: node, base: "http://agentiscaled", local: socketClient(filepath.Join(o.dataDir, localAgentSocketName))}
-	return sendAndFollow(ctx, tasks, agent, text, o, out, errOut)
+	if err := sendAndFollow(ctx, tasks, agent, text, o, out, errOut); err != nil {
+		// Errors carry the agent's words and the network's: shown on the
+		// caller's terminal, they must not drive it.
+		return errors.New(terminalSafe(err.Error()))
+	}
+	return nil
+}
+
+// readMessage reads the message from standard input, or stops waiting for
+// it when ctx ends, as on Ctrl-C.
+func readMessage(ctx context.Context, stdin io.Reader) ([]byte, error) {
+	type read struct {
+		b   []byte
+		err error
+	}
+	done := make(chan read, 1)
+	go func() {
+		b, err := io.ReadAll(io.LimitReader(stdin, maxMessageBytes+1))
+		done <- read{b, err}
+	}()
+	select {
+	case r := <-done:
+		return r.b, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // sendAndFollow finds agent, sends it text and follows the task until it
@@ -200,13 +225,17 @@ func sendAndFollow(ctx context.Context, tasks *a2aTasks, agent, text string, o t
 
 // answerCommand is the command that answers the question of task id. The
 // ID comes from the agent: quoted, it stays one argument of the command the
-// caller pastes.
+// caller pastes. An ID with control characters cannot be shown as it is,
+// and no copy of it with them removed would name the task.
 func answerCommand(o taskSendOptions, target taskTarget, id string) string {
+	if terminalSafe(id) != id || id == "" {
+		return "task send -task with the task ID from -json (it has characters a terminal cannot show)"
+	}
 	answer := []string{"agentiscaled task send"}
 	if o.dataDir != defaultDataDir() {
 		answer = append(answer, "-data-dir", shellQuote(o.dataDir))
 	}
-	answer = append(answer, "-task", shellQuote(terminalSafe(id)))
+	answer = append(answer, "-task", shellQuote(id))
 	if target.PeerID != "" {
 		answer = append(answer, "-peer", target.PeerID)
 	}
