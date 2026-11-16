@@ -248,21 +248,27 @@ Each release is also a Linux image for amd64 and arm64,
 `0.12` and `latest`. Its entrypoint is `agentiscaled`, and it runs as the
 non-root user `agentiscaled` (UID 65532). Given only flags, the node joins once and
 runs in the foreground. Keep its data directory, `/home/agentiscaled/.config/agentiscale`,
-on a volume, so it keeps its identity when the container is replaced. Create a join
-code in your network and pass it in a file:
+on a volume, so it keeps its identity when the container is replaced.
+
+Create a join code in your network and save it as `join-code` in a directory of its
+own. The node runs as UID 65532, so on Linux make the file private first, then give
+the directory and the file to that user:
 
 ```sh
+mkdir -m 700 agentiscale-join
+# save the join code as agentiscale-join/join-code, then:
+chmod 600 agentiscale-join/join-code
+sudo chown -R 65532 agentiscale-join
 docker run -d --name agentiscaled --restart unless-stopped \
   -v agentiscale:/home/agentiscaled/.config/agentiscale \
-  -v "$PWD/join-code:/run/secrets/join-code:ro" \
+  -v "$PWD/agentiscale-join:/run/secrets/agentiscale:ro" \
   ghcr.io/whiteredhouse/agentiscaled:latest \
-  -join-code-path /run/secrets/join-code -hostname my-server
+  -join-code-path /run/secrets/agentiscale/join-code -hostname my-server
 ```
 
-The node runs as UID 65532, so it must be able to read the join code file. On Linux,
-keep the file private and give it to that user:
-`sudo chown 65532 join-code && chmod 600 join-code`. The join code is used only while
-the node has no identity yet; delete the file once the node has joined.
+The join code is read only while the node has no identity yet. Once the node has
+joined, delete the file with `sudo rm agentiscale-join/join-code`, but keep the
+directory: the container still mounts it when it restarts.
 
 In Kubernetes, mount the join code from a Secret with `defaultMode: 0440`, keep the
 data directory on a PersistentVolumeClaim, and set `fsGroup: 65532` so the node can
