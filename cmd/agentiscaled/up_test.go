@@ -28,7 +28,7 @@ func TestStatusWithoutSavedSettings(t *testing.T) {
 	}{
 		{"connected", http.StatusOK, "connected"},
 		{"disconnected", http.StatusServiceUnavailable, "not connected to the mesh"},
-		{"stopped", 0, "node not running"},
+		{"stopped", 0, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := shortTempDir(t)
@@ -42,10 +42,18 @@ func TestStatusWithoutSavedSettings(t *testing.T) {
 					w.WriteHeader(tc.readyCode)
 				})
 				server := &http.Server{Handler: mux}
-				go server.Serve(listener)
+				go func() { _ = server.Serve(listener) }()
 				t.Cleanup(func() { server.Close() })
 			}
-			if out := statusOf(t, dir); !strings.Contains(out, "Mesh connection: "+tc.want+"\n") {
+			out := statusOf(t, dir)
+			if tc.want == "" {
+				// No socket and no settings: no node here at all.
+				if want := "No node set up in " + dir; !strings.HasPrefix(out, want) {
+					t.Errorf("status = %q, want %q", out, want)
+				}
+				return
+			}
+			if !strings.Contains(out, "Mesh connection: "+tc.want+"\n") {
 				t.Errorf("status = %q, want mesh connection %q", out, tc.want)
 			}
 		})

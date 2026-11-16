@@ -619,15 +619,25 @@ func runStatus(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	saved := err == nil
+	h, err := loadHalt(dir)
+	if err != nil {
+		return err
+	}
+	// Nodes started directly with flags have a socket (or a halt note) but
+	// no saved settings. With none of them there is no node here.
+	if !saved && h == nil {
+		if _, err := os.Stat(filepath.Join(dir, meshnode.DefaultSocketName)); errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(out, "No node set up in %s. Run 'agentiscaled up'.\n", dir)
+			return nil
+		}
+	}
 	fmt.Fprintf(out, "Data:     %s\n", dir)
 	serviceRuns := false
-	// Nodes started directly with flags have a socket but no saved settings.
-	if err == nil {
+	if saved {
 		serviceRuns = printSavedNodeStatus(out, dir, s)
 	}
-	if h, err := loadHalt(dir); err != nil {
-		return err
-	} else if h != nil {
+	if h != nil {
 		fmt.Fprintf(out, "Mesh connection: %s\n", h.Message)
 		return nil
 	}
