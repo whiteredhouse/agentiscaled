@@ -537,7 +537,7 @@ class PackageTest(Base):
 
     def test_package_refusals(self):
         for machine, message in [
-            ({"system": "Darwin"}, "no packages for macOS"),
+            ({"system": "Darwin"}, "no packages for macOS; install with Homebrew (brew install whiteredhouse/tap/agentiscaled)"),
             ({"managers": ()}, "found no apt-get, dnf, yum or zypper"),
             ({"sudo": False}, "needs root, and there is no sudo or doas"),
         ]:
@@ -547,6 +547,38 @@ class PackageTest(Base):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
                 self.assertEqual(self.calls(log), [])
+
+
+class MacTest(Base):
+    """On a stand-in Mac the script installs the binary and never runs
+    Homebrew, only names it when brew is on PATH."""
+
+    machine = PackageTest.machine
+    repository = PackageTest.repository
+    calls = PackageTest.calls
+
+    def mac(self, brew):
+        log = self.machine(system="Darwin", managers=("brew",) if brew else ())
+        for arch in ("amd64", "arm64"):
+            name = f"agentiscaled_9.8.7_darwin_{arch}.tar.gz"
+            if f"/releases/download/{VERSION}/{name}" in Releases.files:
+                continue
+            data = archive(FAKE_BINARY)
+            Releases.files[f"/releases/download/{VERSION}/{name}"] = data
+            Releases.files[f"/releases/download/{VERSION}/checksums.txt"] += \
+                f"{hashlib.sha256(data).hexdigest()}  {name}\n".encode()
+        return log
+
+    def test_binary_install_names_homebrew_without_running_it(self):
+        for brew in (True, False):
+            with self.subTest(brew=brew):
+                log = self.mac(brew)
+                result = self.install()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("Downloading agentiscaled v9.8.7 for darwin/", result.stdout)
+                self.assertTrue((self.tmp / "home" / ".local" / "bin" / "agentiscaled").is_file())
+                self.assertEqual(self.calls(log), [])
+                self.assertEqual("brew install whiteredhouse/tap/agentiscaled" in result.stdout, brew)
 
 
 if __name__ == "__main__":

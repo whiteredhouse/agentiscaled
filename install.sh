@@ -13,7 +13,9 @@
 #
 # Elsewhere (macOS, other Linux, no sudo), with -dir, or for a prerelease,
 # it puts the agentiscaled binary from a GitHub release in a directory after
-# checking it against the release's checksums.txt, and needs no root.
+# checking it against the release's checksums.txt, and needs no root. On
+# macOS it never runs Homebrew; if brew is there, it says how to install
+# with it instead, so that `brew upgrade` keeps agentiscaled current.
 #
 # Options (or the environment variable in brackets):
 #   -version VERSION  release to install, like v0.11.0, or latest (default)
@@ -154,7 +156,7 @@ choose_package() {
 	manager='' why=''
 	[ "$method" != binary ] && [ -z "$dir" ] || return 0
 	if [ "$os" != linux ]; then
-		why="there are no packages for macOS; leave out -method package"
+		why="there are no packages for macOS; install with Homebrew (brew install whiteredhouse/tap/agentiscaled) or leave out -method package"
 		return 0
 	fi
 	case $version in
@@ -358,6 +360,10 @@ install_binary() {
 		fail "couldn't replace $dir/agentiscaled"
 	}
 	report "$dir/agentiscaled"
+	if [ "$os" = darwin ] && command -v brew >/dev/null 2>&1; then
+		echo "Homebrew is installed: to have brew upgrade keep agentiscaled current, remove $dir/agentiscaled and run"
+		echo "  brew install whiteredhouse/tap/agentiscaled"
+	fi
 }
 
 # report BINARY says what was installed and whether `agentiscaled` runs it.

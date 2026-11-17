@@ -29,7 +29,9 @@ removes it.
 
 On macOS, on other Linux, or without sudo, it downloads the release's binary, checks it
 against the release's `checksums.txt`, and puts it in `/usr/local/bin` if you can write
-to it, else in `~/.local/bin`, with no root. Run the script again to upgrade.
+to it, else in `~/.local/bin`, with no root. Run the script again to upgrade. On macOS
+it never runs Homebrew; if `brew` is installed it reminds you that the Homebrew install
+above lets `brew upgrade` keep agentiscaled current.
 
 Add options after `sh -s --`:
 
