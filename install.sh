@@ -343,7 +343,9 @@ rpm_install() {
 		verb=upgrade
 	fi
 	echo "Running $manager $verb"
-	rpm_here "$verb" agentiscaled || true
+	# A failure is a failure: dnf and yum exit 0 when there is nothing to
+	# upgrade.
+	rpm_here "$verb" agentiscaled || fail "$manager $verb agentiscaled failed"
 	consistent && return 0
 	[ -n "$have" ] || fail "$manager couldn't install agentiscaled"
 	# A packaged binary something replaced: reinstall exactly the installed

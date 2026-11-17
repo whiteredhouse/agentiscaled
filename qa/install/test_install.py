@@ -517,6 +517,18 @@ class PackageTest(Base):
                         self.assertTrue(c.endswith(f" {self.RPM_HERE}{tail}"), c)
                     self.assertIn(f"Installed agentiscaled {want} ", result.stdout)
 
+    def test_dnf_and_yum_latest_upgrade_failure_fails(self):
+        # A metadata download failure, say: the installed package is left
+        # as it was, and that is not success.
+        for manager in ("dnf", "yum"):
+            with self.subTest(manager=manager):
+                log = self.rpm_machine(manager, {}, "1.0.0")
+                result = self.install()
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(f"{manager} upgrade agentiscaled failed", result.stderr)
+                self.assertNotIn("Installed agentiscaled", result.stdout)
+                self.assertEqual([c.split()[1] for c in self.calls(log)], ["upgrade"])
+
     def test_dnf_failing_every_way_fails(self):
         log = self.rpm_machine("dnf", {}, "10.0.0")
         result = self.install("-version", VERSION)
