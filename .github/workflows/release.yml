@@ -1,5 +1,6 @@
 # A v* tag stages a draft and publishes it after verifying build provenance.
-# The stable Homebrew cask is published by a separate, retryable job.
+# The stable Homebrew cask is published by a separate, retryable job, and
+# another starts the publish to pkgs.agentiscale.net's apt and yum repository.
 # The container image is pushed under its version while staging; the latest
 # and X.Y tags move to it only after a stable release is published.
 name: Release
@@ -174,3 +175,22 @@ jobs:
             fi
             docker buildx imagetools create -t "$image:$alias" "$image@$DIGEST"
           done
+
+  packages:
+    needs: publish
+    if: needs.publish.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start the apt and yum repository publish
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGES_DISPATCH_TOKEN }}
+          REPOSITORY: ${{ secrets.PACKAGES_DISPATCH_REPOSITORY }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ] || [ -z "$REPOSITORY" ]; then
+            echo "PACKAGES_DISPATCH_TOKEN or PACKAGES_DISPATCH_REPOSITORY is absent. Skipping packages."
+            exit 0
+          fi
+          gh api -X POST "repos/$REPOSITORY/actions/workflows/packages.yml/dispatches" \
+            -f ref=main -f "inputs[version]=$TAG"
