@@ -14,6 +14,19 @@ brew install whiteredhouse/tap/agentiscaled
 agentiscaled up
 ```
 
+Without Homebrew, on Linux or macOS (x64 or ARM64):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/whiteredhouse/agentiscaled/main/install.sh | sh
+```
+
+On Debian, Ubuntu, Fedora, RHEL, Amazon Linux and openSUSE the script adds the signed
+agentiscale package repository and installs the `agentiscaled` package through sudo, so
+your system's updates keep it current. Elsewhere, or with `-dir`, it puts the binary from
+the latest release, checked against its `checksums.txt`, in `/usr/local/bin` if you can
+write to it, else `~/.local/bin`, without root. `sh -s -- -version v0.11.0` pins a
+release. See [Get started](docs/getting-started.md#1-install).
+
 `up` first asks which agent apps to connect and whether to offer an agent. It then
 signs you in through your browser if needed, joins this machine to your network and
 keeps the node running in the background. Later, `agentiscaled client connect`
