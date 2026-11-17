@@ -15,7 +15,7 @@ brew install whiteredhouse/tap/agentiscaled
 On Linux or macOS without Homebrew, run the install script:
 
 ```sh
-curl -fsSL https://get.agentiscale.net | sh
+curl -fsSL https://get.agentiscale.net/install.sh | sh
 ```
 
 On Debian, Ubuntu, Fedora, RHEL, Amazon Linux and openSUSE it adds the agentiscale
