@@ -578,9 +578,12 @@ class BrewTest(Base):
                        f'printf \'#!/bin/sh\\necho "agentiscaled 9.8.7 (commit brew, fake)"\\n\' >{self.brew_bin} && '
                        f'chmod 755 {self.brew_bin} && echo 1 >{listed} ;;\n')
                     + 'esac\n')
-        # A pin takes the release's darwin binary.
+        # A pin takes the release's darwin binary; on a Mac, publish already
+        # added the host's own.
         for arch in ("amd64", "arm64"):
             name = f"agentiscaled_9.8.7_darwin_{arch}.tar.gz"
+            if f"/releases/download/{VERSION}/{name}" in Releases.files:
+                continue
             data = archive(FAKE_BINARY)
             Releases.files[f"/releases/download/{VERSION}/{name}"] = data
             Releases.files[f"/releases/download/{VERSION}/checksums.txt"] += \
@@ -631,7 +634,8 @@ class BrewTest(Base):
                 log = self.mac(**machine)
                 result = self.install(*args)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn("Downloading agentiscaled v9.8.7 for darwin/amd64", result.stdout)
+                # darwin/arm64 where sysctl reports Apple silicon.
+                self.assertIn("Downloading agentiscaled v9.8.7 for darwin/", result.stdout)
                 self.assertEqual(self.calls(log), [])
                 self.assertTrue((self.tmp / "home" / ".local" / "bin" / "agentiscaled").is_file())
 
