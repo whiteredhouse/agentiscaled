@@ -15,7 +15,7 @@ brew install whiteredhouse/tap/agentiscaled
 On Linux or macOS without Homebrew, run the install script:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/whiteredhouse/agentiscaled/main/install.sh | sh
+curl -fsSL https://get.agentiscale.net | sh
 ```
 
 On Debian, Ubuntu, Fedora, RHEL, Amazon Linux and openSUSE it adds the agentiscale
@@ -33,7 +33,7 @@ to it, else in `~/.local/bin`, with no root. Run the script again to upgrade.
 
 Add options after `sh -s --`:
 
-- `-version v0.11.0` installs that release instead of the latest. A release the package
+- `-version vX.Y.Z` installs that release instead of the latest. A release the package
   repository doesn't have (an older one, or a prerelease) is installed as the binary.
 - `-dir DIR` puts the binary in `DIR`, without a package or root.
 - `-method binary` skips the package; `-method package` fails rather than fall back

@@ -1,8 +1,8 @@
 #!/bin/sh
 # Installs agentiscaled on Linux or macOS (x64 or ARM64).
 #
-#   curl -fsSL https://raw.githubusercontent.com/whiteredhouse/agentiscaled/main/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/whiteredhouse/agentiscaled/main/install.sh | sh -s -- -version v0.11.0
+#   curl -fsSL https://get.agentiscale.net | sh
+#   curl -fsSL https://get.agentiscale.net | sh -s -- -version vX.Y.Z
 #
 # On Debian, Ubuntu, Fedora, RHEL, Amazon Linux and openSUSE it adds the
 # signed agentiscale package repository (https://pkgs.agentiscale.net) and
