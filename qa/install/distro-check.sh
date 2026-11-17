@@ -6,15 +6,16 @@
 #   docker run --rm -v "$PWD:/src:ro" fedora:latest sh /src/qa/install/distro-check.sh
 #
 # It installs the latest release from the repository, runs it again, pins
-# that release, reinstalls it over a binary install that replaced the
-# packaged file, and checks that a version the repository lacks is refused,
+# that release, and checks that a version the repository lacks is refused,
 # checking after each step that the package manager owns the binary at the
 # version asked for. With INSTALL_CHECK_OLDER set to an older release in the
-# repository, it also downgrades to it and upgrades back.
+# repository, it checks that pinning it doesn't downgrade. Last, it checks
+# that a binary install which replaced the packaged file is reported.
 set -eu
 
 src=$(cd "$(dirname "$0")/../.." && pwd)
 older=${INSTALL_CHECK_OLDER:-}
+errors=$(mktemp)
 
 # The script needs curl, and the binary-install step tar and gzip; slim
 # images may lack them.
@@ -94,16 +95,6 @@ step "pin v$latest"
 install -version "v$latest"
 owned "$latest"
 
-step "pin v$latest over an older binary install that replaced the packaged file"
-sh "$src/install.sh" -method binary -dir /usr/bin -version "${INSTALL_CHECK_REPLACED:-v0.10.0}"
-install -version "v$latest"
-owned "$latest"
-
-step "latest over an older binary install that replaced the packaged file"
-sh "$src/install.sh" -method binary -dir /usr/bin -version "${INSTALL_CHECK_REPLACED:-v0.10.0}"
-install
-owned "$latest"
-
 step "a version the repository lacks"
 if install -version v0.0.1; then
 	echo "FAIL: -method package installed v0.0.1" >&2
@@ -112,14 +103,23 @@ fi
 owned "$latest"
 
 if [ -n "$older" ]; then
-	step "pin $older (a downgrade)"
-	install -version "$older"
-	owned "${older#v}"
-
-	step "latest again (an upgrade)"
-	install
+	step "pin $older (never a downgrade)"
+	if install -version "$older"; then
+		echo "FAIL: -method package downgraded to $older" >&2
+		exit 1
+	fi
 	owned "$latest"
 fi
+
+step "latest over an older binary install that replaced the packaged file"
+sh "$src/install.sh" -method binary -dir /usr/bin -version "${INSTALL_CHECK_REPLACED:-v0.10.0}"
+if install 2>"$errors"; then
+	echo "FAIL: -method package accepted a replaced binary" >&2
+	exit 1
+fi
+cat "$errors" >&2
+grep -q "something replaced it" "$errors"
+echo "ok: the replaced binary is reported"
 
 echo
 echo "All steps passed on ${PRETTY_NAME:-unknown}"

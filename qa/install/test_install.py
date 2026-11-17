@@ -367,20 +367,19 @@ class PackageTest(Base):
         # latest is apt's own choice, never a downgrade.
         self.assertEqual(self.calls(log), [
             f"apt-get {self.APT_HERE} update -o APT::Get::List-Cleanup=0",
-            f"apt-get {self.APT_HERE} install -y --reinstall agentiscaled",
+            f"apt-get {self.APT_HERE} install -y agentiscaled",
         ])
         self.assertIn("sudo apt-get", log.read_text())
         self.assertIn(f"Installed agentiscaled 9.8.7 (commit test, fake) to {self.pkg_bin}", result.stdout)
         # latest doesn't read the unsigned index.
         self.assertNotIn("/pkgs/deb/dists/stable/main/binary-amd64/Packages", Releases.requests)
 
-    def test_apt_pin_may_downgrade(self):
+    def test_apt_pin(self):
         log = self.machine()
-        self.installed("9.8.7")
         result = self.install("-version", "v1.0.0")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.calls(log)[-1],
-                         f"apt-get {self.APT_HERE} install -y --reinstall --allow-downgrades agentiscaled=1.0.0")
+        self.assertEqual(self.calls(log)[-1], f"apt-get {self.APT_HERE} install -y agentiscaled=1.0.0")
+        self.assertIn("Installed agentiscaled 1.0.0 ", result.stdout)
 
     def test_pin_missing_from_the_repository(self):
         log = self.machine(repo_versions=("1.0.0",))
@@ -422,7 +421,7 @@ class PackageTest(Base):
     def test_zypper(self):
         for args, install in [
             ((), "install --from agentiscale agentiscaled"),
-            (("-version", "v1.0.0"), "install --oldpackage --force --from agentiscale agentiscaled=1.0.0"),
+            (("-version", "v1.0.0"), "install --from agentiscale agentiscaled=1.0.0"),
         ]:
             with self.subTest(args):
                 log = self.machine(managers=("zypper",))
@@ -436,27 +435,7 @@ class PackageTest(Base):
                 self.assertIn("type=rpm-md\n", repo)
                 self.assertIn("gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-agentiscale\n", repo)
 
-    def test_zypper_latest_never_forces_except_to_repair(self):
-        for installed, binary_version, calls, want in [
-            # Newer than the repository: a forced install could downgrade it.
-            ("10.0.0", None, ["install --from agentiscale agentiscaled"], "10.0.0"),
-            # The packaged binary was replaced: reinstall exactly 9.8.7.
-            ("9.8.7", "1.0.0", ["install --from agentiscale agentiscaled",
-                                "install --force --from agentiscale agentiscaled=9.8.7"], "9.8.7"),
-        ]:
-            with self.subTest(installed=installed, binary=binary_version):
-                log = self.machine(managers=())
-                # Like zypper: a plain install of an installed package with
-                # nothing newer does nothing; --force installs.
-                self.script("zypper", f'echo "zypper $*" >>{log}\n'
-                            f'case "$*" in *--force*) {self.apply} ;; esac\n')
-                self.installed(installed, binary_version)
-                result = self.install()
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual([c.removeprefix("zypper --non-interactive ") for c in self.calls(log)][1:], calls)
-                self.assertIn(f"Installed agentiscaled {want} ", result.stdout)
-
-    def rpm_machine(self, manager, actions, installed=None, binary_version=None):
+    def rpm_machine(self, manager, actions, installed=None):
         """A stand-in dnf or yum whose verbs act as given: "apply" installs
         the version asked for, "noop" exits 0 doing nothing, anything else
         exits 1 with "Nothing to do", as yum 3 does."""
@@ -467,55 +446,51 @@ class PackageTest(Base):
         self.script(manager, f'echo "{manager} $*" >>{log}\n'
                     f'case "$1" in\n{cases}*) echo "Nothing to do"; exit 1 ;;\nesac\n')
         if installed:
-            self.installed(installed, binary_version)
+            self.installed(installed)
         return log
 
-    def test_dnf_and_yum_pins_let_rpm_order_versions(self):
+    def test_dnf_and_yum_pins(self):
         for manager in ("dnf", "yum"):
-            for installed, binary_version, actions, verbs in [
-                (None, None, {"install": "apply"}, ["install"]),
-                ("1.0.0", None, {"install": "apply"}, ["install"]),
-                # A prerelease is older than its release in rpm's order,
-                # though its trailing .1 would sort after 9.8.7 as numbers.
-                ("9.8.7~rc.1", "9.8.7-rc.1", {"install": "apply"}, ["install"]),
-                ("10.0.0", None, {"downgrade": "apply"}, ["install", "downgrade"]),
-                ("9.10.0", None, {"downgrade": "apply"}, ["install", "downgrade"]),
-                ("9.8.7", None, {}, []),
-                # rpm records 9.8.7, but a binary install replaced the file.
-                ("9.8.7", "10.0.0", {"reinstall": "apply"}, ["install", "downgrade", "reinstall"]),
+            for installed, actions, verbs in [
+                (None, {"install": "apply"}, ["install"]),
+                ("1.0.0", {"install": "apply"}, ["install"]),
+                # Already installed: yum 3 would exit 1 with "Nothing to do".
+                ("9.8.7", {}, []),
             ]:
-                with self.subTest(manager=manager, installed=installed, binary=binary_version):
-                    log = self.rpm_machine(manager, actions, installed, binary_version)
+                with self.subTest(manager=manager, installed=installed):
+                    log = self.rpm_machine(manager, actions, installed)
                     result = self.install("-version", VERSION)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertEqual([c.split()[1] for c in self.calls(log)], verbs)
-                    for c in self.calls(log):
-                        self.assertTrue(c.endswith(f" {self.RPM_HERE} agentiscaled-9.8.7"), c)
+                    self.assertEqual(self.calls(log), [f"{manager} {v} {self.RPM_HERE} agentiscaled-9.8.7" for v in verbs])
+                    self.assertIn("Installed agentiscaled 9.8.7 ", result.stdout)
                     if not verbs:
                         self.assertIn("agentiscaled 9.8.7 is already installed", result.stdout)
 
-    def test_dnf_and_yum_latest_lets_the_manager_choose(self):
+    def test_dnf_and_yum_latest(self):
         for manager in ("dnf", "yum"):
-            for installed, binary_version, actions, verbs, want in [
-                (None, None, {"install": "apply"}, ["install"], "9.8.7"),
-                ("1.0.0", None, {"upgrade": "apply"}, ["upgrade"], "9.8.7"),
+            for installed, actions, verbs, want in [
+                (None, {"install": "apply"}, ["install"], "9.8.7"),
+                ("1.0.0", {"upgrade": "apply"}, ["upgrade"], "9.8.7"),
                 # Already the newest: upgrade has nothing to do.
-                ("9.8.7", None, {"upgrade": "noop"}, ["upgrade"], "9.8.7"),
+                ("9.8.7", {"upgrade": "noop"}, ["upgrade"], "9.8.7"),
                 # Newer than the repository: kept, never downgraded.
-                ("10.0.0", None, {"upgrade": "noop"}, ["upgrade"], "10.0.0"),
-                # The packaged binary was replaced: put it back.
-                ("9.8.7", "1.0.0", {"upgrade": "noop", "reinstall": "apply"}, ["upgrade", "reinstall"], "9.8.7"),
+                ("10.0.0", {"upgrade": "noop"}, ["upgrade"], "10.0.0"),
             ]:
-                with self.subTest(manager=manager, installed=installed, binary=binary_version):
-                    log = self.rpm_machine(manager, actions, installed, binary_version)
+                with self.subTest(manager=manager, installed=installed):
+                    log = self.rpm_machine(manager, actions, installed)
                     result = self.install()
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertEqual([c.split()[1] for c in self.calls(log)], verbs)
-                    for c in self.calls(log):
-                        # Only the repair names a version: the installed one.
-                        tail = " agentiscaled-9.8.7" if c.split()[1] == "reinstall" else " agentiscaled"
-                        self.assertTrue(c.endswith(f" {self.RPM_HERE}{tail}"), c)
+                    self.assertEqual(self.calls(log), [f"{manager} {v} {self.RPM_HERE} agentiscaled" for v in verbs])
                     self.assertIn(f"Installed agentiscaled {want} ", result.stdout)
+
+    def test_pins_never_downgrade(self):
+        # dnf exits 0 when a newer version is installed; apt and zypper
+        # refuse. Either way the script says what to do.
+        log = self.rpm_machine("dnf", {"install": "noop"}, "10.0.0")
+        result = self.install("-version", VERSION)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("agentiscaled 10.0.0 is installed, and dnf doesn't downgrade it", result.stderr)
+        self.assertEqual([c.split()[1] for c in self.calls(log)], ["install"])
 
     def test_dnf_and_yum_latest_upgrade_failure_fails(self):
         # A metadata download failure, say: the installed package is left
@@ -528,13 +503,6 @@ class PackageTest(Base):
                 self.assertIn(f"{manager} upgrade agentiscaled failed", result.stderr)
                 self.assertNotIn("Installed agentiscaled", result.stdout)
                 self.assertEqual([c.split()[1] for c in self.calls(log)], ["upgrade"])
-
-    def test_dnf_failing_every_way_fails(self):
-        log = self.rpm_machine("dnf", {}, "10.0.0")
-        result = self.install("-version", VERSION)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("install, downgrade and reinstall failed", result.stderr)
-        self.assertEqual([c.split()[1] for c in self.calls(log)], ["install", "downgrade", "reinstall"])
 
     def test_dir_or_binary_method_skips_the_package(self):
         log = self.machine()
@@ -556,11 +524,16 @@ class PackageTest(Base):
         self.assertEqual(self.calls(log), [])
 
     def test_package_manager_leaving_another_binary_fails(self):
-        self.machine(installs=False)
-        self.installed("9.8.7", "10.0.0")
-        result = self.install()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("the package database has agentiscaled 9.8.7", result.stderr)
+        # Something replaced the packaged binary, and the package manager
+        # had nothing to do: that's reported, not repaired.
+        for manager in ("apt-get", "zypper"):
+            with self.subTest(manager):
+                self.machine(managers=(manager,), installs=False)
+                self.installed("9.8.7", "10.0.0")
+                result = self.install()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("is agentiscaled 10.0.0 (commit installed, fake), not the packaged agentiscaled 9.8.7: "
+                              f"something replaced it; reinstall the package with {manager}", result.stderr)
 
     def test_package_refusals(self):
         for machine, message in [
