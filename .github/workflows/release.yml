@@ -180,38 +180,17 @@ jobs:
     needs: publish
     if: needs.publish.outputs.prerelease == 'false'
     runs-on: ubuntu-latest
-    env:
-      APP_CLIENT_ID: ${{ secrets.PACKAGES_APP_CLIENT_ID }}
-      REPOSITORY: ${{ secrets.PACKAGES_DISPATCH_REPOSITORY }}
     steps:
-      - name: Check configuration
-        id: config
-        run: |
-          set -euo pipefail
-          if [ -z "$APP_CLIENT_ID" ] || [ -z "$REPOSITORY" ]; then
-            echo "PACKAGES_APP_CLIENT_ID or PACKAGES_DISPATCH_REPOSITORY is absent. Skipping packages."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "enabled=true" >> "$GITHUB_OUTPUT"
-          echo "owner=${REPOSITORY%%/*}" >> "$GITHUB_OUTPUT"
-          echo "name=${REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
-      # A one-hour installation token that can only run workflows in the
-      # publisher's repository; no long-lived token is stored here.
-      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        if: steps.config.outputs.enabled == 'true'
-        id: token
-        with:
-          client-id: ${{ env.APP_CLIENT_ID }}
-          private-key: ${{ secrets.PACKAGES_APP_PRIVATE_KEY }}
-          owner: ${{ steps.config.outputs.owner }}
-          repositories: ${{ steps.config.outputs.name }}
-          permission-actions: write
       - name: Start the apt and yum repository publish
-        if: steps.config.outputs.enabled == 'true'
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ secrets.PACKAGES_DISPATCH_TOKEN }}
+          REPOSITORY: ${{ secrets.PACKAGES_DISPATCH_REPOSITORY }}
           TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ] || [ -z "$REPOSITORY" ]; then
+            echo "PACKAGES_DISPATCH_TOKEN or PACKAGES_DISPATCH_REPOSITORY is absent. Skipping packages."
+            exit 0
+          fi
           gh api -X POST "repos/$REPOSITORY/actions/workflows/packages.yml/dispatches" \
             -f ref=main -f "inputs[version]=$TAG"

@@ -91,10 +91,8 @@ After GitHub publication, the `homebrew` job updates
 [whiteredhouse/homebrew-tap](https://github.com/whiteredhouse/homebrew-tap) for
 stable releases when `HOMEBREW_TAP_TOKEN` is configured. The `packages` job
 then starts the publish to the apt and yum repository at
-`https://pkgs.agentiscale.net` when `PACKAGES_APP_CLIENT_ID`,
-`PACKAGES_APP_PRIVATE_KEY` and `PACKAGES_DISPATCH_REPOSITORY` are configured. It
-uses a GitHub App's one-hour token that can only run workflows in the
-publisher's repository; the publisher downloads the
+`https://pkgs.agentiscale.net` when `PACKAGES_DISPATCH_TOKEN` and
+`PACKAGES_DISPATCH_REPOSITORY` are configured; the publisher downloads the
 release's `.deb` and `.rpm` files and verifies their checksums and attestation
 before signing and adding them. If attestation fails,
 rerun the failed `release` job to restage the draft. If publication, the tap
