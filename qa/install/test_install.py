@@ -267,7 +267,8 @@ class InstallTest(Base):
         result = subprocess.run(["sh", "-s", "--", "-method", "package"], input=SCRIPT.read_text(),
                                 env=env, capture_output=True, text=True, timeout=300)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("Installing it with apt-get", result.stdout)
+        self.assertIn("Installing agentiscaled", result.stdout)
+        self.assertTrue(Path("/etc/apt/sources.list.d/agentiscale.list").is_file())
         status = subprocess.run(["dpkg-query", "-W", "-f", "${Status}", "agentiscaled"], capture_output=True, text=True)
         self.assertEqual(status.stdout, "install ok installed")
         out = subprocess.run(["/usr/bin/agentiscaled", "version"], capture_output=True, text=True)
@@ -275,15 +276,20 @@ class InstallTest(Base):
 
 
 TOOLS = ["sh", "curl", "grep", "mktemp", "rm", "chmod", "awk", "sha256sum", "shasum", "openssl",
-         "tar", "cp", "mv", "head", "mkdir", "cat", "sysctl", "env", "gzip"]
+         "tar", "cp", "mv", "head", "tail", "sed", "sort", "mkdir", "cat", "sysctl", "env", "gzip"]
+TESTDATA = Path(__file__).resolve().parent / "testdata"
 
 
 class PackageTest(Base):
-    """Runs install.sh on a stand-in Linux: uname, id, sudo and the package
-    managers are scripts that record how they were called."""
+    """Runs install.sh on a stand-in Linux against a stand-in package
+    repository: uname, id, sudo, rpm and the package managers are scripts
+    that record how they were called, and the files the script writes go
+    under a stand-in root."""
 
     def machine(self, system="Linux", arch="x86_64", uid=1000, managers=("apt-get",), sudo=True,
-                installs=True, rpm_version=None):
+                installs=True, rpm_version=None, repo_versions=("1.0.0", "9.8.7")):
+        shutil.rmtree(self.tmp / "stub", ignore_errors=True)
+        shutil.rmtree(self.tmp / "root", ignore_errors=True)
         stub = self.tmp / "stub"
         stub.mkdir()
         for tool in TOOLS:
@@ -291,72 +297,137 @@ class PackageTest(Base):
             if found:
                 (stub / tool).symlink_to(found)
         log = self.tmp / "calls"
-        self.pkg_bin = self.tmp / "usr-bin" / "agentiscaled"
-        self.pkg_bin.parent.mkdir()
+        log.unlink(missing_ok=True)
+        self.root = self.tmp / "root"
+        self.pkg_bin = self.root / "usr" / "bin" / "agentiscaled"
+        self.pkg_bin.parent.mkdir(parents=True)
+        # What a package manager "installs": the release's binary.
+        package = self.tmp / "package"
+        package.write_bytes(FAKE_BINARY)
 
         def script(name, body):
             (stub / name).write_text("#!/bin/sh\n" + body)
             (stub / name).chmod(0o755)
 
+        self.script = script
         script("uname", f'[ "$1" = -s ] && echo {system} || echo {arch}\n')
         script("id", f"echo {uid}\n")
         if sudo:
             script("sudo", f'echo "sudo $*" >>{log}\nexec "$@"\n')
-        copy = f'for a; do last=$a; done\ncp "$last" {self.pkg_bin}\nchmod 755 {self.pkg_bin}\n'
+        self.copy = f'cp {package} {self.pkg_bin}\nchmod 755 {self.pkg_bin}\n'
         if rpm_version is None:
             script("rpm", 'echo "package agentiscaled is not installed"\nexit 1\n')
         else:
             script("rpm", f"printf %s {rpm_version}\n")
         for name in managers:
-            script(name, f'echo "{name} $*" >>{log}\n' + (copy if installs else ""))
+            script(name, f'echo "{name} $*" >>{log}\n'
+                   + (f'case "$*" in *install*) {self.copy} ;; esac\n' if installs else ""))
         self.env["PATH"] = str(stub)
-        self.env["AGENTISCALE_PACKAGE_BIN"] = str(self.pkg_bin)
+        self.env["AGENTISCALE_ROOT"] = str(self.root)
+        self.env["AGENTISCALE_PACKAGES_URL"] = self.base.replace("/releases", "/pkgs")
         self.publish(VERSION, FAKE_BINARY, packages=True)
+        self.repository(repo_versions)
         return log
 
-    def calls(self, log):
-        return log.read_text().splitlines() if log.exists() else []
+    def repository(self, versions, gpg=None, asc=None):
+        index = "".join(f"Package: agentiscaled\nArchitecture: amd64\nVersion: {v}\n\n" for v in versions)
+        Releases.files.update({
+            "/pkgs/agentiscale.gpg": gpg or (TESTDATA / "agentiscale.gpg").read_bytes(),
+            "/pkgs/agentiscale.asc": asc or (TESTDATA / "agentiscale.asc").read_bytes(),
+            "/pkgs/deb/dists/stable/main/binary-amd64/Packages": index.encode(),
+        })
 
-    def test_apt_through_sudo(self):
+    def calls(self, log):
+        return [c for c in (log.read_text().splitlines() if log.exists() else []) if not c.startswith("sudo ")]
+
+    def test_apt_adds_the_repository_and_installs_through_sudo(self):
         log = self.machine()
         result = self.install()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Installing it with apt-get through sudo", result.stdout)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Adding the agentiscale package repository", result.stdout)
+        keyring = self.root / "usr/share/keyrings/agentiscale-archive-keyring.gpg"
+        self.assertEqual(keyring.read_bytes(), (TESTDATA / "agentiscale.gpg").read_bytes())
+        self.assertEqual((self.root / "etc/apt/sources.list.d/agentiscale.list").read_text(),
+                         "deb [signed-by=/usr/share/keyrings/agentiscale-archive-keyring.gpg] "
+                         f"{self.env['AGENTISCALE_PACKAGES_URL']}/deb stable main\n")
         calls = self.calls(log)
-        self.assertEqual(len(calls), 2, calls)
-        self.assertRegex(calls[0], r"^sudo apt-get install -y --reinstall --allow-downgrades /.*/agentiscaled_9\.8\.7_amd64\.deb$")
-        self.assertEqual(calls[1], calls[0][len("sudo "):])
-        self.assertEqual(self.pkg_bin.read_bytes(), FAKE_BINARY)
+        self.assertEqual(calls, [
+            "apt-get update -o Dir::Etc::sourcelist=sources.list.d/agentiscale.list "
+            "-o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0",
+            # The newest in the repository index, compared as numbers.
+            "apt-get install -y --reinstall --allow-downgrades agentiscaled=9.8.7",
+        ])
+        self.assertIn("sudo apt-get install", log.read_text())
         self.assertIn(f"Installed agentiscaled 9.8.7 (commit test, fake) to {self.pkg_bin}", result.stdout)
+
+    def test_latest_is_the_newest_in_the_repository(self):
+        log = self.machine(repo_versions=("9.10.0", "9.8.7", "9.9.0"))
+        self.install()
+        self.assertIn("agentiscaled=9.10.0", self.calls(log)[-1])
+
+    def test_pin_in_the_repository(self):
+        log = self.machine()
+        self.install("-version", "v1.0.0")
+        self.assertEqual(self.calls(log)[-1], "apt-get install -y --reinstall --allow-downgrades agentiscaled=1.0.0")
+
+    def test_pin_missing_from_the_repository(self):
+        log = self.machine(repo_versions=("1.0.0",))
+        result = self.install("-version", VERSION, "-method", "package")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("isn't in the package repository", result.stderr)
+        self.assertEqual(self.calls(log), [])
+        # auto falls back to the release's binary.
+        self.env["HOME"] = str(self.tmp / "home")
+        result = self.install("-version", VERSION)
+        self.assertIn("installing the binary instead", result.stdout)
+        self.assertIn(f"Downloading agentiscaled {VERSION} for linux/amd64", result.stdout)
+        self.assertTrue((self.tmp / "home/.local/bin/agentiscaled").is_file())
+        self.assertEqual(self.calls(log), [])
+
+    def test_untrusted_key_is_not_added(self):
+        for manager in ("apt-get", "dnf"):
+            with self.subTest(manager):
+                log = self.machine(managers=(manager,))
+                self.repository(("9.8.7",), gpg=b"attacker key", asc=b"attacker key")
+                result = self.install()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("isn't the one this script trusts", result.stderr)
+                self.assertFalse((self.root / "etc").exists())
+                self.assertEqual(self.calls(log), [])
 
     def test_dnf_as_root_on_arm64(self):
         log = self.machine(arch="aarch64", uid=0, managers=("dnf", "yum"))
         result = self.install()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        calls = self.calls(log)
-        self.assertEqual(len(calls), 1, calls)
-        self.assertRegex(calls[0], r"^dnf install -y /.*/agentiscaled-9\.8\.7-1\.aarch64\.rpm$")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("sudo", log.read_text())
+        self.assertEqual(self.calls(log), ["dnf install -y --disablerepo=* --enablerepo=agentiscale agentiscaled-9.8.7"])
+        repo = (self.root / "etc/yum.repos.d/agentiscale.repo").read_text()
+        self.assertIn(f"baseurl={self.env['AGENTISCALE_PACKAGES_URL']}/rpm/stable\n", repo)
+        self.assertIn("repo_gpgcheck=1\n", repo)
+        self.assertIn("gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-agentiscale\n", repo)
+        self.assertEqual((self.root / "etc/pki/rpm-gpg/RPM-GPG-KEY-agentiscale").read_bytes(),
+                         (TESTDATA / "agentiscale.asc").read_bytes())
 
-    def test_yum(self):
-        log = self.machine(managers=("yum",))
-        self.assertEqual(self.install().returncode, 0)
-        self.assertRegex(self.calls(log)[-1], r"^yum install -y /.*/agentiscaled-9\.8\.7-1\.x86_64\.rpm$")
+    def test_zypper(self):
+        log = self.machine(managers=("zypper",))
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.calls(log), [
+            "zypper --non-interactive --gpg-auto-import-keys refresh agentiscale",
+            "zypper --non-interactive install --oldpackage --force --from agentiscale agentiscaled=9.8.7",
+        ])
+        repo = (self.root / "etc/zypp/repos.d/agentiscale.repo").read_text()
+        self.assertIn("type=rpm-md\n", repo)
+        self.assertIn("gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-agentiscale\n", repo)
 
     def rpm_machine(self, manager, installed, order, binary_version=None):
         """A stand-in dnf or yum with RPM's answers: order says how rpm
         orders the installed package against 9.8.7 (None, "older", "newer"
         or "same"). Like yum 3, a command that has nothing to do exits 1."""
-        shutil.rmtree(self.tmp / "stub", ignore_errors=True)
-        shutil.rmtree(self.tmp / "usr-bin", ignore_errors=True)
         log = self.machine(managers=(), rpm_version=installed)
-        log.unlink(missing_ok=True)
         works = {None: "install", "older": "install", "newer": "downgrade", "same": "reinstall"}[order]
-        (self.tmp / "stub" / manager).write_text(
-            "#!/bin/sh\n"
-            + f'echo "{manager} $*" >>{log}\n'
-            + f'if [ "$1" != {works} ]; then echo "Nothing to do"; exit 1; fi\n'
-            + f'for a; do last=$a; done\ncp "$last" {self.pkg_bin}\nchmod 755 {self.pkg_bin}\n')
-        (self.tmp / "stub" / manager).chmod(0o755)
+        self.script(manager, f'echo "{manager} $*" >>{log}\n'
+                    f'if [ "$1" != {works} ]; then echo "Nothing to do"; exit 1; fi\n' + self.copy)
         if installed:
             self.pkg_bin.write_text(
                 f"#!/bin/sh\necho 'agentiscaled {binary_version or installed} (commit installed, fake)'\n")
@@ -381,8 +452,9 @@ class PackageTest(Base):
                     log = self.rpm_machine(manager, installed, order, binary_version)
                     result = self.install()
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    calls = [c for c in self.calls(log) if not c.startswith("sudo ")]
-                    self.assertEqual([c.split()[1] for c in calls], verbs)
+                    self.assertEqual([c.split()[1] for c in self.calls(log)], verbs)
+                    for c in self.calls(log):
+                        self.assertTrue(c.endswith(" -y --disablerepo=* --enablerepo=agentiscale agentiscaled-9.8.7"), c)
                     self.assertIn("agentiscaled 9.8.7 ", subprocess.run(
                         [str(self.pkg_bin), "version"], capture_output=True, text=True).stdout)
                     if not verbs:
@@ -390,18 +462,11 @@ class PackageTest(Base):
 
     def test_dnf_failing_every_way_fails(self):
         log = self.rpm_machine("dnf", "10.0.0", "newer")
-        (self.tmp / "stub" / "dnf").write_text(f'#!/bin/sh\necho "dnf $*" >>{log}\nexit 1\n')
+        self.script("dnf", f'echo "dnf $*" >>{log}\nexit 1\n')
         result = self.install()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("install, downgrade and reinstall all failed", result.stderr)
-        self.assertEqual([c.split()[1] for c in self.calls(log) if not c.startswith("sudo ")],
-                         ["install", "downgrade", "reinstall"])
-
-    def test_zypper(self):
-        log = self.machine(managers=("zypper",))
-        self.assertEqual(self.install().returncode, 0)
-        self.assertRegex(self.calls(log)[-1],
-                         r"^zypper --non-interactive install --oldpackage --force --allow-unsigned-rpm /.*/agentiscaled-9\.8\.7-1\.x86_64\.rpm$")
+        self.assertEqual([c.split()[1] for c in self.calls(log)], ["install", "downgrade", "reinstall"])
 
     def test_dir_or_binary_method_skips_the_package(self):
         log = self.machine()
@@ -411,13 +476,16 @@ class PackageTest(Base):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("Downloading agentiscaled v9.8.7 for linux/amd64", result.stdout)
         self.assertEqual(self.calls(log), [])
+        self.assertFalse((self.root / "etc").exists())
 
-    def test_package_checksum_mismatch_installs_nothing(self):
+    def test_prerelease_takes_the_binary(self):
         log = self.machine()
-        self.publish(VERSION, FAKE_BINARY, checksum="f" * 64, packages=True)
-        result = self.install()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("checksum mismatch for agentiscaled_9.8.7_amd64.deb", result.stderr)
+        self.publish("v9.9.0-rc.1", FAKE_BINARY, packages=True)
+        self.env["HOME"] = str(self.tmp / "home")
+        result = self.install("-version", "v9.9.0-rc.1", "-dir", str(self.tmp / "bin"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.install("-version", "v9.9.0-rc.1", "-method", "package")
+        self.assertIn("prereleases are not in the package repository", result.stderr)
         self.assertEqual(self.calls(log), [])
 
     def test_package_manager_keeping_another_version_fails(self):
@@ -435,8 +503,6 @@ class PackageTest(Base):
             ({"sudo": False}, "needs root, and there is no sudo or doas"),
         ]:
             with self.subTest(message):
-                shutil.rmtree(self.tmp / "stub", ignore_errors=True)
-                shutil.rmtree(self.tmp / "usr-bin", ignore_errors=True)
                 log = self.machine(**machine)
                 result = self.install("-method", "package")
                 self.assertNotEqual(result.returncode, 0)

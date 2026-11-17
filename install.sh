@@ -1,15 +1,19 @@
 #!/bin/sh
-# Installs agentiscaled from a GitHub release on Linux or macOS (x64 or
-# ARM64), after checking the download against the release's checksums.txt.
+# Installs agentiscaled on Linux or macOS (x64 or ARM64).
 #
 #   curl -fsSL https://raw.githubusercontent.com/whiteredhouse/agentiscaled/main/install.sh | sh
 #   curl -fsSL https://raw.githubusercontent.com/whiteredhouse/agentiscaled/main/install.sh | sh -s -- -version v0.11.0
 #
-# On Debian, Ubuntu, Fedora, RHEL and openSUSE it installs the release's
-# .deb or .rpm with the system's package manager, through sudo, so the
-# package manager knows the file and can remove it. Elsewhere (macOS, other
-# Linux, no sudo), or with -dir, it puts the agentiscaled binary in a
-# directory and needs no root.
+# On Debian, Ubuntu, Fedora, RHEL, Amazon Linux and openSUSE it adds the
+# signed agentiscale package repository (https://pkgs.agentiscale.net) and
+# installs the agentiscaled package from it with apt, dnf, yum or zypper,
+# through sudo. The system's own updates then keep it current, and the
+# package manager removes it. The repository's key is checked against the
+# fingerprint below before it is trusted.
+#
+# Elsewhere (macOS, other Linux, no sudo), with -dir, or for a prerelease,
+# it puts the agentiscaled binary from a GitHub release in a directory after
+# checking it against the release's checksums.txt, and needs no root.
 #
 # Options (or the environment variable in brackets):
 #   -version VERSION  release to install, like v0.11.0, or latest (default)
@@ -23,7 +27,8 @@
 # Without a package and without -dir, the binary goes in /usr/local/bin if
 # you can write to it, else ~/.local/bin.
 #
-# It needs curl, tar and one of sha256sum, shasum or openssl.
+# It needs curl and one of sha256sum, shasum or openssl; the binary install
+# also needs tar.
 #
 # The whole script is one brace group: the shell reads it to the closing }
 # before running any of it, so a download cut short runs nothing, not even
@@ -34,6 +39,10 @@ set -eu
 main() {
 	repo=https://github.com/whiteredhouse/agentiscaled
 	releases=${AGENTISCALE_RELEASES_URL:-$repo/releases}
+	pkgs=${AGENTISCALE_PACKAGES_URL:-https://pkgs.agentiscale.net}
+	# Where the repository configuration and the packaged binary go; the
+	# tests move them.
+	root=${AGENTISCALE_ROOT:-}
 	version=${AGENTISCALE_VERSION:-latest}
 	dir=${AGENTISCALE_INSTALL_DIR:-}
 	method=${AGENTISCALE_INSTALL_METHOD:-auto}
@@ -54,7 +63,7 @@ main() {
 			echo "usage: install.sh [-version VERSION] [-dir DIR] [-method auto|package|binary]"
 			echo "  -version  release to install, like v0.11.0, or latest (default)"
 			echo "  -dir      put the binary in DIR, without a package"
-			echo "  -method   package (.deb/.rpm through sudo), binary, or auto (default)"
+			echo "  -method   package (from the package repository, through sudo), binary, or auto (default)"
 			return 0
 			;;
 		*) fail "unknown option $1 (options: -version, -dir, -method)" ;;
@@ -85,22 +94,26 @@ main() {
 		arch=arm64
 	fi
 
+	if [ "$version" != latest ]; then
+		check_version
+	fi
+	choose_package
+	if [ -n "$manager" ]; then
+		package_version
+	fi
 	if [ "$version" = latest ]; then
 		# releases/latest redirects to the latest release's tag page.
 		url=$(curl -fsSL --retry 3 -o /dev/null -w '%{url_effective}' "$releases/latest") ||
 			fail "couldn't look up the latest release at $releases/latest"
 		version=${url##*/tag/}
+		check_version
 	fi
-	printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' ||
-		fail "version must be a release like v0.11.0 or latest, not '$version'"
-
-	choose_package
 	if [ -z "$manager" ]; then
 		[ "$method" != package ] || fail "$why"
 		command -v tar >/dev/null 2>&1 || fail "tar is needed to unpack the release"
 		if [ -z "$dir" ]; then
-			if [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
-				dir=/usr/local/bin
+			if [ -d "$root/usr/local/bin" ] && [ -w "$root/usr/local/bin" ]; then
+				dir=$root/usr/local/bin
 			else
 				dir=${HOME:?HOME is not set; pass -dir}/.local/bin
 			fi
@@ -112,7 +125,6 @@ main() {
 	tmp=$(mktemp -d "${TMPDIR:-/tmp}/agentiscaled-install.XXXXXX")
 	trap 'rm -rf "$tmp"' EXIT
 	trap 'exit 1' HUP INT TERM
-	fetch "$releases/download/$version/checksums.txt" "$tmp/checksums.txt"
 
 	if [ -n "$manager" ]; then
 		install_package
@@ -129,8 +141,13 @@ option() {
 	esac
 }
 
-# choose_package sets manager (empty for a plain binary), the package file
-# and the command prefix that gives root, or why there is no package.
+check_version() {
+	printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' ||
+		fail "version must be a release like v0.11.0 or latest, not '$version'"
+}
+
+# choose_package sets manager (empty for a plain binary) and the command
+# prefix that gives root, or why there is no package.
 choose_package() {
 	manager='' why=''
 	[ "$method" != binary ] && [ -z "$dir" ] || return 0
@@ -140,13 +157,12 @@ choose_package() {
 	fi
 	case $version in
 	*-*)
-		why="prereleases have no package this script installs; leave out -method package"
+		why="prereleases are not in the package repository; leave out -method package"
 		return 0
 		;;
 	esac
-	v=${version#v}
 	if command -v apt-get >/dev/null 2>&1; then
-		manager=apt-get file="agentiscaled_${v}_${arch}.deb"
+		manager=apt-get
 	elif command -v dnf >/dev/null 2>&1; then
 		manager=dnf
 	elif command -v yum >/dev/null 2>&1; then
@@ -156,12 +172,6 @@ choose_package() {
 	else
 		why="found no apt-get, dnf, yum or zypper to install a package with"
 		return 0
-	fi
-	if [ "$manager" != apt-get ]; then
-		case $arch in
-		amd64) file="agentiscaled-${v}-1.x86_64.rpm" ;;
-		arm64) file="agentiscaled-${v}-1.aarch64.rpm" ;;
-		esac
 	fi
 	if [ "$(id -u)" = 0 ]; then
 		as_root=''
@@ -175,28 +185,92 @@ choose_package() {
 	fi
 }
 
+# package_version reads the versions in the package repository, which can
+# trail a GitHub release while it is published. For latest it picks the
+# newest; a pinned version the repository lacks falls back to the binary
+# (auto) or fails (-method package).
+package_version() {
+	index=$(curl -fsSL --retry 3 "$pkgs/deb/dists/stable/main/binary-amd64/Packages") ||
+		fail "couldn't read the package repository's index at $pkgs"
+	versions=$(printf '%s\n' "$index" | sed -n 's/^Version: *\([0-9][0-9.]*\)$/\1/p' |
+		sort -t . -k 1,1n -k 2,2n -k 3,3n)
+	[ -n "$versions" ] || fail "the package repository at $pkgs lists no agentiscaled"
+	if [ "$version" = latest ]; then
+		version=v$(printf '%s\n' "$versions" | tail -n 1)
+		return 0
+	fi
+	printf '%s\n' "$versions" | grep -qx "${version#v}" && return 0
+	[ "$method" != package ] ||
+		fail "agentiscaled $version isn't in the package repository; leave out -method package to install the binary"
+	echo "agentiscaled $version isn't in the package repository; installing the binary instead"
+	manager=''
+}
+
+# The repository's signing key: agentiscale packages <packages@agentiscale.net>,
+# fingerprint E15A E9FF 8FD8 7B2E 682C  AC30 4B9C 3BE1 1769 DEC4. The script
+# trusts the downloaded key files only if they have these hashes.
+key_gpg_sha256=36f5784a15a5150080c048947c59522afce9f548ba1ba4ddc77c69c68787edd3
+key_asc_sha256=3685c8651ad4cfd53e1c65aa9daf53a366e50d04a34febcef2db85d0688512d0
+
+# put FILE TARGET MODE writes FILE to TARGET (under root) as root.
+put() {
+	if ! { $as_root mkdir -p "$root${2%/*}" && $as_root cp "$1" "$root$2" && $as_root chmod "$3" "$root$2"; }; then
+		fail "couldn't write $root$2"
+	fi
+}
+
 install_package() {
-	echo "Downloading agentiscaled $version ($file)"
-	fetch "$releases/download/$version/$file" "$tmp/$file"
-	verify "$file"
-	# apt reads the file as its own unprivileged user.
-	chmod 755 "$tmp"
-	chmod 644 "$tmp/$file"
-	# Where the packages put the binary; the tests move it.
-	bin=${AGENTISCALE_PACKAGE_BIN:-/usr/bin/agentiscaled}
-	echo "Installing it with $manager${as_root:+ through $as_root}"
+	v=${version#v}
+	bin=$root/usr/bin/agentiscaled
+	echo "Adding the agentiscale package repository ($pkgs) for $manager${as_root:+ through $as_root}"
 	case $manager in
-	# --reinstall also puts back a packaged binary that something replaced.
 	apt-get)
-		$as_root apt-get install -y --reinstall --allow-downgrades "$tmp/$file" ||
-			fail "apt-get couldn't install $file"
+		fetch "$pkgs/agentiscale.gpg" "$tmp/key"
+		check_key "$tmp/key" "$key_gpg_sha256"
+		put "$tmp/key" /usr/share/keyrings/agentiscale-archive-keyring.gpg 644
+		printf 'deb [signed-by=/usr/share/keyrings/agentiscale-archive-keyring.gpg] %s/deb stable main\n' "$pkgs" >"$tmp/list"
+		put "$tmp/list" /etc/apt/sources.list.d/agentiscale.list 644
+		# Only this repository: another broken source can't stop it.
+		$as_root apt-get update -o Dir::Etc::sourcelist=sources.list.d/agentiscale.list \
+			-o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 ||
+			fail "apt-get couldn't read the agentiscale package repository"
+		echo "Installing agentiscaled $v with apt-get"
+		# --reinstall also puts back a packaged binary that something
+		# replaced; --allow-downgrades lets a pin replace a newer version.
+		$as_root apt-get install -y --reinstall --allow-downgrades "agentiscaled=$v" ||
+			fail "apt-get couldn't install agentiscaled $v"
 		;;
-	dnf | yum) rpm_install ;;
-	# The checksum stands in for a repository signature; --oldpackage lets a
-	# pinned version replace a newer one, and --force reinstalls the same one.
-	zypper)
-		$as_root zypper --non-interactive install --oldpackage --force --allow-unsigned-rpm "$tmp/$file" ||
-			fail "zypper couldn't install $file"
+	dnf | yum | zypper)
+		fetch "$pkgs/agentiscale.asc" "$tmp/key"
+		check_key "$tmp/key" "$key_asc_sha256"
+		put "$tmp/key" /etc/pki/rpm-gpg/RPM-GPG-KEY-agentiscale 644
+		# The .repo file points at the checked key on disk, not at its URL.
+		repofile=/etc/yum.repos.d/agentiscale.repo type=rpm
+		if [ "$manager" = zypper ]; then
+			repofile=/etc/zypp/repos.d/agentiscale.repo type=rpm-md
+		fi
+		cat >"$tmp/repo" <<-REPO
+			[agentiscale]
+			name=agentiscale
+			baseurl=$pkgs/rpm/stable
+			enabled=1
+			type=$type
+			gpgcheck=1
+			repo_gpgcheck=1
+			gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-agentiscale
+		REPO
+		put "$tmp/repo" "$repofile" 644
+		echo "Installing agentiscaled $v with $manager"
+		if [ "$manager" = zypper ]; then
+			$as_root zypper --non-interactive --gpg-auto-import-keys refresh agentiscale ||
+				fail "zypper couldn't read the agentiscale package repository"
+			# --oldpackage lets a pin replace a newer version, and --force
+			# reinstalls the same one.
+			$as_root zypper --non-interactive install --oldpackage --force --from agentiscale "agentiscaled=$v" ||
+				fail "zypper couldn't install agentiscaled $v"
+		else
+			rpm_install
+		fi
 		;;
 	esac
 	is_version "$bin" ||
@@ -204,11 +278,19 @@ install_package() {
 	report "$bin"
 }
 
-# rpm_install installs the package with dnf or yum. Their install neither
-# downgrades nor reinstalls, and yum 3 exits 1 with "Nothing to do" then,
-# so it tries install, downgrade and reinstall in turn until the binary is
-# the release. rpm itself decides which applies, prereleases included; the
-# script never orders versions.
+# check_key FILE SHA256 fails unless FILE is the repository key the script
+# trusts.
+check_key() {
+	got=$(sha256 "$1")
+	[ "$got" = "$2" ] ||
+		fail "the package repository's key at $pkgs isn't the one this script trusts (sha256 $got); not adding it"
+}
+
+# rpm_install installs the package with dnf or yum, from the agentiscale
+# repository only. Their install neither downgrades nor reinstalls, and
+# yum 3 exits 1 with "Nothing to do" then, so it tries install, downgrade
+# and reinstall in turn until the binary is the release. rpm itself decides
+# which applies; the script never orders installed versions.
 rpm_install() {
 	if [ "$(rpm -q --qf '%{VERSION}' agentiscaled 2>/dev/null || true)" = "${version#v}" ] && is_version "$bin"; then
 		echo "agentiscaled ${version#v} is already installed"
@@ -216,11 +298,12 @@ rpm_install() {
 	fi
 	for verb in install downgrade reinstall; do
 		[ "$verb" = install ] || echo "Trying $manager $verb"
-		if $as_root "$manager" "$verb" -y "$tmp/$file" && is_version "$bin"; then
+		if $as_root "$manager" "$verb" -y --disablerepo='*' --enablerepo=agentiscale "agentiscaled-$v" &&
+			is_version "$bin"; then
 			return 0
 		fi
 	done
-	fail "$manager couldn't install $file (install, downgrade and reinstall all failed or left ${first:-no agentiscaled})"
+	fail "$manager couldn't install agentiscaled $v (install, downgrade and reinstall all failed or left ${first:-no agentiscaled})"
 }
 
 # is_version BINARY runs BINARY version, keeps its first line in first, and
@@ -236,6 +319,7 @@ is_version() {
 install_binary() {
 	archive="agentiscaled_${version#v}_${os}_${arch}.tar.gz"
 	echo "Downloading agentiscaled $version for $os/$arch"
+	fetch "$releases/download/$version/checksums.txt" "$tmp/checksums.txt"
 	fetch "$releases/download/$version/$archive" "$tmp/$archive"
 	verify "$archive"
 	# -d follows a symlink: mv would put the binary inside a linked directory.

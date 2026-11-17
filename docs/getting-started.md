@@ -12,33 +12,56 @@ On macOS or Linux with [Homebrew](https://brew.sh):
 brew install whiteredhouse/tap/agentiscaled
 ```
 
-On Debian, Ubuntu, Fedora or RHEL without Homebrew, download the `.deb` or `.rpm` for
-your machine from the [latest release](https://github.com/whiteredhouse/agentiscaled/releases/latest)
-and install it with `sudo apt install ./agentiscaled_*.deb` or
-`sudo dnf install ./agentiscaled_*.rpm`.
-
-Or, on Linux or macOS without Homebrew, with the install script, which checks the
-download against the release's `checksums.txt`:
+On Linux or macOS without Homebrew, run the install script:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/whiteredhouse/agentiscaled/main/install.sh | sh
 ```
 
-On Debian, Ubuntu, Fedora, RHEL and openSUSE it installs the release's `.deb` or `.rpm`
-with apt, dnf, yum or zypper, through sudo, which may ask for your password. Run it
-again to upgrade; `sudo apt remove agentiscaled` or `sudo dnf remove agentiscaled`
-removes it. On macOS, on other Linux, or without sudo, it puts `agentiscaled` in
-`/usr/local/bin` if you can write to it, else in `~/.local/bin`, and needs no root.
+On Debian, Ubuntu, Fedora, RHEL, Amazon Linux and openSUSE it adds the agentiscale
+package repository, `https://pkgs.agentiscale.net`, and installs the `agentiscaled`
+package with apt, dnf, yum or zypper through sudo, which may ask for your password.
+Before it trusts the repository's signing key, it checks the key against the one the
+script was written for (fingerprint `E15A E9FF 8FD8 7B2E 682C AC30 4B9C 3BE1 1769 DEC4`).
+From then on your system's updates (`sudo apt upgrade`, `sudo dnf upgrade`) keep
+agentiscaled current, and `sudo apt remove agentiscaled` or `sudo dnf remove agentiscaled`
+removes it.
+
+On macOS, on other Linux, or without sudo, it downloads the release's binary, checks it
+against the release's `checksums.txt`, and puts it in `/usr/local/bin` if you can write
+to it, else in `~/.local/bin`, with no root. Run the script again to upgrade.
 
 Add options after `sh -s --`:
 
-- `-version v0.11.0` installs that release instead of the latest.
+- `-version v0.11.0` installs that release instead of the latest. A release the package
+  repository doesn't have (an older one, or a prerelease) is installed as the binary.
 - `-dir DIR` puts the binary in `DIR`, without a package or root.
 - `-method binary` skips the package; `-method package` fails rather than fall back
   to the binary.
 
 A script or CI job can set `AGENTISCALE_VERSION`, `AGENTISCALE_INSTALL_DIR` and
 `AGENTISCALE_INSTALL_METHOD` instead.
+
+### Add the package repository yourself
+
+On Debian or Ubuntu:
+
+```sh
+sudo curl -fsSLo /usr/share/keyrings/agentiscale-archive-keyring.gpg https://pkgs.agentiscale.net/agentiscale.gpg
+sudo curl -fsSLo /etc/apt/sources.list.d/agentiscale.list https://pkgs.agentiscale.net/deb/agentiscale.list
+sudo apt update && sudo apt install agentiscaled
+```
+
+On Fedora, RHEL or Amazon Linux:
+
+```sh
+sudo curl -fsSLo /etc/yum.repos.d/agentiscale.repo https://pkgs.agentiscale.net/rpm/agentiscale.repo
+sudo dnf install agentiscaled
+```
+
+Check that the key you are asked to trust has the fingerprint above. The `.deb` and
+`.rpm` files are also attached to each
+[release](https://github.com/whiteredhouse/agentiscaled/releases/latest).
 
 Check it with `agentiscaled version`.
 
