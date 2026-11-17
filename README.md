@@ -14,7 +14,7 @@ brew install whiteredhouse/tap/agentiscaled
 agentiscaled up
 ```
 
-Or with the install script, on Linux or macOS (x64 or ARM64):
+Without Homebrew, on Linux or macOS (x64 or ARM64):
 
 ```sh
 curl -fsSL https://get.agentiscale.net | sh
@@ -22,8 +22,7 @@ curl -fsSL https://get.agentiscale.net | sh
 
 On Debian, Ubuntu, Fedora, RHEL, Amazon Linux and openSUSE the script adds the signed
 agentiscale package repository and installs the `agentiscaled` package through sudo, so
-your system's updates keep it current; on macOS with Homebrew it installs the cask
-above. Elsewhere, or with `-dir`, it puts the binary from
+your system's updates keep it current. Elsewhere, or with `-dir`, it puts the binary from
 the latest release, checked against its `checksums.txt`, in `/usr/local/bin` if you can
 write to it, else `~/.local/bin`, without root. `sh -s -- -version vX.Y.Z` pins a
 release. See [Get started](docs/getting-started.md#1-install).
