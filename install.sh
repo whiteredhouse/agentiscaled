@@ -98,10 +98,12 @@ main() {
 		check_version
 	fi
 	choose_package
-	if [ -n "$manager" ]; then
-		package_version
+	# For latest the package manager picks the version itself, from the
+	# repository metadata it has verified.
+	if [ -n "$manager" ] && [ "$version" != latest ]; then
+		check_pin
 	fi
-	if [ "$version" = latest ]; then
+	if [ -z "$manager" ] && [ "$version" = latest ]; then
 		# releases/latest redirects to the latest release's tag page.
 		url=$(curl -fsSL --retry 3 -o /dev/null -w '%{url_effective}' "$releases/latest") ||
 			fail "couldn't look up the latest release at $releases/latest"
@@ -185,21 +187,15 @@ choose_package() {
 	fi
 }
 
-# package_version reads the versions in the package repository, which can
-# trail a GitHub release while it is published. For latest it picks the
-# newest; a pinned version the repository lacks falls back to the binary
-# (auto) or fails (-method package).
-package_version() {
+# check_pin falls back to the binary (auto) or fails (-method package) when
+# the package repository doesn't list the pinned version, as for an older
+# release, or one still being published. The index only answers this
+# question; what gets installed comes from the package manager's verified
+# metadata.
+check_pin() {
 	index=$(curl -fsSL --retry 3 "$pkgs/deb/dists/stable/main/binary-amd64/Packages") ||
 		fail "couldn't read the package repository's index at $pkgs"
-	versions=$(printf '%s\n' "$index" | sed -n 's/^Version: *\([0-9][0-9.]*\)$/\1/p' |
-		sort -t . -k 1,1n -k 2,2n -k 3,3n)
-	[ -n "$versions" ] || fail "the package repository at $pkgs lists no agentiscaled"
-	if [ "$version" = latest ]; then
-		version=v$(printf '%s\n' "$versions" | tail -n 1)
-		return 0
-	fi
-	printf '%s\n' "$versions" | grep -qx "${version#v}" && return 0
+	printf '%s\n' "$index" | grep -qx "Version: ${version#v}" && return 0
 	[ "$method" != package ] ||
 		fail "agentiscaled $version isn't in the package repository; leave out -method package to install the binary"
 	echo "agentiscaled $version isn't in the package repository; installing the binary instead"
@@ -220,7 +216,9 @@ put() {
 }
 
 install_package() {
+	# v is empty for latest.
 	v=${version#v}
+	[ "$version" != latest ] || v=''
 	bin=$root/usr/bin/agentiscaled
 	echo "Adding the agentiscale package repository ($pkgs) for $manager${as_root:+ through $as_root}"
 	case $manager in
@@ -230,15 +228,16 @@ install_package() {
 		put "$tmp/key" /usr/share/keyrings/agentiscale-archive-keyring.gpg 644
 		printf 'deb [signed-by=/usr/share/keyrings/agentiscale-archive-keyring.gpg] %s/deb stable main\n' "$pkgs" >"$tmp/list"
 		put "$tmp/list" /etc/apt/sources.list.d/agentiscale.list 644
-		# Only this repository: another broken source can't stop it.
-		$as_root apt-get update -o Dir::Etc::sourcelist=sources.list.d/agentiscale.list \
-			-o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 ||
+		apt_here update -o APT::Get::List-Cleanup=0 ||
 			fail "apt-get couldn't read the agentiscale package repository"
-		echo "Installing agentiscaled $v with apt-get"
+		echo "Installing agentiscaled ${v:-(latest)} with apt-get"
 		# --reinstall also puts back a packaged binary that something
-		# replaced; --allow-downgrades lets a pin replace a newer version.
-		$as_root apt-get install -y --reinstall --allow-downgrades "agentiscaled=$v" ||
-			fail "apt-get couldn't install agentiscaled $v"
+		# replaced. Only a pin may downgrade.
+		if [ -n "$v" ]; then
+			apt_here install -y --reinstall --allow-downgrades "agentiscaled=$v"
+		else
+			apt_here install -y --reinstall agentiscaled
+		fi || fail "apt-get couldn't install agentiscaled ${v:-(latest)}"
 		;;
 	dnf | yum | zypper)
 		fetch "$pkgs/agentiscale.asc" "$tmp/key"
@@ -260,22 +259,43 @@ install_package() {
 			gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-agentiscale
 		REPO
 		put "$tmp/repo" "$repofile" 644
-		echo "Installing agentiscaled $v with $manager"
+		echo "Installing agentiscaled ${v:-(latest)} with $manager"
 		if [ "$manager" = zypper ]; then
 			$as_root zypper --non-interactive --gpg-auto-import-keys refresh agentiscale ||
 				fail "zypper couldn't read the agentiscale package repository"
-			# --oldpackage lets a pin replace a newer version, and --force
-			# reinstalls the same one.
-			$as_root zypper --non-interactive install --oldpackage --force --from agentiscale "agentiscaled=$v" ||
-				fail "zypper couldn't install agentiscaled $v"
+			# --force reinstalls the same version, and --oldpackage lets
+			# only a pin replace a newer one.
+			if [ -n "$v" ]; then
+				$as_root zypper --non-interactive install --oldpackage --force --from agentiscale "agentiscaled=$v"
+			else
+				$as_root zypper --non-interactive install --force --from agentiscale agentiscaled
+			fi || fail "zypper couldn't install agentiscaled ${v:-(latest)}"
 		else
 			rpm_install
 		fi
 		;;
 	esac
-	is_version "$bin" ||
-		fail "$manager kept another agentiscaled version ($first); remove the agentiscaled package first to install $version"
+	consistent ||
+		fail "after $manager, the package database has agentiscaled ${have:-nothing} and $bin is ${first:-missing}, not ${v:-the same}; remove the agentiscaled package first"
 	report "$bin"
+}
+
+# apt_here runs apt-get as root with the agentiscale repository as its only
+# source: another broken source can't stop it, and no other source can
+# supply the package.
+apt_here() {
+	$as_root apt-get -o Dir::Etc::sourcelist=sources.list.d/agentiscale.list -o Dir::Etc::sourceparts=- "$@"
+}
+
+# consistent succeeds if the package database records agentiscaled (the
+# pinned version, if any; it sets have) and the binary is that version.
+consistent() {
+	if [ "$manager" = apt-get ]; then
+		have=$(dpkg-query -W -f '${Version}' agentiscaled 2>/dev/null) || have=''
+	else
+		have=$(rpm -q --qf '%{VERSION}' agentiscaled 2>/dev/null) || have=''
+	fi
+	[ -n "$have" ] && { [ -z "$v" ] || [ "$have" = "$v" ]; } && binary_is "$bin" "$have"
 }
 
 # check_key FILE SHA256 fails unless FILE is the repository key the script
@@ -288,30 +308,37 @@ check_key() {
 
 # rpm_install installs the package with dnf or yum, from the agentiscale
 # repository only. Their install neither downgrades nor reinstalls, and
-# yum 3 exits 1 with "Nothing to do" then, so it tries install, downgrade
-# and reinstall in turn until the binary is the release. rpm itself decides
-# which applies; the script never orders installed versions.
+# yum 3 exits 1 with "Nothing to do" then, so for a pin it tries install,
+# downgrade and reinstall in turn until the package and the binary are the
+# pinned version; rpm itself decides which applies. For latest it installs,
+# or upgrades and then reinstalls if the binary isn't the package's.
 rpm_install() {
-	if [ "$(rpm -q --qf '%{VERSION}' agentiscaled 2>/dev/null || true)" = "${version#v}" ] && is_version "$bin"; then
-		echo "agentiscaled ${version#v} is already installed"
-		return 0
+	if [ -n "$v" ]; then
+		spec=agentiscaled-$v verbs='install downgrade reinstall'
+		if consistent; then
+			echo "agentiscaled $v is already installed"
+			return 0
+		fi
+	elif rpm -q agentiscaled >/dev/null 2>&1; then
+		spec=agentiscaled verbs='upgrade reinstall'
+	else
+		spec=agentiscaled verbs=install
 	fi
-	for verb in install downgrade reinstall; do
-		[ "$verb" = install ] || echo "Trying $manager $verb"
-		if $as_root "$manager" "$verb" -y --disablerepo='*' --enablerepo=agentiscale "agentiscaled-$v" &&
-			is_version "$bin"; then
+	for verb in $verbs; do
+		echo "Running $manager $verb"
+		if $as_root "$manager" "$verb" -y --disablerepo='*' --enablerepo=agentiscale "$spec" && consistent; then
 			return 0
 		fi
 	done
-	fail "$manager couldn't install agentiscaled $v (install, downgrade and reinstall all failed or left ${first:-no agentiscaled})"
+	fail "$manager couldn't install agentiscaled ${v:-(latest)} ($verbs failed or left ${first:-no agentiscaled})"
 }
 
-# is_version BINARY runs BINARY version, keeps its first line in first, and
-# succeeds if it is the release being installed.
-is_version() {
+# binary_is BINARY VERSION runs BINARY version, keeps its first line in
+# first, and succeeds if it is VERSION.
+binary_is() {
 	first=$("$1" version 2>&1 | head -n 1) || true
 	case $first in
-	"agentiscaled ${version#v} "*) return 0 ;;
+	"agentiscaled $2 "*) return 0 ;;
 	*) return 1 ;;
 	esac
 }

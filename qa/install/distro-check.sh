@@ -99,6 +99,11 @@ sh "$src/install.sh" -method binary -dir /usr/bin -version "${INSTALL_CHECK_REPL
 install -version "v$latest"
 owned "$latest"
 
+step "latest over an older binary install that replaced the packaged file"
+sh "$src/install.sh" -method binary -dir /usr/bin -version "${INSTALL_CHECK_REPLACED:-v0.10.0}"
+install
+owned "$latest"
+
 step "a version the repository lacks"
 if install -version v0.0.1; then
 	echo "FAIL: -method package installed v0.0.1" >&2
