@@ -537,13 +537,112 @@ class PackageTest(Base):
 
     def test_package_refusals(self):
         for machine, message in [
-            ({"system": "Darwin"}, "no packages for macOS"),
+            ({"system": "Darwin", "managers": ()}, "found no Homebrew (brew) to install with"),
             ({"managers": ()}, "found no apt-get, dnf, yum or zypper"),
             ({"sudo": False}, "needs root, and there is no sudo or doas"),
         ]:
             with self.subTest(message):
                 log = self.machine(**machine)
                 result = self.install("-method", "package")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertEqual(self.calls(log), [])
+
+
+
+class BrewTest(Base):
+    """Runs install.sh on a stand-in Mac with a stand-in Homebrew whose
+    prefix is the stand-in root: it records its calls, and "installs" or
+    "upgrades" the cask by writing a binary to <prefix>/bin."""
+
+    machine = PackageTest.machine
+    repository = PackageTest.repository
+    calls = PackageTest.calls
+
+    CASK = "whiteredhouse/tap/agentiscaled"
+
+    def mac(self, cask_installed=False, fails=False, **machine):
+        log = self.machine(system="Darwin", managers=(), **machine)
+        self.brew_bin = self.root / "bin" / "agentiscaled"
+        listed = self.tmp / "cask-listed"
+        listed.unlink(missing_ok=True)
+        if cask_installed:
+            listed.write_text("1")
+            self.write_binary(self.brew_bin, "1.0.0")
+        self.script("brew", f'echo "brew $*" >>{log}\n'
+                    'case "$1" in\n'
+                    f'--prefix) echo {self.root} ;;\n'
+                    f'list) [ -e {listed} ] ;;\n'
+                    + ('install|upgrade) exit 1 ;;\n' if fails else
+                       f'install|upgrade) mkdir -p {self.brew_bin.parent} && '
+                       f'printf \'#!/bin/sh\\necho "agentiscaled 9.8.7 (commit brew, fake)"\\n\' >{self.brew_bin} && '
+                       f'chmod 755 {self.brew_bin} && echo 1 >{listed} ;;\n')
+                    + 'esac\n')
+        # A pin takes the release's darwin binary.
+        for arch in ("amd64", "arm64"):
+            name = f"agentiscaled_9.8.7_darwin_{arch}.tar.gz"
+            data = archive(FAKE_BINARY)
+            Releases.files[f"/releases/download/{VERSION}/{name}"] = data
+            Releases.files[f"/releases/download/{VERSION}/checksums.txt"] += \
+                f"{hashlib.sha256(data).hexdigest()}  {name}\n".encode()
+        return log
+
+    def write_binary(self, path, version):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"#!/bin/sh\necho 'agentiscaled {version} (commit old, fake)'\n")
+        path.chmod(0o755)
+
+    def test_installs_the_cask(self):
+        log = self.mac()
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.calls(log), ["brew --prefix", "brew list --cask agentiscaled",
+                                           f"brew install --cask {self.CASK}"])
+        self.assertIn(f"Installed agentiscaled 9.8.7 (commit brew, fake) to {self.brew_bin}", result.stdout)
+        self.assertNotIn("sudo", log.read_text())
+        # Homebrew downloads and checks the release itself.
+        self.assertFalse(any("/download/" in r for r in Releases.requests), Releases.requests)
+
+    def test_upgrades_an_installed_cask(self):
+        log = self.mac(cask_installed=True)
+        result = self.install("-method", "package")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.calls(log)[-1], f"brew upgrade --cask {self.CASK}")
+        self.assertIn("Installed agentiscaled 9.8.7 (commit brew, fake)", result.stdout)
+
+    def test_earlier_binary_install_in_the_way_is_reported(self):
+        log = self.mac()
+        self.write_binary(self.brew_bin, "1.0.0")
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"{self.brew_bin} is already there and not from Homebrew", result.stderr)
+        self.assertIn("commit old", self.brew_bin.read_text())
+        self.assertNotIn(f"brew install --cask {self.CASK}", self.calls(log))
+
+    def test_failed_brew_fails(self):
+        self.mac(fails=True)
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"brew install --cask {self.CASK} failed", result.stderr)
+
+    def test_pin_root_or_binary_method_takes_the_binary(self):
+        for args, machine in [(["-version", VERSION], {}), ([], {"uid": 0}), (["-method", "binary"], {})]:
+            with self.subTest(args=args, machine=machine):
+                log = self.mac(**machine)
+                result = self.install(*args)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("Downloading agentiscaled v9.8.7 for darwin/amd64", result.stdout)
+                self.assertEqual(self.calls(log), [])
+                self.assertTrue((self.tmp / "home" / ".local" / "bin" / "agentiscaled").is_file())
+
+    def test_brew_refusals(self):
+        for args, machine, message in [
+            (["-version", VERSION], {}, "Homebrew installs only the latest release"),
+            ([], {"uid": 0}, "Homebrew doesn't run as root"),
+        ]:
+            with self.subTest(message):
+                log = self.mac(**machine)
+                result = self.install("-method", "package", *args)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
                 self.assertEqual(self.calls(log), [])

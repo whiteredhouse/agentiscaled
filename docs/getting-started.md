@@ -12,7 +12,7 @@ On macOS or Linux with [Homebrew](https://brew.sh):
 brew install whiteredhouse/tap/agentiscaled
 ```
 
-On Linux or macOS without Homebrew, run the install script:
+Or run the install script, on Linux or macOS:
 
 ```sh
 curl -fsSL https://get.agentiscale.net | sh
@@ -27,17 +27,22 @@ From then on your system's updates (`sudo apt upgrade`, `sudo dnf upgrade`) keep
 agentiscaled current, and `sudo apt remove agentiscaled` or `sudo dnf remove agentiscaled`
 removes it.
 
-On macOS, on other Linux, or without sudo, it downloads the release's binary, checks it
-against the release's `checksums.txt`, and puts it in `/usr/local/bin` if you can write
-to it, else in `~/.local/bin`, with no root. Run the script again to upgrade.
+On macOS with Homebrew it installs the same cask as `brew install` above (or upgrades
+it), so `brew upgrade` keeps it current. It doesn't install Homebrew for you.
+
+On macOS without Homebrew, on other Linux, or without sudo, it downloads the release's
+binary, checks it against the release's `checksums.txt`, and puts it in `/usr/local/bin`
+if you can write to it, else in `~/.local/bin`, with no root. Run the script again to
+upgrade.
 
 Add options after `sh -s --`:
 
 - `-version vX.Y.Z` installs that release instead of the latest. A release the package
-  repository doesn't have (an older one, or a prerelease) is installed as the binary.
+  repository doesn't have (an older one, or a prerelease), and any pinned release on
+  macOS (Homebrew has only the latest), is installed as the binary.
 - `-dir DIR` puts the binary in `DIR`, without a package or root.
-- `-method binary` skips the package; `-method package` fails rather than fall back
-  to the binary.
+- `-method binary` skips the package or Homebrew; `-method package` fails rather than
+  fall back to the binary.
 
 A script or CI job can set `AGENTISCALE_VERSION`, `AGENTISCALE_INSTALL_DIR` and
 `AGENTISCALE_INSTALL_METHOD` instead.

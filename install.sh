@@ -11,9 +11,14 @@
 # package manager removes it. The repository's key is checked against the
 # fingerprint below before it is trusted.
 #
-# Elsewhere (macOS, other Linux, no sudo), with -dir, or for a prerelease,
-# it puts the agentiscaled binary from a GitHub release in a directory after
-# checking it against the release's checksums.txt, and needs no root.
+# On macOS with Homebrew it installs or upgrades the agentiscaled cask from
+# the whiteredhouse/tap tap, so `brew upgrade` keeps it current. It never
+# installs Homebrew itself.
+#
+# Elsewhere (macOS without Homebrew, other Linux, no sudo), with -dir, for a
+# pinned version on macOS, or for a prerelease, it puts the agentiscaled
+# binary from a GitHub release in a directory after checking it against the
+# release's checksums.txt, and needs no root.
 #
 # Options (or the environment variable in brackets):
 #   -version VERSION  release to install, like v0.11.0, or latest (default)
@@ -22,6 +27,7 @@
 #                     [AGENTISCALE_INSTALL_DIR]
 #   -method METHOD    package, binary or auto (default): auto picks package
 #                     on Linux with apt, dnf, yum or zypper and root or sudo,
+#                     and on macOS with Homebrew for the latest release,
 #                     unless -dir is given [AGENTISCALE_INSTALL_METHOD]
 #
 # Without a package and without -dir, the binary goes in /usr/local/bin if
@@ -63,7 +69,7 @@ main() {
 			echo "usage: install.sh [-version VERSION] [-dir DIR] [-method auto|package|binary]"
 			echo "  -version  release to install, like v0.11.0, or latest (default)"
 			echo "  -dir      put the binary in DIR, without a package"
-			echo "  -method   package (from the package repository, through sudo), binary, or auto (default)"
+			echo "  -method   package (the package repository through sudo, or Homebrew on macOS), binary, or auto (default)"
 			return 0
 			;;
 		*) fail "unknown option $1 (options: -version, -dir, -method)" ;;
@@ -153,8 +159,8 @@ check_version() {
 choose_package() {
 	manager='' why=''
 	[ "$method" != binary ] && [ -z "$dir" ] || return 0
-	if [ "$os" != linux ]; then
-		why="there are no packages for macOS; leave out -method package"
+	if [ "$os" = darwin ]; then
+		choose_brew
 		return 0
 	fi
 	case $version in
@@ -187,6 +193,20 @@ choose_package() {
 	fi
 }
 
+# choose_brew picks Homebrew on macOS, or says why not. The tap has only
+# the latest release, and Homebrew refuses to run as root.
+choose_brew() {
+	if [ "$version" != latest ]; then
+		why="Homebrew installs only the latest release; leave out -method package to install $version as a binary"
+	elif [ "$(id -u)" = 0 ]; then
+		why="Homebrew doesn't run as root; run the script as yourself"
+	elif ! command -v brew >/dev/null 2>&1; then
+		why="found no Homebrew (brew) to install with; leave out -method package to install the binary"
+	else
+		manager=brew as_root=''
+	fi
+}
+
 # check_pin falls back to the binary (auto) or fails (-method package) when
 # the package repository doesn't list the pinned version, as for an older
 # release, or one still being published. The index only answers this
@@ -216,6 +236,10 @@ put() {
 }
 
 install_package() {
+	if [ "$manager" = brew ]; then
+		install_cask
+		return 0
+	fi
 	# v is empty for latest.
 	v=${version#v}
 	[ "$version" != latest ] || v=''
@@ -273,6 +297,27 @@ install_package() {
 		fi
 		fail "$bin is ${first:-missing}, not the packaged agentiscaled $have: something replaced it; reinstall the package with $manager"
 	fi
+	report "$bin"
+}
+
+# install_cask installs the cask, or upgrades it if Homebrew has it already.
+# A binary from an earlier binary install where the cask links its own is
+# reported, not replaced.
+install_cask() {
+	cask=whiteredhouse/tap/agentiscaled
+	prefix=$(brew --prefix) || fail "brew --prefix failed"
+	bin=$prefix/bin/agentiscaled
+	if brew list --cask agentiscaled >/dev/null 2>&1; then
+		echo "Upgrading agentiscaled with Homebrew ($cask)"
+		brew upgrade --cask "$cask" || fail "brew upgrade --cask $cask failed"
+	else
+		if [ -e "$bin" ] || [ -L "$bin" ]; then
+			fail "$bin is already there and not from Homebrew: remove it to install with Homebrew, or pass -method binary to replace it"
+		fi
+		echo "Installing agentiscaled with Homebrew ($cask)"
+		brew install --cask "$cask" || fail "brew install --cask $cask failed"
+	fi
+	[ -x "$bin" ] || fail "Homebrew finished, but $bin isn't there"
 	report "$bin"
 }
 
