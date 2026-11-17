@@ -263,13 +263,23 @@ install_package() {
 		if [ "$manager" = zypper ]; then
 			$as_root zypper --non-interactive --gpg-auto-import-keys refresh agentiscale ||
 				fail "zypper couldn't read the agentiscale package repository"
-			# --force reinstalls the same version, and --oldpackage lets
-			# only a pin replace a newer one.
 			if [ -n "$v" ]; then
-				$as_root zypper --non-interactive install --oldpackage --force --from agentiscale "agentiscaled=$v"
+				# --force reinstalls the same version, and --oldpackage lets
+				# a pin replace a newer one.
+				$as_root zypper --non-interactive install --oldpackage --force --from agentiscale "agentiscaled=$v" ||
+					fail "zypper couldn't install agentiscaled $v"
 			else
-				$as_root zypper --non-interactive install --force --from agentiscale agentiscaled
-			fi || fail "zypper couldn't install agentiscaled ${v:-(latest)}"
+				# Never forced: --force can pick an older version.
+				$as_root zypper --non-interactive install --from agentiscale agentiscaled ||
+					fail "zypper couldn't install agentiscaled"
+				# A packaged binary something replaced: reinstall exactly
+				# the installed version.
+				if ! consistent && [ -n "$have" ]; then
+					echo "Reinstalling agentiscaled $have with zypper"
+					$as_root zypper --non-interactive install --force --from agentiscale "agentiscaled=$have" ||
+						fail "zypper couldn't reinstall agentiscaled $have"
+				fi
+			fi
 		else
 			rpm_install
 		fi
@@ -310,27 +320,43 @@ check_key() {
 # repository only. Their install neither downgrades nor reinstalls, and
 # yum 3 exits 1 with "Nothing to do" then, so for a pin it tries install,
 # downgrade and reinstall in turn until the package and the binary are the
-# pinned version; rpm itself decides which applies. For latest it installs,
-# or upgrades and then reinstalls if the binary isn't the package's.
+# pinned version; rpm itself decides which applies. For latest it installs
+# or upgrades, then reinstalls exactly the installed version if the binary
+# isn't the package's.
 rpm_install() {
 	if [ -n "$v" ]; then
-		spec=agentiscaled-$v verbs='install downgrade reinstall'
 		if consistent; then
 			echo "agentiscaled $v is already installed"
 			return 0
 		fi
-	elif rpm -q agentiscaled >/dev/null 2>&1; then
-		spec=agentiscaled verbs='upgrade reinstall'
-	else
-		spec=agentiscaled verbs=install
+		for verb in install downgrade reinstall; do
+			echo "Running $manager $verb"
+			if rpm_here "$verb" "agentiscaled-$v" && consistent; then
+				return 0
+			fi
+		done
+		fail "$manager couldn't install agentiscaled $v (install, downgrade and reinstall failed or left ${first:-no agentiscaled})"
 	fi
-	for verb in $verbs; do
-		echo "Running $manager $verb"
-		if $as_root "$manager" "$verb" -y --disablerepo='*' --enablerepo=agentiscale "$spec" && consistent; then
-			return 0
-		fi
-	done
-	fail "$manager couldn't install agentiscaled ${v:-(latest)} ($verbs failed or left ${first:-no agentiscaled})"
+	# latest: upgrade never picks an older version.
+	verb=install
+	if rpm -q agentiscaled >/dev/null 2>&1; then
+		verb=upgrade
+	fi
+	echo "Running $manager $verb"
+	rpm_here "$verb" agentiscaled || true
+	consistent && return 0
+	[ -n "$have" ] || fail "$manager couldn't install agentiscaled"
+	# A packaged binary something replaced: reinstall exactly the installed
+	# version.
+	echo "Running $manager reinstall of agentiscaled $have"
+	if ! { rpm_here reinstall "agentiscaled-$have" && consistent; }; then
+		fail "$manager couldn't reinstall agentiscaled $have (the binary is ${first:-missing})"
+	fi
+}
+
+# rpm_here runs dnf or yum as root with the agentiscale repository only.
+rpm_here() {
+	$as_root "$manager" "$1" -y --disablerepo='*' --enablerepo=agentiscale "$2"
 }
 
 # binary_is BINARY VERSION runs BINARY version, keeps its first line in

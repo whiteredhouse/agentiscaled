@@ -421,7 +421,7 @@ class PackageTest(Base):
 
     def test_zypper(self):
         for args, install in [
-            ((), "install --force --from agentiscale agentiscaled"),
+            ((), "install --from agentiscale agentiscaled"),
             (("-version", "v1.0.0"), "install --oldpackage --force --from agentiscale agentiscaled=1.0.0"),
         ]:
             with self.subTest(args):
@@ -435,6 +435,26 @@ class PackageTest(Base):
                 repo = (self.root / "etc/zypp/repos.d/agentiscale.repo").read_text()
                 self.assertIn("type=rpm-md\n", repo)
                 self.assertIn("gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-agentiscale\n", repo)
+
+    def test_zypper_latest_never_forces_except_to_repair(self):
+        for installed, binary_version, calls, want in [
+            # Newer than the repository: a forced install could downgrade it.
+            ("10.0.0", None, ["install --from agentiscale agentiscaled"], "10.0.0"),
+            # The packaged binary was replaced: reinstall exactly 9.8.7.
+            ("9.8.7", "1.0.0", ["install --from agentiscale agentiscaled",
+                                "install --force --from agentiscale agentiscaled=9.8.7"], "9.8.7"),
+        ]:
+            with self.subTest(installed=installed, binary=binary_version):
+                log = self.machine(managers=())
+                # Like zypper: a plain install of an installed package with
+                # nothing newer does nothing; --force installs.
+                self.script("zypper", f'echo "zypper $*" >>{log}\n'
+                            f'case "$*" in *--force*) {self.apply} ;; esac\n')
+                self.installed(installed, binary_version)
+                result = self.install()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual([c.removeprefix("zypper --non-interactive ") for c in self.calls(log)][1:], calls)
+                self.assertIn(f"Installed agentiscaled {want} ", result.stdout)
 
     def rpm_machine(self, manager, actions, installed=None, binary_version=None):
         """A stand-in dnf or yum whose verbs act as given: "apply" installs
@@ -492,14 +512,16 @@ class PackageTest(Base):
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertEqual([c.split()[1] for c in self.calls(log)], verbs)
                     for c in self.calls(log):
-                        self.assertTrue(c.endswith(f" {self.RPM_HERE} agentiscaled"), c)
+                        # Only the repair names a version: the installed one.
+                        tail = " agentiscaled-9.8.7" if c.split()[1] == "reinstall" else " agentiscaled"
+                        self.assertTrue(c.endswith(f" {self.RPM_HERE}{tail}"), c)
                     self.assertIn(f"Installed agentiscaled {want} ", result.stdout)
 
     def test_dnf_failing_every_way_fails(self):
         log = self.rpm_machine("dnf", {}, "10.0.0")
         result = self.install("-version", VERSION)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("install downgrade reinstall failed", result.stderr)
+        self.assertIn("install, downgrade and reinstall failed", result.stderr)
         self.assertEqual([c.split()[1] for c in self.calls(log)], ["install", "downgrade", "reinstall"])
 
     def test_dir_or_binary_method_skips_the_package(self):
