@@ -151,6 +151,9 @@ type upOptions struct {
 	// askClients and askAgent let the wizard ask which clients to connect
 	// and whether to offer an agent.
 	askClients, askAgent bool
+	// noEnroll stops instead of signing in and joining a node that has not
+	// joined, as `agent add` needs.
+	noEnroll bool
 }
 
 func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) (runErr error) {
@@ -288,6 +291,7 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 			fmt.Fprintln(out, "Restored the previous background service and settings.")
 		}
 	}()
+	c.noEnroll = opts.noEnroll
 	joined, err := ensureJoined(ctx, &c, auth, out)
 	if err != nil {
 		return err
@@ -494,6 +498,12 @@ func ensureJoined(ctx context.Context, c *config, auth authConfig, out io.Writer
 	}
 	identity, _ := store.LoadIdentity()
 	meshURL, _ := store.LoadControlPlaneURL()
+	// Settings can name a peer whose identity is gone, as after an
+	// interrupted reset; without enrollment, stop before making a key.
+	if c.noEnroll && (len(identity) == 0 || meshURL == "") {
+		store.Close()
+		return joinedNode{}, notJoinedError(c.dataDir)
+	}
 	priv := meshnode.GetOrGenerateKey(store)
 	store.Close()
 	pid, err := peer.IDFromPrivateKey(priv)

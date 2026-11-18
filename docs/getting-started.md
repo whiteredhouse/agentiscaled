@@ -176,9 +176,10 @@ the file first. Both remember the choice, so a later `up` keeps it.
 
 ## Offer an agent to your network
 
-To let your other agents send tasks to an agent on this machine, run
-`agentiscaled agent add`, or answer y to "Offer an agent from this machine to your
-network?" in `up`. Both ask the same questions, only when they find an agent CLI they
+To let your other agents send tasks to an agent on this machine, answer y to "Offer
+an agent from this machine to your network?" in `up`, or run `agentiscaled agent add`
+once the machine has joined (on a machine that has not, it stops and tells you to run
+`up` first). Both ask the same questions, only when they find an agent CLI they
 can host (`codex`, `claude`), and list the ones found; with several, pick one. Then give its name in your network and the
 directory it works in. Press Enter at the directory for a workspace of its own, which
 agentiscaled creates: `~/Library/Application Support/agentiscaled/workspaces/<name>` on macOS

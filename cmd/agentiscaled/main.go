@@ -58,6 +58,10 @@ type config struct {
 	// service about when it cannot reach it.
 	networkID string
 
+	// noEnroll keeps a node that has not joined from joining: `agent add`
+	// only offers agents from a joined node, and joining is up's job.
+	noEnroll bool
+
 	// signInToken is the owner's access token during `agentiscaled up`.
 	// It lives in memory for enrollment only and is never stored.
 	signInToken string

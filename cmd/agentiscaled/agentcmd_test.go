@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -196,7 +200,11 @@ func TestAgentAddListRemove(t *testing.T) {
 }
 
 func TestAgentAddNeedsARuntimeWithoutATerminal(t *testing.T) {
-	withDefaultDataDir(t)
+	def := withDefaultDataDir(t)
+	if err := os.MkdirAll(def, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeSettings(t, def, settings{Control: "https://control.test", PeerID: "12D3KooWJoined"})
 	old := interactive
 	interactive = func() bool { return false }
 	t.Cleanup(func() { interactive = old })
@@ -205,5 +213,66 @@ func TestAgentAddNeedsARuntimeWithoutATerminal(t *testing.T) {
 	}
 	if err := runAgent(context.Background(), []string{"add", "cursor"}, io.Discard); err == nil || !strings.Contains(err.Error(), "unknown runtime") {
 		t.Fatalf("unknown runtime: %v", err)
+	}
+}
+
+// `agent add` offers agents from a node that has joined; joining is up's job.
+func TestAgentAddNeedsAJoinedNode(t *testing.T) {
+	def := withDefaultDataDir(t)
+	err := runAgent(context.Background(), []string{"add", "codex", "-y"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "has not joined") || !strings.Contains(err.Error(), "agentiscaled up") {
+		t.Fatalf("add without a node: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(def, settingsFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("add without a node wrote settings: %v", err)
+	}
+	if err := os.MkdirAll(def, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeSettings(t, def, settings{Control: "https://control.test"})
+	err = runAgent(context.Background(), []string{"add", "codex", "-y"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "has not joined") {
+		t.Fatalf("add on a node with no identity: %v", err)
+	}
+	other := filepath.Join(t.TempDir(), "other")
+	err = runAgent(context.Background(), []string{"add", "codex", "-y", "-data-dir", other}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "agentiscaled up -data-dir") {
+		t.Fatalf("add on another data dir: %v", err)
+	}
+}
+
+// Settings can still name a peer after its identity is gone, as after an
+// interrupted reset. `agent add` must not sign in or enroll then either.
+func TestAgentAddNeverEnrollsAStaleNode(t *testing.T) {
+	def := withDefaultDataDir(t)
+	var signIns atomic.Int32
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		signIns.Add(1)
+		http.Error(w, "no sign-in expected", http.StatusTeapot)
+	}))
+	t.Cleanup(idp.Close)
+	old := defaultAuth
+	defaultAuth.issuer = idp.URL
+	t.Cleanup(func() { defaultAuth = old })
+	command := filepath.Join(t.TempDir(), "codex")
+	write(t, command, "#!/bin/sh\necho codex-cli-test\n")
+	if err := os.Chmod(command, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "owner-codex"))
+	write(t, filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"), "{}")
+	if err := os.MkdirAll(def, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeSettings(t, def, settings{Control: "https://control.test", Clients: "none", Foreground: true, PeerID: "12D3KooWGone"})
+	err := runAgent(context.Background(), []string{"add", "codex", "-y", "-dir", t.TempDir(), "-command", command}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "has not joined") {
+		t.Fatalf("add on a node whose identity is gone: %v", err)
+	}
+	if n := signIns.Load(); n != 0 {
+		t.Fatalf("add asked the sign-in service %d times", n)
+	}
+	if s, err := loadSettings(def); err != nil || len(s.Agents) != 0 {
+		t.Fatalf("add saved settings: %+v, %v", s.Agents, err)
 	}
 }
