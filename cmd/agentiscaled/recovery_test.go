@@ -46,8 +46,9 @@ func TestMain(m *testing.M) {
 // in each state would.
 type standInMesh struct {
 	mu   sync.Mutex
-	mode string // fine, gone (no mesh at the address), down, refuse (the credential), rekeyed
+	mode string // fine, gone (no mesh at the address), down, refuse (the credential), rekeyed, rotated (to next, key in grace)
 	key  ed25519.PrivateKey
+	next ed25519.PrivateKey
 	hits int
 	srv  *httptest.Server
 }
@@ -57,7 +58,11 @@ func newStandInMesh(t *testing.T, mode string) *standInMesh {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := &standInMesh{mode: mode, key: key}
+	_, next, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &standInMesh{mode: mode, key: key, next: next}
 	m.srv = httptest.NewServer(http.HandlerFunc(m.serve))
 	t.Cleanup(m.srv.Close)
 	return m
@@ -95,8 +100,15 @@ func (m *standInMesh) serve(w http.ResponseWriter, r *http.Request) {
 		if mode == "rekeyed" {
 			_, signer, _ = ed25519.GenerateKey(rand.Reader)
 		}
-		resp := &api.KeysResponse{PublicKeys: [][]byte{signer.Public().(ed25519.PublicKey)}, SignTime: timestamppb.Now()}
-		if err := api.SignKeysResponse(resp, []ed25519.PrivateKey{signer}, time.Now()); err != nil {
+		signers := []ed25519.PrivateKey{signer}
+		if mode == "rotated" {
+			signers = append(signers, m.next)
+		}
+		resp := &api.KeysResponse{SignTime: timestamppb.Now()}
+		for _, k := range signers {
+			resp.PublicKeys = append(resp.PublicKeys, k.Public().(ed25519.PublicKey))
+		}
+		if err := api.SignKeysResponse(resp, signers, time.Now()); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -115,7 +127,11 @@ func (m *standInMesh) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		exp := time.Now().Add(24 * time.Hour)
-		biscuit, err := meshnode.MintBootstrapBiscuitToken(m.key, pid, api.RoleNode, exp, nil, nil)
+		signer := m.key
+		if mode == "rotated" {
+			signer = m.next
+		}
+		biscuit, err := meshnode.MintBootstrapBiscuitToken(signer, pid, api.RoleNode, exp, nil, nil)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -432,6 +448,10 @@ func TestNodeRenewsACredentialItsKeysNoLongerVerify(t *testing.T) {
 		name, then, want string
 	}{
 		{"mesh renews", "fine", "agentiscaled running"},
+		// The mesh rotated its signing key during the outage and renews the
+		// credential under the new key, which only its /keys answer,
+		// vouched for by the old one, lets the node trust.
+		{"mesh rotated its key during the outage", "rotated", "agentiscaled running"},
 		{"mesh refuses", "refuse", "This node stopped"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -463,7 +483,7 @@ func TestNodeRenewsACredentialItsKeysNoLongerVerify(t *testing.T) {
 			if tc.then == "refuse" && !strings.Contains(line, "no longer accepts its credential") {
 				t.Errorf("stop line %q, want a refused credential", line)
 			}
-			if tc.then == "fine" && strings.Contains(node.output(), "This node stopped") {
+			if tc.then != "refuse" && strings.Contains(node.output(), "This node stopped") {
 				t.Errorf("the node stopped although its mesh renewed the credential:\n%s", node.output())
 			}
 		})

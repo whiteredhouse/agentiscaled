@@ -327,6 +327,7 @@ func watchNetwork(ctx context.Context, node networkProbe, d diagnosis) <-chan no
 // nodeStarter is the part of the node that starting it needs.
 type nodeStarter interface {
 	Start(ctx context.Context) error
+	SyncControlPlane(ctx context.Context) error
 	RefreshEnrollment(ctx context.Context) error
 }
 
@@ -340,12 +341,15 @@ func staleCredential(err error) bool {
 }
 
 // startMeshNode starts the node. When its stored credential fails the local
-// check, it asks the mesh to renew it: only the mesh's or the control
+// check, it first reads the mesh's signing keys again, since the mesh may
+// have rotated them while it could not be reached and both the stored and a
+// renewed credential can be signed by a key the node has yet to learn; then
+// it asks the mesh to renew the credential. Only the mesh's or the control
 // service's answer can stop the node for good, and until one comes it tries
 // again every watchCheckEvery. It returns a halt when the answer is final,
 // and nothing when ctx ends first.
 func startMeshNode(ctx, nodeCtx context.Context, node nodeStarter, d diagnosis) (*nodeHalt, error) {
-	renewed := false
+	renewed, synced := false, false
 	for {
 		err := node.Start(nodeCtx)
 		if err == nil {
@@ -356,6 +360,23 @@ func startMeshNode(ctx, nodeCtx context.Context, node nodeStarter, d diagnosis) 
 				return h, nil
 			}
 			return nil, fmt.Errorf("start node: %w", err)
+		}
+		if !synced {
+			syncErr := node.SyncControlPlane(ctx)
+			if syncErr == nil {
+				// Start again: the stored credential may be signed by a key
+				// the node has just learned.
+				synced = true
+				continue
+			}
+			if ctx.Err() != nil {
+				return nil, nil
+			}
+			if meshAnswerOf(syncErr) == meshKeyUntrusted {
+				if h := d.check(ctx, syncErr); h != nil {
+					return h, nil
+				}
+			}
 		}
 		refreshErr := node.RefreshEnrollment(ctx)
 		if refreshErr == nil {
@@ -370,6 +391,7 @@ func startMeshNode(ctx, nodeCtx context.Context, node nodeStarter, d diagnosis) 
 			return h, nil
 		}
 		log.Printf("cannot renew this node's credential yet (%s); retrying", strings.ReplaceAll(refreshErr.Error(), "\n", "; "))
+		synced = false
 		select {
 		case <-ctx.Done():
 			return nil, nil
