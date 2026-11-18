@@ -116,8 +116,7 @@ const (
 	// that does not resolve. It also happens while a mesh starts, so only
 	// the control service can say the network is gone.
 	meshUnserved
-	// meshCredentialRefused is the mesh refusing the node's credential, or
-	// a stored credential that no trusted key verifies.
+	// meshCredentialRefused is the mesh refusing the node's credential.
 	meshCredentialRefused
 	// meshKeyUntrusted is a mesh whose signing keys are vouched for by no
 	// key the node trusts, as after a rotation it slept through.
@@ -135,8 +134,7 @@ func meshAnswerOf(err error) meshAnswer {
 	switch {
 	case strings.Contains(msg, "not signed by any trusted control plane key"):
 		return meshKeyUntrusted
-	case strings.Contains(msg, "loaded identity fails role requirement"),
-		errors.Is(err, meshnode.ErrFatalAuth),
+	case errors.Is(err, meshnode.ErrFatalAuth),
 		errors.As(err, &status) && (status.Code == http.StatusUnauthorized || status.Code == http.StatusForbidden),
 		errors.As(err, &refresh) && (refresh.StatusCode == http.StatusUnauthorized || refresh.StatusCode == http.StatusForbidden):
 		return meshCredentialRefused
@@ -324,6 +322,83 @@ func watchNetwork(ctx context.Context, node networkProbe, d diagnosis) <-chan no
 		}
 	}()
 	return halted
+}
+
+// nodeStarter is the part of the node that starting it needs.
+type nodeStarter interface {
+	Start(ctx context.Context) error
+	SyncControlPlane(ctx context.Context) error
+	RefreshEnrollment(ctx context.Context) error
+}
+
+// Start first checks the stored credential against the control plane keys
+// the node trusts. One that fails, as when the node no longer keeps the key
+// that signed it, needs the mesh to renew it, and Start's error does not say
+// whether the mesh refused or never answered, as from a laptop that wakes
+// for a few seconds without a network.
+func staleCredential(err error) bool {
+	var stale *meshnode.StaleIdentityError
+	return errors.As(err, &stale)
+}
+
+// startMeshNode starts the node. When its stored credential fails the local
+// check, it first reads the mesh's signing keys again, since the mesh may
+// have rotated them while it could not be reached and both the stored and a
+// renewed credential can be signed by a key the node has yet to learn; then
+// it asks the mesh to renew the credential. Only the mesh's or the control
+// service's answer can stop the node for good, and until one comes it tries
+// again every watchCheckEvery. It returns a halt when the answer is final,
+// and nothing when ctx ends first.
+func startMeshNode(ctx, nodeCtx context.Context, node nodeStarter, d diagnosis) (*nodeHalt, error) {
+	renewed, synced := false, false
+	for {
+		err := node.Start(nodeCtx)
+		if err == nil {
+			return nil, nil
+		}
+		if !staleCredential(err) || renewed {
+			if h := d.check(ctx, err); h != nil {
+				return h, nil
+			}
+			return nil, fmt.Errorf("start node: %w", err)
+		}
+		if !synced {
+			syncErr := node.SyncControlPlane(ctx)
+			if syncErr == nil {
+				// Start again: the stored credential may be signed by a key
+				// the node has just learned.
+				synced = true
+				continue
+			}
+			if ctx.Err() != nil {
+				return nil, nil
+			}
+			if meshAnswerOf(syncErr) == meshKeyUntrusted {
+				if h := d.check(ctx, syncErr); h != nil {
+					return h, nil
+				}
+			}
+		}
+		refreshErr := node.RefreshEnrollment(ctx)
+		if refreshErr == nil {
+			log.Print("renewed this node's credential, which its trusted keys no longer verified")
+			renewed = true
+			continue
+		}
+		if ctx.Err() != nil {
+			return nil, nil
+		}
+		if h := d.check(ctx, refreshErr); h != nil {
+			return h, nil
+		}
+		log.Printf("cannot renew this node's credential yet (%s); retrying", strings.ReplaceAll(refreshErr.Error(), "\n", "; "))
+		synced = false
+		select {
+		case <-ctx.Done():
+			return nil, nil
+		case <-time.After(watchCheckEvery):
+		}
+	}
 }
 
 // waitHalted is a halted node: it says why once and waits to be stopped,

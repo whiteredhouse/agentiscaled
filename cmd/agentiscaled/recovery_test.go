@@ -46,8 +46,9 @@ func TestMain(m *testing.M) {
 // in each state would.
 type standInMesh struct {
 	mu   sync.Mutex
-	mode string // fine, gone (no mesh at the address), down, refuse (the credential), rekeyed
+	mode string // fine, gone (no mesh at the address), down, refuse (the credential), rekeyed, rotated (to next, key in grace)
 	key  ed25519.PrivateKey
+	next ed25519.PrivateKey
 	hits int
 	srv  *httptest.Server
 }
@@ -57,7 +58,11 @@ func newStandInMesh(t *testing.T, mode string) *standInMesh {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := &standInMesh{mode: mode, key: key}
+	_, next, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &standInMesh{mode: mode, key: key, next: next}
 	m.srv = httptest.NewServer(http.HandlerFunc(m.serve))
 	t.Cleanup(m.srv.Close)
 	return m
@@ -95,8 +100,15 @@ func (m *standInMesh) serve(w http.ResponseWriter, r *http.Request) {
 		if mode == "rekeyed" {
 			_, signer, _ = ed25519.GenerateKey(rand.Reader)
 		}
-		resp := &api.KeysResponse{PublicKeys: [][]byte{signer.Public().(ed25519.PublicKey)}, SignTime: timestamppb.Now()}
-		if err := api.SignKeysResponse(resp, []ed25519.PrivateKey{signer}, time.Now()); err != nil {
+		signers := []ed25519.PrivateKey{signer}
+		if mode == "rotated" {
+			signers = append(signers, m.next)
+		}
+		resp := &api.KeysResponse{SignTime: timestamppb.Now()}
+		for _, k := range signers {
+			resp.PublicKeys = append(resp.PublicKeys, k.Public().(ed25519.PublicKey))
+		}
+		if err := api.SignKeysResponse(resp, signers, time.Now()); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -105,6 +117,26 @@ func (m *standInMesh) serve(w http.ResponseWriter, r *http.Request) {
 		reply(&api.ControlPlaneInfoResponse{})
 	case mode == "refuse":
 		http.Error(w, "node credential required", http.StatusUnauthorized)
+	case r.URL.Path == "/refresh":
+		// A renewed credential, signed by the mesh's key.
+		body, _ := io.ReadAll(r.Body)
+		var req api.TokenRefreshRequest
+		pid, err := peer.Decode(func() string { _ = proto.Unmarshal(body, &req); return req.PeerId }())
+		if err != nil {
+			http.Error(w, "bad peer", http.StatusBadRequest)
+			return
+		}
+		exp := time.Now().Add(24 * time.Hour)
+		signer := m.key
+		if mode == "rotated" {
+			signer = m.next
+		}
+		biscuit, err := meshnode.MintBootstrapBiscuitToken(signer, pid, api.RoleNode, exp, nil, nil)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		reply(&api.TokenRefreshResponse{BiscuitToken: biscuit, ExpireTime: timestamppb.New(exp)})
 	case r.URL.Path == "/policies":
 		reply(&api.PolicyConfigGetResponse{})
 	default:
@@ -185,6 +217,13 @@ func shortTempDir(t *testing.T) string {
 // key, and the settings `up` would save; it returns the peer ID.
 func seedNode(t *testing.T, dir, meshURL string, key ed25519.PrivateKey) string {
 	t.Helper()
+	return seedNodeSignedBy(t, dir, meshURL, key, key)
+}
+
+// seedNodeSignedBy is seedNode with a credential signed by signer while the
+// node trusts only key, as when it no longer keeps the key that signed it.
+func seedNodeSignedBy(t *testing.T, dir, meshURL string, key, signer ed25519.PrivateKey) string {
+	t.Helper()
 	store, err := meshnode.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -196,7 +235,7 @@ func seedNode(t *testing.T, dir, meshURL string, key ed25519.PrivateKey) string 
 		t.Fatal(err)
 	}
 	exp := time.Now().Add(24 * time.Hour)
-	biscuit, err := meshnode.MintBootstrapBiscuitToken(key, pid, api.RoleNode, exp, nil, nil)
+	biscuit, err := meshnode.MintBootstrapBiscuitToken(signer, pid, api.RoleNode, exp, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,6 +435,58 @@ func TestNodeKeepsRetryingThroughAnOutage(t *testing.T) {
 	}
 	if !strings.Contains(node.output(), "retrying") {
 		t.Errorf("the log does not say the node is retrying:\n%s", node.output())
+	}
+}
+
+// A credential the node's trusted keys no longer verify, as when it dropped
+// the key that signed it, needs the mesh to renew it. While the mesh does not
+// answer, as on a laptop that wakes for a few seconds without a network, the
+// node keeps trying; it renews the credential once the mesh answers, and
+// stops only when the mesh refuses it.
+func TestNodeRenewsACredentialItsKeysNoLongerVerify(t *testing.T) {
+	for _, tc := range []struct {
+		name, then, want string
+	}{
+		{"mesh renews", "fine", "agentiscaled running"},
+		// The mesh rotated its signing key during the outage and renews the
+		// credential under the new key, which only its /keys answer,
+		// vouched for by the old one, lets the node trust.
+		{"mesh rotated its key during the outage", "rotated", "agentiscaled running"},
+		{"mesh refuses", "refuse", "This node stopped"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mesh := newStandInMesh(t, "down")
+			control := newStandInControl(t, http.StatusServiceUnavailable, "")
+			dir := shortTempDir(t)
+			network := uuid.NewString()
+			_, dropped, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pid := seedNodeSignedBy(t, dir, mesh.srv.URL, mesh.key, dropped)
+			writeSettings(t, dir, settings{Control: control.srv.URL, Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", PeerID: pid, NetworkID: network, MeshURL: mesh.srv.URL})
+
+			node := startNode(t, dir)
+			node.waitLog(t, "cannot renew this node's credential yet", 30*time.Second)
+			asked := mesh.requests()
+			time.Sleep(1500 * time.Millisecond)
+			if mesh.requests() == asked {
+				t.Errorf("the node stopped asking its mesh")
+			}
+			if out := node.output(); strings.Contains(out, "This node stopped") {
+				t.Fatalf("the node gave up while its mesh did not answer:\n%s", out)
+			}
+
+			control.set(http.StatusOK, "")
+			mesh.set(tc.then)
+			line := node.waitLog(t, tc.want, 30*time.Second)
+			if tc.then == "refuse" && !strings.Contains(line, "no longer accepts its credential") {
+				t.Errorf("stop line %q, want a refused credential", line)
+			}
+			if tc.then != "refuse" && strings.Contains(node.output(), "This node stopped") {
+				t.Errorf("the node stopped although its mesh renewed the credential:\n%s", node.output())
+			}
+		})
 	}
 }
 

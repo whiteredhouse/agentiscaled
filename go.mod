@@ -160,4 +160,4 @@ require (
 
 // agentiscale's fork of Google Agent Mesh v0.2.0, which exports the node
 // package. See AGENTISCALE.md on the fork's agentiscale branch.
-replace github.com/google/agentmesh => github.com/whiteredhouse/agentmesh v0.0.0-20261114161237-f7b60a050c27
+replace github.com/google/agentmesh => github.com/whiteredhouse/agentmesh v0.0.0-20261118203744-fb1cc9d86bf6
