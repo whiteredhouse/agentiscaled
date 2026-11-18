@@ -75,7 +75,7 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	if s, err := loadSettings(nodeDir); errors.Is(err, os.ErrNotExist) || (err == nil && s.PeerID == "") {
-		return fmt.Errorf("this machine has not joined your network: run '%s' first; it can offer the agent too", upCommand(nodeDir))
+		return notJoinedError(nodeDir)
 	} else if err != nil {
 		return fmt.Errorf("load settings: %w", err)
 	}
@@ -171,10 +171,11 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 	if s, err := loadSettings(offer.dataDir); err == nil {
 		replaced = slices.ContainsFunc(s.Agents, func(a agentConfig) bool { return a.Name == offer.name })
 	}
-	// The node has joined (checked above); a node that runs restarts to
-	// serve the agent next to the ones it offers already.
+	// The node has joined (checked above, and again by bringUp, which never
+	// enrolls for agent add); a node that runs restarts to serve the agent
+	// next to the ones it offers already.
 	add := offer.config()
-	if err := bringUp(ctx, []string{"-data-dir", offer.dataDir, "-y"}, out, upOptions{addAgent: &add}); err != nil {
+	if err := bringUp(ctx, []string{"-data-dir", offer.dataDir, "-y"}, out, upOptions{addAgent: &add, noEnroll: true}); err != nil {
 		return err
 	}
 	if defPath == "" {
@@ -186,6 +187,11 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "\nYour network %s agent %q from this machine. 'agentiscaled agent list' shows this machine's agents; 'agentiscaled agent remove %s' stops offering it.\n", verb, offer.name, offer.name)
 	return nil
+}
+
+// notJoinedError is what `agent add` says on a node that has not joined.
+func notJoinedError(dataDir string) error {
+	return fmt.Errorf("this machine has not joined your network: run '%s' first; it can offer the agent too", upCommand(dataDir))
 }
 
 func runAgentRemove(args []string, out io.Writer) error {
