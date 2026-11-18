@@ -337,7 +337,8 @@ type nodeStarter interface {
 // whether the mesh refused or never answered, as from a laptop that wakes
 // for a few seconds without a network.
 func staleCredential(err error) bool {
-	return strings.Contains(err.Error(), "loaded identity fails role requirement")
+	var stale *meshnode.StaleIdentityError
+	return errors.As(err, &stale)
 }
 
 // startMeshNode starts the node. When its stored credential fails the local
