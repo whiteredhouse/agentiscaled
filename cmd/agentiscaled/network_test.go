@@ -90,7 +90,7 @@ func TestCodexRuntimeNetwork(t *testing.T) {
 	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(networkTokenEnv, "stale")
+	t.Setenv(networkTokenEnv, "previous-task-token-7e1c")
 	access := &networkAccess{URL: "http://127.0.0.1:1234/mcp", Token: "task-token"}
 	for _, policy := range []agentPolicy{{}, {OwnerConfig: true}} {
 		rt := &codexRuntime{command: command, home: filepath.Join(dir, "home"), policy: policy}
@@ -107,7 +107,7 @@ func TestCodexRuntimeNetwork(t *testing.T) {
 			t.Errorf("the token is on the command line: %q", args)
 		}
 		env := readRecord(t, record+".env")
-		if !strings.Contains(env, networkTokenEnv+"=task-token\n") || strings.Contains(env, "stale") {
+		if !strings.Contains(env, networkTokenEnv+"=task-token\n") || strings.Contains(env, "previous-task-token-7e1c") {
 			t.Errorf("codex environment %q", env)
 		}
 	}
