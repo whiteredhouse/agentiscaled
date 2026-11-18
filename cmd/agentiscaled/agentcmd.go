@@ -67,6 +67,19 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
+	// Joining is up's job: a sign-in and a new node in the network should
+	// not happen as a side effect of offering an agent. Check before any
+	// question is asked.
+	nodeDir, err := filepath.Abs(*dataDir)
+	if err != nil {
+		return err
+	}
+	if s, err := loadSettings(nodeDir); errors.Is(err, os.ErrNotExist) || (err == nil && s.PeerID == "") {
+		return fmt.Errorf("this machine has not joined your network: run '%s' first; it can offer the agent too", upCommand(nodeDir))
+	} else if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
+
 	var ask *wizard
 	if !*assumeYes && interactive() {
 		ask = &wizard{in: bufio.NewReader(os.Stdin), out: out}
@@ -158,8 +171,8 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 	if s, err := loadSettings(offer.dataDir); err == nil {
 		replaced = slices.ContainsFunc(s.Agents, func(a agentConfig) bool { return a.Name == offer.name })
 	}
-	// The node signs in and joins first if it has not; a node that runs
-	// restarts to serve the agent next to the ones it offers already.
+	// The node has joined (checked above); a node that runs restarts to
+	// serve the agent next to the ones it offers already.
 	add := offer.config()
 	if err := bringUp(ctx, []string{"-data-dir", offer.dataDir, "-y"}, out, upOptions{addAgent: &add}); err != nil {
 		return err

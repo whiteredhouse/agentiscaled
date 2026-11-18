@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -196,7 +197,11 @@ func TestAgentAddListRemove(t *testing.T) {
 }
 
 func TestAgentAddNeedsARuntimeWithoutATerminal(t *testing.T) {
-	withDefaultDataDir(t)
+	def := withDefaultDataDir(t)
+	if err := os.MkdirAll(def, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeSettings(t, def, settings{Control: "https://control.test", PeerID: "12D3KooWJoined"})
 	old := interactive
 	interactive = func() bool { return false }
 	t.Cleanup(func() { interactive = old })
@@ -205,5 +210,30 @@ func TestAgentAddNeedsARuntimeWithoutATerminal(t *testing.T) {
 	}
 	if err := runAgent(context.Background(), []string{"add", "cursor"}, io.Discard); err == nil || !strings.Contains(err.Error(), "unknown runtime") {
 		t.Fatalf("unknown runtime: %v", err)
+	}
+}
+
+// `agent add` offers agents from a node that has joined; joining is up's job.
+func TestAgentAddNeedsAJoinedNode(t *testing.T) {
+	def := withDefaultDataDir(t)
+	err := runAgent(context.Background(), []string{"add", "codex", "-y"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "has not joined") || !strings.Contains(err.Error(), "agentiscaled up") {
+		t.Fatalf("add without a node: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(def, settingsFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("add without a node wrote settings: %v", err)
+	}
+	if err := os.MkdirAll(def, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeSettings(t, def, settings{Control: "https://control.test"})
+	err = runAgent(context.Background(), []string{"add", "codex", "-y"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "has not joined") {
+		t.Fatalf("add on a node with no identity: %v", err)
+	}
+	other := filepath.Join(t.TempDir(), "other")
+	err = runAgent(context.Background(), []string{"add", "codex", "-y", "-data-dir", other}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "agentiscaled up -data-dir") {
+		t.Fatalf("add on another data dir: %v", err)
 	}
 }

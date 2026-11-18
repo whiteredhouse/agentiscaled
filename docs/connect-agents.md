@@ -124,18 +124,21 @@ according to the permissions you configure locally in Codex.
 It serves no services; Claude Desktop only sends. Node B is not connected to
 your agent apps, so Claude Desktop keeps using node A's `agentiscale` server.
 
-**Node B** serves the agent. Give it its own data directory and the directory
-the agent works in:
+**Node B** serves the agent. Join it with its own data directory, then offer the
+agent from it with the directory the agent works in:
 
 ```sh
+agentiscaled up -data-dir ~/Library/Application\ Support/agentiscale-codex
 agentiscaled agent add codex \
   -data-dir ~/Library/Application\ Support/agentiscale-codex \
   -dir /absolute/path/to/the/directory
 ```
 
-`agent add` signs in once more for node B, joins it to the same network and runs it as
-its own background service; node A offers more agents with plain `agent add`, with
-no node of their own. The first argument picks the runtime that does the work:
+`up` signs in once more for node B, joins it to the same network and runs it as
+its own background service; `agent add` then adds the agent to it. `agent add` only
+offers agents from a node that has joined: on a data directory that has not, it
+stops and names the `up` command to run. Node A offers more agents with plain
+`agent add`, with no node of their own. The first argument picks the runtime that does the work:
 `codex` (the Codex CLI) or `claude` (Claude Code, see
 [Claude Code as the agent](#claude-code-as-the-agent)). Node B checks that `codex` runs (`-command` takes another path), then
 serves the A2A 1.0 agent `a2a://codex` to the other nodes of your network.
