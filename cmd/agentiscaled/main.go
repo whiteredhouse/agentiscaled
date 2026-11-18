@@ -474,12 +474,13 @@ func run(ctx context.Context, c config) error {
 	// The node runs until ctx ends or its network turns out to be gone.
 	nodeCtx, stopNode := context.WithCancel(ctx)
 	defer stopNode()
-	if err := node.Start(nodeCtx); err != nil {
-		if h := diag.check(ctx, err); h != nil {
-			node.Teardown()
-			return halt(ctx, c.dataDir, *h)
-		}
-		return fmt.Errorf("start node: %w", err)
+	if h, err := startMeshNode(ctx, nodeCtx, node, diag); err != nil {
+		return err
+	} else if h != nil {
+		node.Teardown()
+		return halt(ctx, c.dataDir, *h)
+	} else if ctx.Err() != nil {
+		return nil
 	}
 	var teardown sync.Once
 	defer teardown.Do(func() { node.Teardown() })
