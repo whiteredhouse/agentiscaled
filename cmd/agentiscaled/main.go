@@ -518,6 +518,15 @@ func run(ctx context.Context, c config) error {
 		if err := node.RegisterStaticServices(ctx, services); err != nil {
 			return fmt.Errorf("register agents: %w", err)
 		}
+		// The catalog reports say what each agent is doing, for the owner's
+		// console; never what a task asks or returns.
+		svcs := make([]*agentService, 0, len(agents))
+		for _, a := range agents {
+			svcs = append(svcs, a.svc)
+		}
+		go reportActivity(nodeCtx, svcs, func(name string, status *api.ServiceStatus) {
+			node.SetServiceStatus(api.ServiceType_SERVICE_TYPE_A2A, name, status)
+		})
 	}
 	node.StartRenewalLoop(nodeCtx, "", "", "", "")
 

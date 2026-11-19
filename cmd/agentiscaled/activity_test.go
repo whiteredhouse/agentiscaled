@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/google/agentmesh/api"
 	meshnode "github.com/google/agentmesh/export/node"
 )
 
@@ -92,6 +93,53 @@ func TestLocalAgentAPIServesActivity(t *testing.T) {
 	activity, running := nodeActivity(dir)
 	if !running || activity["second"].State != activityIdle {
 		t.Fatalf("nodeActivity: %v %+v", running, activity)
+	}
+}
+
+// The node's catalog reports carry each agent's activity as a coarse
+// status, looked at again while the node runs.
+func TestReportActivity(t *testing.T) {
+	defer func(d time.Duration) { activityEvery = d }(activityEvery)
+	activityEvery = 10 * time.Millisecond
+	h := newAgentHarness(t, testSender)
+	statuses := make(chan *api.ServiceStatus, 64)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go reportActivity(ctx, []*agentService{h.svc}, func(name string, st *api.ServiceStatus) {
+		if name != "helper" {
+			t.Errorf("status for %q", name)
+		}
+		select {
+		case statuses <- st:
+		default:
+		}
+	})
+	await := func(want api.ServiceState, waiting uint32) *api.ServiceStatus {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case st := <-statuses:
+				if st.GetState() == want && st.GetInputRequired() == waiting {
+					return st
+				}
+			case <-deadline:
+				t.Fatalf("no status %s with %d waiting", want, waiting)
+			}
+		}
+	}
+	if st := await(api.ServiceState_SERVICE_STATE_IDLE, 0); st.Since != nil || st.InputRequiredSince != nil {
+		t.Fatalf("idle: %v", st)
+	}
+	task := h.send(t, "", "double a number", nil)
+	<-h.fix.prompts
+	if st := await(api.ServiceState_SERVICE_STATE_BUSY, 0); st.Since == nil {
+		t.Fatalf("busy: %v", st)
+	}
+	h.fix.ask <- "Which number?"
+	h.await(t, task.ID, a2a.TaskStateInputRequired)
+	if st := await(api.ServiceState_SERVICE_STATE_IDLE, 1); st.InputRequiredSince == nil {
+		t.Fatalf("waiting: %v", st)
 	}
 }
 

@@ -25,6 +25,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
 	"github.com/google/agentmesh/api"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // The bounds on hosted agents' tasks.
@@ -699,6 +700,43 @@ func (s *agentService) activity() agentActivity {
 		}
 	}
 	return a
+}
+
+// serviceStatus is the activity as the node's catalog reports carry it,
+// which the owner's console shows. It carries no task content.
+func (a agentActivity) serviceStatus() *api.ServiceStatus {
+	st := &api.ServiceStatus{State: api.ServiceState_SERVICE_STATE_IDLE, InputRequired: uint32(a.Waiting)}
+	if a.State == activityBusy {
+		st.State = api.ServiceState_SERVICE_STATE_BUSY
+	}
+	if a.Since != nil {
+		st.Since = timestamppb.New(*a.Since)
+	}
+	if a.WaitingSince != nil {
+		st.InputRequiredSince = timestamppb.New(*a.WaitingSince)
+	}
+	return st
+}
+
+// activityEvery is how often the node looks at what its agents are doing
+// for its catalog reports; the mesh node reports a change early on its
+// own, at most once per a few seconds.
+var activityEvery = time.Second
+
+// reportActivity hands each agent's activity to set until ctx ends.
+func reportActivity(ctx context.Context, agents []*agentService, set func(name string, status *api.ServiceStatus)) {
+	ticker := time.NewTicker(activityEvery)
+	defer ticker.Stop()
+	for {
+		for _, s := range agents {
+			set(s.name, s.activity().serviceStatus())
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *agentService) finish(run *agentRun) {
