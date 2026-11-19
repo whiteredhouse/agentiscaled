@@ -26,11 +26,12 @@ const taskSendUsage = `usage: agentiscaled task send [flags] AGENT [MESSAGE]
 Sends MESSAGE to AGENT on your network through this machine's running node,
 prints the agent's steps on standard error while it works, and prints its
 answer on standard output. Without MESSAGE, or with -, the message is read
-from standard input. It exits non-zero unless the task completes.
+from standard input. With -no-wait it prints the task's ID and returns at
+once; agentiscaled task wait follows the task from there.
 
 AGENT is an agent this node hosts, or one another node of your network
 offers; give -peer when several nodes offer an agent of that name.
-
+` + taskExitCodes + `
 Flags:
 `
 
@@ -55,6 +56,7 @@ type taskSendOptions struct {
 	timeout   time.Duration
 	waitAgent time.Duration
 	json      bool
+	noWait    bool
 	// terminal is set when standard output is a terminal, which the
 	// answer must not drive.
 	terminal bool
@@ -76,6 +78,7 @@ func runTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 	fs.DurationVar(&o.timeout, "timeout", taskDeadline, "Give up and cancel the task after this long")
 	fs.DurationVar(&o.waitAgent, "wait-agent", 0, "Keep looking this long for a remote AGENT that is not on the network yet, such as one that is joining")
 	fs.BoolVar(&o.json, "json", false, "Print the task's ID, state and result as JSON instead of the answer alone")
+	fs.BoolVar(&o.noWait, "no-wait", false, "Print the task's ID once the agent has it and return, leaving the task to run; follow it with agentiscaled task wait")
 	pos, err := parseInterleaved(fs, args)
 	if err != nil {
 		return err
@@ -126,12 +129,9 @@ func runTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 	}
 	node := socketClient(socket)
 	tasks := &a2aTasks{http: node, base: "http://agentiscaled", local: socketClient(filepath.Join(o.dataDir, localAgentSocketName))}
-	if err := sendAndFollow(ctx, tasks, agent, text, o, out, errOut); err != nil {
-		// Errors carry the agent's words and the network's: shown on the
-		// caller's terminal, they must not drive it.
-		return errors.New(terminalSafe(err.Error()))
-	}
-	return nil
+	// Errors carry the agent's words and the network's: shown on the
+	// caller's terminal, they must not drive it.
+	return safeError(sendAndFollow(ctx, tasks, agent, text, o, out, errOut))
 }
 
 // readMessage reads the message from standard input, or stops waiting for
@@ -175,7 +175,7 @@ func sendAndFollow(ctx context.Context, tasks *a2aTasks, agent, text string, o t
 		if o.taskID != "" {
 			return stopTask(ctx, tasks, target, o, out, taskOut{TaskID: o.taskID}, err)
 		}
-		return fmt.Errorf("%s before %s confirmed the task, which may still run: %w", endedBy(ctx, o.timeout), agent, err)
+		return withExit(timeoutExit(ctx), fmt.Errorf("%s before %s confirmed the task, which may still run: %w", endedBy(ctx, o.timeout), agent, err))
 	}
 	id := sent.TaskID
 	if !taskID.MatchString(id) {
@@ -191,27 +191,18 @@ func sendAndFollow(ctx context.Context, tasks *a2aTasks, agent, text string, o t
 		fmt.Fprintf(errOut, "answered task %s of %s %s\n", id, agent, where)
 	}
 
-	last := ""
-	notify := func(step string) {
-		if step = progressLine(terminalSafe(step)); step != "" && step != last {
-			last = step
-			fmt.Fprintf(errOut, "%s: %s\n", agent, step)
+	if o.noWait {
+		fmt.Fprintf(errOut, "follow it with: %s\n", waitCommand(o, target, id))
+		if o.json {
+			return report(out, o, sent, nil)
 		}
+		if _, err := fmt.Fprintln(out, id); err != nil {
+			return fmt.Errorf("write the task ID: %w", err)
+		}
+		return nil
 	}
-	task := sent
-	for task.Terminal == "" && task.State != stateName(a2a.TaskStateInputRequired) {
-		wait := min(time.Until(deadline), followChunk)
-		if wait <= 0 {
-			// Out of time: the deadline is ending the context too.
-			<-ctx.Done()
-			break
-		}
-		var next taskOut
-		if next, err = tasks.watch(ctx, target, a2a.TaskID(sent.TaskID), wait, notify); err != nil {
-			break
-		}
-		task = next
-	}
+
+	task, err := followTask(ctx, tasks, target, agent, sent, deadline, errOut)
 	if ctx.Err() != nil {
 		// The caller is gone, or out of time: the agent should stop too.
 		return stopTask(ctx, tasks, target, o, out, task, nil)
@@ -219,17 +210,50 @@ func sendAndFollow(ctx context.Context, tasks *a2aTasks, agent, text string, o t
 	if err != nil {
 		return err
 	}
+	return settle(out, o, target, agent, task)
+}
+
+// followTask follows task until it ends or asks a question, the deadline
+// passes or ctx ends, printing each new step of the agent's on errOut, and
+// returns the task as last seen. Callers check ctx before the error.
+func followTask(ctx context.Context, tasks *a2aTasks, target taskTarget, agent string, task taskOut, deadline time.Time, errOut io.Writer) (taskOut, error) {
+	last := ""
+	notify := func(step string) {
+		if step = progressLine(terminalSafe(step)); step != "" && step != last {
+			last = step
+			fmt.Fprintf(errOut, "%s: %s\n", agent, step)
+		}
+	}
+	for task.Terminal == "" && task.State != stateName(a2a.TaskStateInputRequired) {
+		wait := min(time.Until(deadline), followChunk)
+		if wait <= 0 {
+			// Out of time: the deadline is ending the context too.
+			<-ctx.Done()
+			break
+		}
+		next, err := tasks.watch(ctx, target, a2a.TaskID(task.TaskID), wait, notify)
+		if err != nil {
+			return task, err
+		}
+		task = next
+	}
+	return task, nil
+}
+
+// settle reports a task that ended or asks a question: the answer of a
+// completed task, else an error whose exit status says which.
+func settle(out io.Writer, o taskSendOptions, target taskTarget, agent string, task taskOut) error {
 	switch {
 	case task.Terminal == "completed":
 		return report(out, o, task, nil)
 	case task.State == stateName(a2a.TaskStateInputRequired):
-		return report(out, o, task, fmt.Errorf("%s asks: %s\nanswer with: %s", agent, terminalSafe(task.Message), answerCommand(o, target, task.TaskID)))
+		return report(out, o, task, withExit(exitInputRequired, fmt.Errorf("%s asks: %s\nanswer with: %s", agent, terminalSafe(task.Message), answerCommand(o, target, task.TaskID))))
 	default:
 		why := task.Terminal
 		if task.Message != "" {
 			why += ": " + terminalSafe(task.Message)
 		}
-		return report(out, o, task, fmt.Errorf("task %s ended %s", terminalSafe(task.TaskID), why))
+		return report(out, o, task, withExit(exitNotCompleted, fmt.Errorf("task %s ended %s", terminalSafe(task.TaskID), why)))
 	}
 }
 
@@ -269,12 +293,13 @@ func stopTask(ctx context.Context, tasks *a2aTasks, target taskTarget, o taskSen
 		why += fmt.Sprintf(" (%v)", cause)
 	}
 	id := terminalSafe(task.TaskID)
+	code := timeoutExit(ctx)
 	stopCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), cancelTimeout)
 	defer stop()
 	if _, cancelled, err := tasks.cancel(stopCtx, nil, taskIn{taskTarget: target, TaskID: task.TaskID}); err == nil {
-		return report(out, o, cancelled, fmt.Errorf("task %s: %s; cancelled it", id, why))
+		return report(out, o, cancelled, withExit(code, fmt.Errorf("task %s: %s; cancelled it", id, why)))
 	}
-	return report(out, o, task, fmt.Errorf("task %s: %s; cancelling it failed, it may still run", id, why))
+	return report(out, o, task, withExit(code, fmt.Errorf("task %s: %s; cancelling it failed, it may still run", id, why)))
 }
 
 // report prints the task: its result alone, or with -json all of it, and
@@ -302,7 +327,7 @@ func report(out io.Writer, o taskSendOptions, task taskOut, err error) error {
 // timedOut names the timeout when it, rather than err itself, ended a call.
 func timedOut(err error, ctx context.Context, timeout time.Duration) error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("no answer within %s: %w", timeout, err)
+		return withExit(exitTimeout, fmt.Errorf("no answer within %s: %w", timeout, err))
 	}
 	return err
 }

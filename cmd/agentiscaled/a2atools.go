@@ -317,6 +317,9 @@ func (t *a2aTasks) watch(ctx context.Context, target taskTarget, id a2a.TaskID, 
 			if ctx.Err() != nil {
 				return taskOut{}, ctx.Err()
 			}
+			if errors.Is(err, a2a.ErrTaskNotFound) {
+				return taskOut{}, fmt.Errorf("task %s not found at %s: an agent shows a task only to whoever sent it", id, target.Service)
+			}
 			return taskOut{}, unreachable(target, err)
 		}
 		if settled(task.Status.State) || !time.Now().Before(deadline) {
