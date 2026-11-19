@@ -68,6 +68,7 @@ token](docs/getting-started.md#nodes-that-join-with-a-workload-token).
 | `agentiscaled mcp` | Serve the node's tools over stdio to an MCP client ([Connect an agent client](docs/connect-agents.md)) |
 | `agentiscaled task send` | Send a task to an agent on your network and print its answer, from a script or CI job ([Call an agent from the command line](docs/connect-agents.md#call-an-agent-from-the-command-line)) |
 | `agentiscaled task wait` | Wait for a task to end or ask a question, and print its answer ([Wait for a task](docs/connect-agents.md#wait-for-a-task)) |
+| `agentiscaled task cancel` | Cancel tasks this node sent, so that their agents stop ([Cancel a task](docs/connect-agents.md#cancel-a-task)) |
 | `agentiscaled skill [install]` | Print the agentiscale skill, which teaches Claude Code, Codex and other agents to find and call your network's agents, or install it for them ([Teach your agents to call other agents](docs/connect-agents.md#teach-your-agents-to-call-other-agents)) |
 | `agentiscaled task stop\|resume\|status` | Show, stop, or resume task execution on this node |
 | `agentiscaled run` | Run the node in the foreground with the options saved by `up` |

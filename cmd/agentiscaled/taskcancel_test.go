@@ -1,0 +1,98 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	meshnode "github.com/google/agentmesh/export/node"
+)
+
+// startTaskCancel runs `agentiscaled task cancel args...` in the background.
+func startTaskCancel(args ...string) *sendRun {
+	r := &sendRun{out: &syncBuffer{}, errOut: &syncBuffer{}, done: make(chan error, 1)}
+	go func() {
+		r.done <- runTasks(context.Background(), append([]string{"cancel"}, args...), strings.NewReader(""), r.out, r.errOut)
+	}()
+	return r
+}
+
+// task cancel stops a running task, leaves an ended one as it is, and
+// skips an empty ID, so that a cleanup step can pass every ID it may have.
+func TestTaskCancelStopsRunningTasks(t *testing.T) {
+	_, fix, tasks, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
+	done := sendNoWait(t, "-data-dir", dir, "helper", "quick")
+	<-fix.prompts
+	fix.release <- "ok"
+	if err := startTaskWait("-data-dir", dir, "helper", done).wait(t); err != nil {
+		t.Fatal(err)
+	}
+	running := sendNoWait(t, "-data-dir", dir, "helper", "take forever")
+	<-fix.prompts
+
+	run := startTaskCancel("-data-dir", dir, "helper", running, "", done)
+	if err := run.wait(t); err != nil {
+		t.Fatalf("task cancel: %v\n%s", err, run.errOut)
+	}
+	want := "task " + running + " cancelled\ntask " + done + " had already ended: completed\n"
+	if got := run.out.String(); got != want {
+		t.Fatalf("stdout %q, want %q", got, want)
+	}
+	_, got, err := tasks.get(context.Background(), nil, getTaskIn{taskIn: taskIn{taskTarget: taskTarget{Service: "helper"}, TaskID: running}})
+	if err != nil || got.Terminal != "cancelled" {
+		t.Fatalf("task after cancel: %+v %v", got, err)
+	}
+
+	// Waiting for it now reports the cancellation.
+	if err := startTaskWait("-data-dir", dir, "helper", running).wait(t); exitCode(err) != exitNotCompleted {
+		t.Fatalf("wait after cancel: %v (exit %d)", err, exitCode(err))
+	}
+
+	run = startTaskCancel("-data-dir", dir, "-json", "helper", running)
+	if err := run.wait(t); err != nil {
+		t.Fatal(err)
+	}
+	var shown []taskOut
+	if err := json.Unmarshal([]byte(run.out.String()), &shown); err != nil || len(shown) != 1 || shown[0].TaskID != running || shown[0].Terminal != "cancelled" {
+		t.Fatalf("json %q: %+v %v", run.out.String(), shown, err)
+	}
+}
+
+// A task the agent does not know fails the command, after the others are
+// cancelled.
+func TestTaskCancelReportsAnUnknownTask(t *testing.T) {
+	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
+	running := sendNoWait(t, "-data-dir", dir, "helper", "take forever")
+	<-fix.prompts
+	unknown := "0f9a7c52-0000-4000-8000-000000000000"
+	run := startTaskCancel("-data-dir", dir, "helper", unknown, running)
+	err := run.wait(t)
+	if exitCode(err) != 1 || !strings.Contains(err.Error(), "1 of 2 tasks not cancelled") {
+		t.Fatalf("got %v (exit %d)", err, exitCode(err))
+	}
+	if out := run.out.String(); !strings.Contains(out, "task "+unknown+": task "+unknown+" not found at helper") || !strings.Contains(out, "task "+running+" cancelled\n") {
+		t.Fatalf("stdout: %s", out)
+	}
+}
+
+func TestTaskCancelUsage(t *testing.T) {
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"-data-dir", dir},
+		{"-data-dir", dir, "helper"},
+		{"-data-dir", dir, "bad name", "abc"},
+		{"-data-dir", dir, "helper", "-x y"},
+		{"-data-dir", dir, "-timeout", "0s", "helper", "abc"},
+	} {
+		if err := startTaskCancel(args...).wait(t); err == nil {
+			t.Errorf("%q: no error", args)
+		}
+	}
+	// Only empty IDs: nothing to do, and no node needed.
+	run := startTaskCancel("-data-dir", dir, "helper", "", "")
+	if err := run.wait(t); err != nil || run.out.String() != "" {
+		t.Fatalf("empty IDs: %v %q", err, run.out.String())
+	}
+}

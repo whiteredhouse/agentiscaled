@@ -180,7 +180,7 @@ func waitForTask(ctx context.Context, deadline time.Time, tasks *a2aTasks, agent
 		}
 		// The task's ID and the command to wait again, even when its state
 		// could not be read: a script goes on from them.
-		return report(out, o, task, withExit(timeoutExit(ctx), fmt.Errorf("task %s %s: %s; it goes on, wait again with: %s", id, state, why, waitCommand(o, target, id))))
+		return report(out, o, task, withExit(timeoutExit(ctx), fmt.Errorf("task %s %s: %s; it goes on, wait again with: %s\nor cancel it with: %s", id, state, why, waitCommand(o, target, id), taskCommand("cancel", o, target, id))))
 	}
 	if err != nil {
 		return err
@@ -190,7 +190,13 @@ func waitForTask(ctx context.Context, deadline time.Time, tasks *a2aTasks, agent
 
 // waitCommand is the command that waits for task id, a plain taskID.
 func waitCommand(o taskSendOptions, target taskTarget, id string) string {
-	wait := []string{"agentiscaled task wait"}
+	return taskCommand("wait", o, target, id)
+}
+
+// taskCommand is the task subcommand cmd (wait or cancel) for task id, a
+// plain taskID.
+func taskCommand(cmd string, o taskSendOptions, target taskTarget, id string) string {
+	wait := []string{"agentiscaled task " + cmd}
 	if o.dataDir != defaultDataDir() {
 		wait = append(wait, "-data-dir", shellQuote(o.dataDir))
 	}

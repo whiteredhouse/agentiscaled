@@ -10,19 +10,22 @@ import (
 	"time"
 )
 
-// runTasks is `agentiscaled task send|wait|stop|resume|status`. send calls an
-// agent (see runTaskSend) and wait follows its task (see runTaskWait); the others are the owner's stop control. Stopping writes a file in the data directory: the
+// runTasks is `agentiscaled task send|wait|cancel|stop|resume|status`. send calls an
+// agent (see runTaskSend), wait follows its task (see runTaskWait) and
+// cancel stops it (see runTaskCancel); the others are the owner's stop control. Stopping writes a file in the data directory: the
 // running node cancels the task in progress within a second, refuses new
 // tasks, and stops advertising the service, and the stop survives a restart.
 func runTasks(ctx context.Context, args []string, stdin io.Reader, out, errOut io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: agentiscaled task send|wait|stop|resume|status [-data-dir DIR]")
+		return errors.New("usage: agentiscaled task send|wait|cancel|stop|resume|status [-data-dir DIR]")
 	}
 	switch args[0] {
 	case "send":
 		return runTaskSend(ctx, args[1:], stdin, out, errOut)
 	case "wait":
 		return runTaskWait(ctx, args[1:], out, errOut)
+	case "cancel":
+		return runTaskCancel(ctx, args[1:], out, errOut)
 	}
 	fs := flag.NewFlagSet("task", flag.ContinueOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node")
@@ -48,7 +51,7 @@ func runTasks(ctx context.Context, args []string, stdin io.Reader, out, errOut i
 			fmt.Fprintln(out, "running")
 		}
 	default:
-		return fmt.Errorf("unknown task command %q: use send, wait, stop, resume or status", args[0])
+		return fmt.Errorf("unknown task command %q: use send, wait, cancel, stop, resume or status", args[0])
 	}
 	return nil
 }
