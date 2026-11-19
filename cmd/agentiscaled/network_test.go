@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -602,5 +604,71 @@ func TestNetworkGrantSpansTurns(t *testing.T) {
 	g.begin("late-token", time.Now().Add(time.Minute))
 	if err := list(); err == nil {
 		t.Error("a call after the task ended was admitted")
+	}
+}
+
+// A call keeps the token of the turn that admitted it, also once a later
+// turn holds the grant; a request made for no turn is not sent.
+func TestGrantTokenIsTheAdmittingTurns(t *testing.T) {
+	var seen []string
+	rt := grantToken{roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		seen = append(seen, r.Header.Get(api.HeaderMeshAuthentication))
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}
+	g := &networkGrant{}
+	end := g.begin("turn-one", time.Now().Add(time.Minute))
+	first := g.current()
+	end()
+	g.begin("turn-two", time.Now().Add(time.Minute))
+	req := httptest.NewRequest(http.MethodGet, "http://agentiscaled/info", nil)
+	resp, err := rt.RoundTrip(req.WithContext(context.WithValue(context.Background(), grantTurnKey{}, first)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(seen) != 1 || seen[0] != "Bearer turn-one" {
+		t.Errorf("sent %q", seen)
+	}
+	if _, err := rt.RoundTrip(req); err == nil {
+		t.Error("a request made for no turn was sent")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A turn that gets no token still gets its task's endpoint, whose tools
+// fail until a later turn of the task gets one.
+func TestGrantGivesTheEndpointWithoutAToken(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	network, calls := fakeNodeNetworkServer(t)
+	network.node = socketClient(filepath.Join(shortTempDir(t), "missing.sock"))
+	access, release, err := network.grant(ctx, "caller", "t-1", time.Minute, 1)
+	if err == nil || access == nil {
+		t.Fatalf("grant without a node to mint: %v %v", access, err)
+	}
+	release()
+	session, err := networkSession(ctx, access)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_agents"})
+	if err == nil && !res.IsError {
+		t.Fatal("a tool ran with no token")
+	}
+	g, _ := network.grantFor("caller", "t-1")
+	if g.bearer != access.Token {
+		t.Fatal("the task's next turn would get another endpoint")
+	}
+	end := g.begin("later-token", time.Now().Add(time.Minute))
+	defer end()
+	if res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_agents"}); err != nil || res.IsError {
+		t.Fatalf("the later turn's call: %v %v", res, err)
+	}
+	if !strings.Contains(calls(), "GET /info Bearer later-token") {
+		t.Errorf("the node got %q", calls())
 	}
 }

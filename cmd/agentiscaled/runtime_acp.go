@@ -71,9 +71,13 @@ type acpRuntime struct {
 	info acpAgent
 	// stopped, if set, takes each turn's stop reason; runtime check uses it.
 	stopped func(string)
-	// kept are the processes that wait for answers, by session (keep).
-	keptMu sync.Mutex
-	kept   map[string]*keptSession
+	// kept are the processes that wait for answers, by the node's task
+	// (keep). Once draining, the node stops: none is kept, and drained
+	// closes when the last kept one has stopped (releaseAll).
+	keptMu   sync.Mutex
+	kept     map[string]*keptSession
+	draining bool
+	drained  chan struct{}
 	// stderr, if set, takes what the agent wrote to stderr in each turn,
 	// once its run ends; tests use it.
 	stderr func(string)
@@ -433,7 +437,7 @@ func (r *acpRuntime) keep(task, session string, s *acpSession) bool {
 	if r.kept == nil {
 		r.kept = map[string]*keptSession{}
 	}
-	if len(r.kept) >= maxWaiting || r.kept[task] != nil {
+	if r.draining || len(r.kept) >= maxWaiting || r.kept[task] != nil {
 		return false
 	}
 	s.setProgress(nil)
@@ -479,12 +483,22 @@ func (r *acpRuntime) release(task string) {
 }
 
 // releaseAll stops every kept process, together, and returns once they
-// have stopped: the node stops.
+// have stopped, however many callers ask: the node stops. From then on no
+// process is kept.
 func (r *acpRuntime) releaseAll() {
 	r.keptMu.Lock()
-	kept := r.kept
+	first := !r.draining
+	r.draining = true
+	if r.drained == nil {
+		r.drained = make(chan struct{})
+	}
+	kept, drained := r.kept, r.drained
 	r.kept = nil
 	r.keptMu.Unlock()
+	if !first {
+		<-drained
+		return
+	}
 	var wg sync.WaitGroup
 	for _, k := range kept {
 		k.timer.Stop()
@@ -495,6 +509,7 @@ func (r *acpRuntime) releaseAll() {
 		}()
 	}
 	wg.Wait()
+	close(drained)
 }
 
 // failure is err as the task's failure, which the task's caller reads: a

@@ -498,8 +498,9 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 			left := s.deadline - prior.used
 			access, revoke, err := s.network.grant(runCtx, s.name, execCtx.TaskID, left, depth+1)
 			if err != nil {
-				log.Printf("agent %s: task %s runs without the network: %v", s.name, execCtx.TaskID, err)
-			} else {
+				log.Printf("agent %s: this turn of task %s runs without the network: %v", s.name, execCtx.TaskID, err)
+			}
+			if access != nil {
 				req.Network, release = access, revoke
 			}
 		}
@@ -537,7 +538,11 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 				ev.Metadata = map[string]any{metaProgress: true}
 				if !yield(ev, nil) {
 					cancel(nil)
-					<-done
+					// A question nobody will see lets go of what the
+					// runtime keeps for it.
+					if res := <-done; res.err == nil && res.out.Question {
+						s.release(execCtx.TaskID)
+					}
 					return
 				}
 			}

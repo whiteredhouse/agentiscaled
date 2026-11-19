@@ -455,6 +455,33 @@ func TestACPRuntimeKeptProcessKeepsItsDeclarations(t *testing.T) {
 	}
 }
 
+// Every caller of releaseAll returns only once the kept processes have
+// stopped, and none is kept from then on.
+func TestACPRuntimeReleaseAllJoins(t *testing.T) {
+	r := newFakeACP(t, ownerPolicy, "-status")
+	kept := startFake(t, r)
+	if !r.keep("t", "s", kept) {
+		t.Fatal("keep")
+	}
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.releaseAll()
+			if kept.cmd.ProcessState == nil {
+				t.Error("releaseAll returned while a kept process ran")
+			}
+		}()
+	}
+	wg.Wait()
+	extra := startFake(t, r)
+	defer extra.close()
+	if r.keep("t2", "s", extra) {
+		t.Error("kept a process while the node stops")
+	}
+}
+
 func TestACPRuntimeKeepsAtMostMaxWaiting(t *testing.T) {
 	r := newFakeACP(t, ownerPolicy, "-status")
 	t.Cleanup(r.releaseAll)
