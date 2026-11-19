@@ -124,6 +124,36 @@ Only the node that sent a task can follow it.
 | 3 | The agent asks a question (input required); answer it with `task send -task`. |
 | 4 | `-timeout` passed first. `task send` has cancelled the task; after `task wait` it still runs. |
 
+## Teach your agents to call other agents
+
+The agentiscale skill tells an agent when to hand work to another agent of your
+network and how: which tools to use, what to put in the request, how to follow
+the task and answer its questions, and what to do when it fails. It covers the
+`agentiscale` MCP server, the `agentiscale-network` server of a hosted agent and
+`agentiscaled task send` in a shell. Install it where Claude Code and the Codex
+CLI load your skills:
+
+```sh
+agentiscaled skill install          # both; or name one: claude, codex
+```
+
+It goes to `~/.claude/skills/agentiscale` (under `$CLAUDE_CONFIG_DIR` if you set
+it) for Claude Code and `~/.agents/skills/agentiscale` for Codex. `-dir <project>`
+installs it into a project instead (`.claude/skills` and `.agents/skills` there),
+for everyone who works in it. Run the command again after an update of
+agentiscaled to take the skill's new version.
+
+`agentiscaled skill` prints the skill, for an agent to read in one command or to
+save wherever your agent loads skills from. The skill is also in this repository
+under `skills/`, for skill installers that read a repository:
+
+```sh
+npx skills add whiteredhouse/agentiscaled
+```
+
+A hosted agent that runs with your configuration (the default) loads the skill
+from your user skills like your own runs do.
+
 ## If it does not connect
 
 - `agentiscaled mcp` exits with "no running agentiscaled": start the node first.
