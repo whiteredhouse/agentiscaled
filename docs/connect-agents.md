@@ -112,6 +112,25 @@ It takes `-peer`, `-data-dir` and `-json` as `task send` does. `-timeout` (defau
 the time passes or you press Ctrl-C the task goes on and you can wait for it again.
 Only the node that sent a task can follow it.
 
+### Cancel a task
+
+`agentiscaled task cancel <agent> <task ID>...` cancels tasks this node sent, so that
+the agent stops working on them and can take other tasks: an agent runs one task at a
+time, and one left running keeps it busy. Cancel the tasks a script stops waiting
+for, for example in a cleanup step that runs however the script ended:
+
+```sh
+agentiscaled task cancel -- reviewer "$review"
+```
+
+A task that has already ended is left as it is, and an empty task ID is skipped, so a
+cleanup step can pass every ID it may have; `--` before the agent keeps a value that
+starts with a dash from being read as a flag. The tasks are cancelled together, and one
+that fails, such as an unknown task, does not stop the others. The command prints one
+line for each task (with `-json`, a JSON array whose failed entries have an `error`)
+and exits 0 when each task is cancelled or had already ended, else 1. It takes
+`-peer`, `-data-dir` and `-timeout` (default 30s).
+
 ### Exit status
 
 `task send` and `task wait` say with their exit status how the task went:

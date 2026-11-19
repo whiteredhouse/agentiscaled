@@ -242,7 +242,7 @@ func TestTaskWaitReportsTheTaskWhenItsStateCannotBeRead(t *testing.T) {
 	id := "0f9a7c52-0000-4000-8000-000000000000"
 	run := startTaskWait("-data-dir", net.dir, "-timeout", "300ms", "-json", "helper", id)
 	err := run.wait(t)
-	if exitCode(err) != exitTimeout || !strings.Contains(err.Error(), "task "+id+" has not settled") || !strings.Contains(err.Error(), "wait again with: agentiscaled task wait -data-dir ") || !strings.HasSuffix(err.Error(), "-peer "+remote+" helper "+id) {
+	if exitCode(err) != exitTimeout || !strings.Contains(err.Error(), "task "+id+" has not settled") || !strings.Contains(err.Error(), "wait again with: agentiscaled task wait -data-dir ") || !strings.Contains(err.Error(), "-peer "+remote+" helper "+id+"\nor cancel it with: agentiscaled task cancel -data-dir ") {
 		t.Fatalf("got %v (exit %d)", err, exitCode(err))
 	}
 	var shown taskOut

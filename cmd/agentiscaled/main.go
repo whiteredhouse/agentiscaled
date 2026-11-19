@@ -84,8 +84,8 @@ Commands:
   run      run the node in the foreground with the settings 'up' saved
   mcp      serve the node's MCP tools on stdio, for agent clients
   task     send a task to an agent and print its answer (send), wait for a task
-           to end (wait), or control task execution on this node (status, stop,
-           resume)
+           to end (wait) or cancel it (cancel), or control task execution on
+           this node (status, stop, resume)
   skill    print the agentiscale skill, which teaches agents to call other agents
            of your network, or install it for Claude Code and Codex (install)
 
