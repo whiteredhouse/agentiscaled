@@ -474,7 +474,7 @@ func (r *acpRuntime) start(ctx context.Context, dir string, progress func(string
 	cmd.Env = r.env()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	s := &acpSession{cmd: cmd, progress: progress, pending: map[int64]chan acpResponse{},
-		out: make(chan []byte), dead: make(chan struct{}), broken: make(chan struct{}), done: make(chan struct{})}
+		out: make(chan acpWrite), dead: make(chan struct{}), broken: make(chan struct{}), done: make(chan struct{})}
 	cmd.Stderr = &s.stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -504,7 +504,7 @@ type acpSession struct {
 	// out takes the messages to write to stdin, which one goroutine
 	// writes (write), so that no sender waits on a full pipe but through
 	// a select it can leave.
-	out chan []byte
+	out chan acpWrite
 	// dead is closed when the node stops the agent's processes.
 	dead     chan struct{}
 	killOnce sync.Once
@@ -664,16 +664,28 @@ func (s *acpSession) ended(method string) error {
 	return &acpExit{method: method}
 }
 
-// send queues msg for the agent's stdin. It gives up when ctx ends or the
-// agent's run does, however full the pipe is.
+// acpWrite is one message for the writer, which says on ack whether it
+// writes it: not when ctx has ended by the time the writer takes it.
+type acpWrite struct {
+	b   []byte
+	ctx context.Context
+	ack chan error
+}
+
+// send hands msg to the writer for the agent's stdin, which writes it
+// unless ctx has ended when it takes it. It gives up when ctx ends or the
+// agent's run does, however full the pipe is. A nil error means the
+// message is the next the writer writes.
 func (s *acpSession) send(ctx context.Context, msg any) error {
 	b, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
+	w := acpWrite{b: append(b, '\n'), ctx: ctx, ack: make(chan error, 1)}
 	select {
-	case s.out <- append(b, '\n'):
-		return nil
+	case s.out <- w:
+		// The writer acks at once, before it writes.
+		return <-w.ack
 	case <-s.done:
 		return &acpExit{method: "a write"}
 	case <-s.dead:
@@ -689,8 +701,16 @@ func (s *acpSession) send(ctx context.Context, msg any) error {
 func (s *acpSession) write() {
 	for {
 		select {
-		case b := <-s.out:
-			if _, err := s.stdin.Write(b); err != nil {
+		case w := <-s.out:
+			// The last check of the sender's context: a message whose
+			// sender gave up, such as a cancelled turn's prompt, is
+			// dropped here, never written.
+			if err := w.ctx.Err(); err != nil {
+				w.ack <- err
+				continue
+			}
+			w.ack <- nil
+			if _, err := s.stdin.Write(w.b); err != nil {
 				// Every request waiting for an answer, and every
 				// sender, learns that none comes.
 				s.mu.Lock()

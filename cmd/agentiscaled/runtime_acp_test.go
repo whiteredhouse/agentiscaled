@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -108,6 +109,7 @@ func fakeACPAgent(args []string) {
 			}
 			var p struct {
 				SessionID  string `json:"sessionId"`
+				Cwd        string `json:"cwd"`
 				MCPServers []struct {
 					Name    string `json:"name"`
 					URL     string `json:"url"`
@@ -115,6 +117,11 @@ func fakeACPAgent(args []string) {
 				} `json:"mcpServers"`
 			}
 			json.Unmarshal(msg.Params, &p)
+			// ACP takes only an absolute working directory.
+			if !filepath.IsAbs(p.Cwd) {
+				send(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "error": map[string]any{"code": -32602, "message": "cwd must be absolute"}})
+				continue
+			}
 			servers = nil
 			for _, s := range p.MCPServers {
 				auth := ""
@@ -639,3 +646,47 @@ func TestACPRuntimeCancelsPendingPermissions(t *testing.T) {
 		t.Errorf("a permission asked after the cancel: %q", stderr)
 	}
 }
+
+func TestACPSendDropsCancelledWrites(t *testing.T) {
+	var written bytes.Buffer
+	var mu sync.Mutex
+	s := &acpSession{out: make(chan acpWrite), dead: make(chan struct{}), broken: make(chan struct{}), done: make(chan struct{}),
+		stdin: nopCloser{writerFunc(func(p []byte) (int, error) { mu.Lock(); defer mu.Unlock(); return written.Write(p) })}}
+	go s.write()
+	defer close(s.done)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 64 {
+		if err := s.send(ctx, map[string]string{"method": "session/prompt"}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("send with a cancelled context: %v", err)
+		}
+	}
+	if err := s.send(context.Background(), map[string]string{"method": "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if got := written.String(); got != "{\"method\":\"ok\"}\n" {
+		t.Errorf("written %q", got)
+	}
+}
+
+type nopCloser struct{ io.Writer }
+
+func (nopCloser) Close() error { return nil }
+
+func TestRuntimeCheckRelativeDir(t *testing.T) {
+	old := checkCancelAfter
+	checkCancelAfter = 2 * time.Second
+	t.Cleanup(func() { checkCancelAfter = old })
+	t.Chdir(t.TempDir())
+	var out bytes.Buffer
+	if err := runRuntimeCheck(context.Background(), []string{"-dir", ".", "-command", fakeACPCommand(t, "-status")}, &out); err != nil {
+		t.Errorf("check with -dir .: %v\n%s", err, out.String())
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

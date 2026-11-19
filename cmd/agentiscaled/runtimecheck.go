@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -56,6 +57,14 @@ func runRuntimeCheck(ctx context.Context, args []string, out io.Writer) error {
 	}
 	if err := temp(dataDir, "agentiscale-check-data-"); err != nil {
 		return err
+	}
+	// ACP takes only an absolute working directory.
+	for _, p := range []*string{dir, dataDir} {
+		abs, err := filepath.Abs(*p)
+		if err != nil {
+			return err
+		}
+		*p = abs
 	}
 
 	failed := 0
