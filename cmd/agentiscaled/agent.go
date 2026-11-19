@@ -216,12 +216,9 @@ type agentService struct {
 	// waiting holds the tasks whose agent asked the caller a question,
 	// until the answer comes.
 	waiting map[a2a.TaskID]*waitingTask
-	// lapsed holds the tasks whose answer did not come in time, until
-	// their timeout is published (lapse, Cancel).
-	lapsed map[a2a.TaskID]bool
-	// requests serves the agent's A2A requests (handler); the node ends a
-	// lapsed task through it, as the task's sender.
-	requests a2asrv.RequestHandler
+	// updates publishes the agent's own updates to its tasks, outside a
+	// request (handler): the timeout of a question nobody answered (lapse).
+	updates a2asrv.TaskUpdater
 	// delivered holds every request that started a task, so that a delivery
 	// retry never runs a task twice.
 	delivered *deliveries
@@ -250,8 +247,8 @@ type waitingTask struct {
 	depth int
 	// timer ends the task when its answer has not come in time.
 	timer *time.Timer
-	// from is who sent the task, as whom the node ends it then (lapse).
-	from taskSender
+	// contextID is the task's A2A context, which the timeout names (lapse).
+	contextID string
 }
 
 // answerWait is how long a task waits for the caller to answer the agent's
@@ -574,7 +571,7 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		}
 		if out.Question {
 			if why := s.wait(execCtx.TaskID, waitingTask{sender: sender, session: out.Session, question: out.Text, since: time.Now(),
-				used: prior.used + time.Since(started), questions: prior.questions + 1, depth: depth, from: from}); why != "" {
+				used: prior.used + time.Since(started), questions: prior.questions + 1, depth: depth, contextID: execCtx.ContextID}); why != "" {
 				end(a2a.TaskStateFailed, "failed", "task failed: "+why, nil)
 				return
 			}
@@ -660,42 +657,25 @@ func (s *agentService) expireLocked(id a2a.TaskID) {
 		return
 	}
 	s.endTaskLocked(id)
-	go s.lapse(id, w.from)
+	go s.lapse(a2a.TaskInfo{TaskID: id, ContextID: w.contextID})
 }
 
-// lapse publishes that the task under id, whose answer did not come in
-// time, has timed out: through the agent's own A2A handler, as a
-// cancellation by the task's sender, which Cancel turns into the timeout.
-// So the task store and whoever follows the task get the terminal state,
-// as from any other end of a task.
-func (s *agentService) lapse(id a2a.TaskID, from taskSender) {
-	if s.requests == nil {
+// lapse publishes that the task, whose answer did not come in time, has
+// timed out. It is the agent's own update to its task, not a caller's: the
+// task store and whoever follows the task get the terminal state, as from any
+// other end of a task.
+func (s *agentService) lapse(task a2a.TaskInfo) {
+	if s.updates == nil {
 		return
 	}
-	s.mu.Lock()
-	if s.lapsed == nil {
-		s.lapsed = map[a2a.TaskID]bool{}
-	}
-	s.lapsed[id] = true
-	s.mu.Unlock()
-	params := map[string][]string{api.HeaderPeerID: {from.peer}}
-	if from.task != "" {
-		params[api.HeaderMeshTask] = []string{from.task}
-	}
-	ctx, _ := a2asrv.NewCallContext(s.life, a2asrv.NewServiceParams(params))
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(s.life, 10*time.Second)
 	defer cancel()
-	// A2A's cancellation reports an error when the task ends in another
-	// state than cancelled, also once the timeout is stored: what counts
-	// is the state the task ends in.
-	if _, err := s.requests.CancelTask(ctx, &a2a.CancelTaskRequest{ID: id}); err != nil {
-		if task, gerr := s.requests.GetTask(ctx, &a2a.GetTaskRequest{ID: id}); gerr != nil || task.Status.State != a2a.TaskStateFailed {
-			log.Printf("agent %s: publish the timeout of task %s: %v", s.name, id, err)
-		}
+	end := a2a.NewStatusUpdateEvent(task, a2a.TaskStateFailed, agentText(task,
+		fmt.Sprintf("timed out: no answer came within %s of the question", answerWait)))
+	end.Metadata = map[string]any{metaTerminal: "timeout", metaExecutionBegun: true}
+	if _, err := s.updates.UpdateTask(ctx, task.TaskID, end); err != nil {
+		log.Printf("agent %s: publish the timeout of task %s: %v", s.name, task.TaskID, err)
 	}
-	s.mu.Lock()
-	delete(s.lapsed, id)
-	s.mu.Unlock()
 }
 
 // waitingFor is the task waiting for an answer under id, if it still
@@ -897,15 +877,7 @@ func (s *agentService) Cancel(ctx context.Context, execCtx *a2asrv.ExecutorConte
 			begun = true
 			s.endTaskLocked(execCtx.TaskID)
 		}
-		lapsed := s.lapsed[execCtx.TaskID]
 		s.mu.Unlock()
-		if lapsed {
-			end := a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateFailed, agentText(execCtx,
-				fmt.Sprintf("timed out: no answer came within %s of the question", answerWait)))
-			end.Metadata = map[string]any{metaTerminal: "timeout", metaExecutionBegun: true}
-			yield(end, nil)
-			return
-		}
 		text := "cancelled before the task started"
 		if begun {
 			text = "cancelled after the task had started; it was stopped"
@@ -943,9 +915,10 @@ func (s *agentService) handler(name, token string) http.Handler {
 	card := s.card(name)
 	cardHandler := a2asrv.NewStaticAgentCardHandler(card)
 	store := taskstore.NewInMemory(&taskstore.InMemoryStoreConfig{Authenticator: a2asrv.NewTaskStoreAuthenticator()})
-	s.requests = a2asrv.NewHandler(s, a2asrv.WithTaskStore(store),
+	requests := a2asrv.NewHandler(s, a2asrv.WithTaskStore(store),
 		a2asrv.WithCallInterceptors(peerIdentity{tasks: store}))
-	rpc := a2asrv.NewJSONRPCHandler(boundedStreams{s.requests})
+	s.updates, _ = requests.(a2asrv.TaskUpdater)
+	rpc := a2asrv.NewJSONRPCHandler(boundedStreams{requests})
 	want := []byte("Bearer " + token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
