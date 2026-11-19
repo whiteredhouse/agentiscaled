@@ -78,6 +78,9 @@ type acpRuntime struct {
 	kept     map[string]*keptSession
 	draining bool
 	drained  chan struct{}
+	// closing counts the kept processes being stopped one by one
+	// (release), which releaseAll waits for too.
+	closing sync.WaitGroup
 	// stderr, if set, takes what the agent wrote to stderr in each turn,
 	// once its run ends; tests use it.
 	stderr func(string)
@@ -475,8 +478,12 @@ func (r *acpRuntime) release(task string) {
 	r.keptMu.Lock()
 	k := r.kept[task]
 	delete(r.kept, task)
+	if k != nil {
+		r.closing.Add(1)
+	}
 	r.keptMu.Unlock()
 	if k != nil {
+		defer r.closing.Done()
 		k.timer.Stop()
 		k.s.close()
 	}
@@ -509,6 +516,8 @@ func (r *acpRuntime) releaseAll() {
 		}()
 	}
 	wg.Wait()
+	// Also the processes released one by one just before.
+	r.closing.Wait()
 	close(drained)
 }
 

@@ -584,7 +584,11 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 			// The slot is free before the caller learns of the question,
 			// so that the answer finds it free.
 			s.finish(run)
-			yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateInputRequired, agentText(execCtx, out.Text)), nil)
+			if !yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateInputRequired, agentText(execCtx, out.Text)), nil) {
+				// The caller never learns of the question: the task
+				// does not wait, and lets go of what it holds.
+				s.unwait(execCtx.TaskID)
+			}
 			return
 		}
 		artifact := a2a.NewArtifactEvent(execCtx, a2a.NewTextPart(out.Text))
@@ -631,6 +635,16 @@ func (s *agentService) releaseAll() {
 	if k, ok := s.rt.(sessionKeeper); ok {
 		k.releaseAll()
 	}
+}
+
+// unwait ends the wait of the task under id, if it waits, and lets go of
+// what its runtime and its network keep for it.
+func (s *agentService) unwait(id a2a.TaskID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.waiting, id)
+	s.release(id)
+	s.network.forget(id)
 }
 
 // waitingFor is the task waiting for an answer under id, if it still

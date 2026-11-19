@@ -475,6 +475,28 @@ func TestACPRuntimeReleaseAllJoins(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	// A process released on its own just before the node stops is waited
+	// for too.
+	r2 := newFakeACP(t, ownerPolicy, "-status")
+	alone := startFake(t, r2)
+	r2.keep("t", "s", alone)
+	go r2.release("t")
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		r2.keptMu.Lock()
+		n := len(r2.kept)
+		r2.keptMu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("release did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	r2.releaseAll()
+	if alone.cmd.ProcessState == nil {
+		t.Error("releaseAll returned while a process released on its own ran")
+	}
 	extra := startFake(t, r)
 	defer extra.close()
 	if r.keep("t2", "s", extra) {

@@ -543,6 +543,11 @@ type meshToken struct {
 }
 
 func (m meshToken) RoundTrip(r *http.Request) (*http.Response, error) {
+	// A request made after its turn ended is not sent; cancellation
+	// stops those already on their way.
+	if m.life.Err() != nil {
+		return nil, errors.New("the turn the request was made for has ended")
+	}
 	ctx, cancel := context.WithCancel(r.Context())
 	stop := context.AfterFunc(m.life, cancel)
 	done := func() { stop(); cancel() }
@@ -575,6 +580,9 @@ func (t grantToken) RoundTrip(r *http.Request) (*http.Response, error) {
 	turn, _ := r.Context().Value(grantTurnKey{}).(*grantTurn)
 	if turn == nil {
 		return nil, errors.New("a network request made for no turn of the task")
+	}
+	if !time.Now().Before(turn.expires) {
+		return nil, errors.New("the turn the request was made for has ended")
 	}
 	return meshToken{t.next, turn.token, turn.life}.RoundTrip(r)
 }

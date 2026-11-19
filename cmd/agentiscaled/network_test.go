@@ -618,14 +618,23 @@ func TestGrantTokenIsTheAdmittingTurns(t *testing.T) {
 	g := &networkGrant{}
 	end := g.begin("turn-one", time.Now().Add(time.Minute))
 	first := g.current()
-	end()
-	g.begin("turn-two", time.Now().Add(time.Minute))
 	req := httptest.NewRequest(http.MethodGet, "http://agentiscaled/info", nil)
-	resp, err := rt.RoundTrip(req.WithContext(context.WithValue(context.Background(), grantTurnKey{}, first)))
+	ofFirst := req.WithContext(context.WithValue(context.Background(), grantTurnKey{}, first))
+	resp, err := rt.RoundTrip(ofFirst)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
+	// Once the turn has ended, its calls send nothing, also while a later
+	// turn holds the grant.
+	end()
+	if _, err := rt.RoundTrip(ofFirst); err == nil {
+		t.Error("a request of an ended turn was sent")
+	}
+	g.begin("turn-two", time.Now().Add(time.Minute))
+	if _, err := rt.RoundTrip(ofFirst); err == nil {
+		t.Error("a request of an ended turn was sent during the next turn")
+	}
 	if len(seen) != 1 || seen[0] != "Bearer turn-one" {
 		t.Errorf("sent %q", seen)
 	}
