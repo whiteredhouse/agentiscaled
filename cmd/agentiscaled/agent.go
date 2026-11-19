@@ -650,6 +650,19 @@ func (s *agentService) endTaskLocked(id a2a.TaskID) {
 	s.network.forget(id)
 }
 
+// expireLocked ends the waiting task under id, whose answer did not come
+// in time, and publishes its timeout (lapse). Every way a wait runs out
+// comes here, but an answer that comes late, whose turn publishes the
+// timeout itself (waitingFor).
+func (s *agentService) expireLocked(id a2a.TaskID) {
+	w := s.waiting[id]
+	if w == nil {
+		return
+	}
+	s.endTaskLocked(id)
+	go s.lapse(id, w.from)
+}
+
 // lapse publishes that the task under id, whose answer did not come in
 // time, has timed out: through the agent's own A2A handler, as a
 // cancellation by the task's sender, which Cancel turns into the timeout.
@@ -672,8 +685,13 @@ func (s *agentService) lapse(id a2a.TaskID, from taskSender) {
 	ctx, _ := a2asrv.NewCallContext(s.life, a2asrv.NewServiceParams(params))
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	// A2A's cancellation reports an error when the task ends in another
+	// state than cancelled, also once the timeout is stored: what counts
+	// is the state the task ends in.
 	if _, err := s.requests.CancelTask(ctx, &a2a.CancelTaskRequest{ID: id}); err != nil {
-		log.Printf("agent %s: publish the timeout of task %s: %v", s.name, id, err)
+		if task, gerr := s.requests.GetTask(ctx, &a2a.GetTaskRequest{ID: id}); gerr != nil || task.Status.State != a2a.TaskStateFailed {
+			log.Printf("agent %s: publish the timeout of task %s: %v", s.name, id, err)
+		}
 	}
 	s.mu.Lock()
 	delete(s.lapsed, id)
@@ -706,7 +724,7 @@ func (s *agentService) wait(id a2a.TaskID, w waitingTask) (why string) {
 	defer s.mu.Unlock()
 	for other, o := range s.waiting {
 		if time.Since(o.since) > answerWait {
-			s.endTaskLocked(other)
+			s.expireLocked(other)
 		}
 	}
 	if len(s.waiting) >= maxWaiting {
@@ -717,13 +735,9 @@ func (s *agentService) wait(id a2a.TaskID, w waitingTask) (why string) {
 	wp := &w
 	wp.timer = time.AfterFunc(answerWait, func() {
 		s.mu.Lock()
-		lapsed := s.waiting[id] == wp
-		if lapsed {
-			s.endTaskLocked(id)
-		}
-		s.mu.Unlock()
-		if lapsed {
-			s.lapse(id, wp.from)
+		defer s.mu.Unlock()
+		if s.waiting[id] == wp {
+			s.expireLocked(id)
 		}
 	})
 	s.waiting[id] = wp

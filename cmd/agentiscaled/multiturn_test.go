@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -272,5 +274,37 @@ func TestCodexThread(t *testing.T) {
 	}
 	if got := codexThread([]byte(`{"type":"thread.started","thread_id":"--last"}`)); got != "" {
 		t.Fatalf("thread %q from a malformed id", got)
+	}
+}
+
+// A wait that has run out ends with a published timeout also when the
+// next question finds it before its timer does, and publishing it logs no
+// failure.
+func TestAnExpiredWaitTimesOutWhenTheNextQuestionFindsIt(t *testing.T) {
+	logged := &syncBuffer{}
+	log.SetOutput(logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	h := newAgentHarness(t, testSender)
+	first := h.send(t, "", "double a number", nil)
+	<-h.fix.prompts
+	h.fix.ask <- "Which number?"
+	h.await(t, first.ID, a2a.TaskStateInputRequired)
+	waitIdle(t, h.svc)
+	// The first wait ran out, and its timer has not fired yet.
+	h.svc.mu.Lock()
+	w := h.svc.waiting[first.ID]
+	w.timer.Stop()
+	w.since = time.Now().Add(-2 * answerWait)
+	h.svc.mu.Unlock()
+	second := h.send(t, "", "triple a number", nil)
+	<-h.fix.prompts
+	h.fix.ask <- "Which one?"
+	h.await(t, second.ID, a2a.TaskStateInputRequired)
+	lapsed := h.await(t, first.ID, a2a.TaskStateFailed)
+	if terminal(lapsed) != "timeout" || !strings.Contains(statusText(lapsed), "no answer came") {
+		t.Fatalf("expired wait: %q %q", terminal(lapsed), statusText(lapsed))
+	}
+	if strings.Contains(logged.String(), "publish the timeout") {
+		t.Errorf("the node logged a failure: %s", logged.String())
 	}
 }
