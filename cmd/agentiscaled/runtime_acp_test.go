@@ -985,6 +985,11 @@ func TestWaitingTaskReleasesWhatTheRuntimeKeeps(t *testing.T) {
 	fix.ask <- "Anyone?"
 	h.await(t, lapsed.ID, a2a.TaskStateInputRequired)
 	released("a question nobody answered", lapsed.ID)
+	// The caller sees the timeout, not a question nobody can answer.
+	ended := h.await(t, lapsed.ID, a2a.TaskStateFailed)
+	if got := statusText(ended); !strings.Contains(got, "timed out: no answer came") {
+		t.Errorf("lapsed task: %s", got)
+	}
 	cancel()
 	select {
 	case <-fix.all:

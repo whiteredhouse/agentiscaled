@@ -156,7 +156,7 @@ func TestCancelATaskWaitingForAnAnswer(t *testing.T) {
 	}
 }
 
-func TestAnAnswerAfterTheWaitEndsTheTask(t *testing.T) {
+func TestAnUnansweredQuestionTimesOut(t *testing.T) {
 	defer func(d time.Duration) { answerWait = d }(answerWait)
 	answerWait = 50 * time.Millisecond
 	h := newAgentHarness(t, testSender)
@@ -164,11 +164,14 @@ func TestAnAnswerAfterTheWaitEndsTheTask(t *testing.T) {
 	<-h.fix.prompts
 	h.fix.ask <- "Which number?"
 	h.await(t, task.ID, a2a.TaskStateInputRequired)
-	time.Sleep(100 * time.Millisecond)
-	h.answer(t, task.ID, "", "21")
+	// The task times out when the time to answer is up, not when an
+	// answer comes; an answer after that is refused.
 	late := h.await(t, task.ID, a2a.TaskStateFailed)
 	if terminal(late) != "timeout" || !strings.Contains(statusText(late), "no answer came") {
-		t.Fatalf("late answer: %q %q", terminal(late), statusText(late))
+		t.Fatalf("lapsed task: %q %q", terminal(late), statusText(late))
+	}
+	if _, err := answer(h.client, task.ID, "", "21"); err == nil {
+		t.Fatal("an answer after the timeout was taken")
 	}
 }
 
