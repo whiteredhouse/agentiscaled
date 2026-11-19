@@ -21,7 +21,8 @@ Cancels tasks of AGENT that this node sent, such as ones sent with task send
 -no-wait that a script no longer waits for, so that the agent stops working
 on them and can take other tasks. A task that has already ended is left as
 it is. An empty TASK is skipped, so that a cleanup step can pass the IDs of
-tasks that may not have been sent.
+tasks that may not have been sent. Put -- before AGENT when a TASK could
+start with a dash, so that it is taken as a task ID, not a flag.
 
 The tasks are cancelled together, so a slow answer about one does not hold
 up the others. It prints one line for each task, and exits 0 when each task
@@ -157,10 +158,14 @@ func cancelOne(ctx context.Context, tasks *a2aTasks, target taskTarget, id strin
 		}
 		return task, line, nil
 	}
+	if errors.Is(cerr, a2a.ErrTaskNotFound) {
+		return taskOut{}, "", cerr
+	}
 	// The agent refuses to cancel a task that has ended: read it to tell.
 	now, err := tasks.watch(ctx, target, a2a.TaskID(id), 0, nil)
 	if err != nil {
-		return taskOut{}, "", err
+		// Why the cancel failed comes first; the read only adds to it.
+		return taskOut{}, "", fmt.Errorf("%w (reading the task failed too: %v)", cerr, err)
 	}
 	if now.Terminal != "" {
 		return now, fmt.Sprintf("task %s had already ended: %s", id, now.Terminal), nil

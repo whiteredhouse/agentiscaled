@@ -320,7 +320,7 @@ func (t *a2aTasks) watch(ctx context.Context, target taskTarget, id a2a.TaskID, 
 				return last, ctx.Err()
 			}
 			if errors.Is(err, a2a.ErrTaskNotFound) {
-				return taskOut{}, fmt.Errorf("task %s not found at %s: an agent shows a task only to whoever sent it", id, target.Service)
+				return taskOut{}, taskNotFound(target, string(id))
 			}
 			return taskOut{}, unreachable(target, err)
 		}
@@ -410,9 +410,17 @@ func (t *a2aTasks) cancel(ctx context.Context, _ *mcp.CallToolRequest, in taskIn
 	}
 	task, err := c.CancelTask(ctx, &a2a.CancelTaskRequest{ID: a2a.TaskID(in.TaskID)})
 	if err != nil {
+		if errors.Is(err, a2a.ErrTaskNotFound) {
+			return nil, taskOut{}, taskNotFound(in.taskTarget, in.TaskID)
+		}
 		return nil, taskOut{}, unreachable(in.taskTarget, err)
 	}
 	return toolResult(describeTask(task))
+}
+
+// taskNotFound reports a task the agent does not show the caller.
+func taskNotFound(target taskTarget, id string) error {
+	return fmt.Errorf("task %s not found at %s: an agent shows a task only to whoever sent it (%w)", id, target.Service, a2a.ErrTaskNotFound)
 }
 
 // unreachable reports a call that did not get an answer from the agent. The

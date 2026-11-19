@@ -100,7 +100,7 @@ agentiscaled task send -json AGENT "request"     # task_id, state, message, resu
 - For a long task, or to run several at once, `-no-wait` prints the task ID and
   returns; `agentiscaled task wait -timeout 2m AGENT <task ID>` then waits for
   it. Its timeout leaves the task running (exit 4): call it again to keep
-  waiting, or stop it with `agentiscaled task cancel AGENT <task ID>` when
+  waiting, or stop it with `agentiscaled task cancel -- AGENT <task ID>` when
   you no longer need the answer.
 - `-data-dir DIR` selects a node that does not use the default data directory.
 - If the agent asks a question, the command prints it with the command that

@@ -120,11 +120,12 @@ time, and one left running keeps it busy. Cancel the tasks a script stops waitin
 for, for example in a cleanup step that runs however the script ended:
 
 ```sh
-agentiscaled task cancel reviewer "$review"
+agentiscaled task cancel -- reviewer "$review"
 ```
 
 A task that has already ended is left as it is, and an empty task ID is skipped, so a
-cleanup step can pass every ID it may have. The tasks are cancelled together, and one
+cleanup step can pass every ID it may have; `--` before the agent keeps a value that
+starts with a dash from being read as a flag. The tasks are cancelled together, and one
 that fails, such as an unknown task, does not stop the others. The command prints one
 line for each task (with `-json`, a JSON array whose failed entries have an `error`)
 and exits 0 when each task is cancelled or had already ended, else 1. It takes

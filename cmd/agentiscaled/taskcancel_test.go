@@ -185,3 +185,43 @@ func TestTaskCancelStopsATaskThatAsks(t *testing.T) {
 		t.Fatalf("next task: %v", err)
 	}
 }
+
+// After --, a value that starts with a dash is a task ID that fails alone.
+func TestTaskCancelTakesDashedValuesAfterDoubleDash(t *testing.T) {
+	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
+	running := sendNoWait(t, "-data-dir", dir, "helper", "take forever")
+	<-fix.prompts
+	run := startTaskCancel("-data-dir", dir, "--", "helper", "-bad-id", running)
+	err := run.wait(t)
+	if exitCode(err) != 1 || !strings.Contains(err.Error(), "1 of 2 tasks not cancelled") {
+		t.Fatalf("got %v (exit %d)", err, exitCode(err))
+	}
+	if out := run.out.String(); out != "\"-bad-id\" is not a task ID\ntask "+running+" cancelled\n" {
+		t.Fatalf("stdout %q", out)
+	}
+}
+
+// When the cancel fails and so does reading the task, the cancel's error
+// is reported, with the read's.
+func TestTaskCancelKeepsTheCancelError(t *testing.T) {
+	net := newFakeNetwork(t)
+	remote := randomPeer(t)
+	net.offer(remote)
+	net.mu.Lock()
+	net.routes[remote] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "mesh route down", http.StatusBadGateway)
+	})
+	net.mu.Unlock()
+	id := "0f9a7c52-0000-4000-8000-000000000000"
+	run := startTaskCancel("-data-dir", net.dir, "-json", "helper", id)
+	if err := run.wait(t); exitCode(err) != 1 {
+		t.Fatalf("got %v", err)
+	}
+	var shown []cancelled
+	if err := json.Unmarshal([]byte(run.out.String()), &shown); err != nil || len(shown) != 1 {
+		t.Fatalf("json %q: %v", run.out.String(), err)
+	}
+	if e := shown[0].Error; !strings.HasPrefix(e, "failed: no answer from helper") || !strings.Contains(e, "(reading the task failed too: ") {
+		t.Fatalf("error %q", e)
+	}
+}
