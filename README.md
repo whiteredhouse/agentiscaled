@@ -67,6 +67,7 @@ token](docs/getting-started.md#nodes-that-join-with-a-workload-token).
 | `agentiscaled reset` | Drop the node's identity so `up` joins it again as a new node; its settings stay |
 | `agentiscaled mcp` | Serve the node's tools over stdio to an MCP client ([Connect an agent client](docs/connect-agents.md)) |
 | `agentiscaled task send` | Send a task to an agent on your network and print its answer, from a script or CI job ([Call an agent from the command line](docs/connect-agents.md#call-an-agent-from-the-command-line)) |
+| `agentiscaled skill [install]` | Print the agentiscale skill, which teaches Claude Code, Codex and other agents to find and call your network's agents, or install it for them ([Teach your agents to call other agents](docs/connect-agents.md#teach-your-agents-to-call-other-agents)) |
 | `agentiscaled task stop\|resume\|status` | Show, stop, or resume task execution on this node |
 | `agentiscaled run` | Run the node in the foreground with the options saved by `up` |
 | `agentiscaled version` | Print the version |
