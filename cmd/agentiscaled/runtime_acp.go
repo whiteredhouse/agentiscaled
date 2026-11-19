@@ -71,6 +71,9 @@ type acpRuntime struct {
 	info acpAgent
 	// stopped, if set, takes each turn's stop reason; runtime check uses it.
 	stopped func(string)
+	// kept are the processes that wait for answers, by session (keep).
+	keptMu sync.Mutex
+	kept   map[string]*keptSession
 	// stderr, if set, takes what the agent wrote to stderr in each turn,
 	// once its run ends; tests use it.
 	stderr func(string)
@@ -252,12 +255,7 @@ func (r *acpRuntime) env() []string {
 
 func (r *acpRuntime) Describe(card *a2a.AgentCard) {
 	name := r.info.name(r.command)
-	card.Description = fmt.Sprintf("A %s agent on this node that works in its configured directory under local runtime permissions. Send one text message with the task; it answers with the result", name)
-	if r.info.AgentCapabilities.LoadSession {
-		card.Description += ", or asks a question (input-required) that you answer with a message on the same task."
-	} else {
-		card.Description += "."
-	}
+	card.Description = fmt.Sprintf("A %s agent on this node that works in its configured directory under local runtime permissions. Send one text message with the task; it answers with the result, or asks a question (input-required) that you answer with a message on the same task.", name)
 	card.Skills = []a2a.AgentSkill{{
 		ID:          "task",
 		Name:        "Task",
@@ -270,27 +268,41 @@ func (r *acpRuntime) Describe(card *a2a.AgentCard) {
 // task's session loaded again for the caller's answer to the agent's
 // question.
 func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turnResult, error) {
-	s, err := r.start(ctx, dir, req.progress)
-	if err != nil {
-		return turnResult{}, err
+	// An answer goes to the agent's process that asked, if it is still
+	// kept (keep); else to a new one that loads the session.
+	s := r.take(req.Session)
+	resumed := s != nil
+	if !resumed {
+		var err error
+		if s, err = r.start(ctx, dir, req.progress); err != nil {
+			return turnResult{}, err
+		}
+	} else {
+		s.setProgress(req.progress)
 	}
+	kept := false
 	defer func() {
+		if kept {
+			return
+		}
 		s.close()
 		if r.stderr != nil {
 			r.stderr(s.stderr.String())
 		}
 	}()
-	info, err := s.initialize(ctx)
-	if err != nil {
-		return turnResult{}, r.failure(ctx, s, err)
-	}
-	// The agent may have changed since the node started.
-	r.info = info
-	if err := r.checkPolicy(); err != nil {
-		return turnResult{}, err
+	info := r.info
+	if !resumed {
+		var err error
+		if info, err = s.initialize(ctx); err != nil {
+			return turnResult{}, r.failure(ctx, s, err)
+		}
+		// The agent may have changed since the node started.
+		r.info = info
+		if err := r.checkPolicy(); err != nil {
+			return turnResult{}, err
+		}
 	}
 	conventions := info.conventions()
-	canAsk := info.AgentCapabilities.LoadSession
 
 	servers := []any{}
 	if req.Network != nil && info.AgentCapabilities.MCPCapabilities.HTTP {
@@ -300,7 +312,11 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 		})
 	}
 	session := req.Session
-	if session == "" {
+	switch {
+	case resumed:
+		// The session is open on this connection: the answer is its
+		// next prompt.
+	case session == "":
 		var created struct {
 			SessionID string `json:"sessionId"`
 		}
@@ -311,10 +327,9 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 			return turnResult{}, errors.New("the agent's session/new has no sessionId")
 		}
 		session = created.SessionID
-	} else {
-		if !canAsk {
-			return turnResult{}, errors.New("the agent cannot load a session, so it cannot take an answer")
-		}
+	case !info.AgentCapabilities.LoadSession:
+		return turnResult{}, errors.New("the agent's process that asked the question has ended, and the agent cannot load a session to take the answer")
+	default:
 		if err := s.call(ctx, "session/load", map[string]any{"sessionId": session, "cwd": dir, "mcpServers": servers}, nil); err != nil {
 			return turnResult{}, r.failure(ctx, s, err)
 		}
@@ -334,7 +349,7 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 	// after it (sendPrompt, cancel).
 	ch, err := s.sendPrompt(ctx, map[string]any{
 		"sessionId": session,
-		"prompt":    []map[string]string{{"type": "text", "text": r.prompt(req, conventions.Status, canAsk)}},
+		"prompt":    []map[string]string{{"type": "text", "text": r.prompt(req, conventions.Status)}},
 	})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -381,10 +396,81 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 		s.logFailure(r, err)
 		return turnResult{}, errors.New("the agent ended the turn with an answer that is not done or needs_input, or an empty question")
 	}
-	if result.Question && !canAsk {
-		return turnResult{}, errors.New("the agent asked a question, but it cannot load a session to take the answer")
+	if result.Question {
+		// The process waits for the answer, with the session open.
+		if kept = r.keep(result.Session, s); !kept && !info.AgentCapabilities.LoadSession {
+			return turnResult{}, fmt.Errorf("the agent asked a question, but %d of its processes already wait for answers and it cannot load a session to take one later", maxWaiting)
+		}
 	}
 	return result, nil
+}
+
+// keptSession is an agent's process that waits, with its session open,
+// for the answer to the question its last turn asked.
+type keptSession struct {
+	s     *acpSession
+	timer *time.Timer
+}
+
+// keep keeps s, whose turn asked a question in session, for the answer:
+// at most maxWaiting processes, each at most answerWait, as the agent
+// service keeps the task. It says whether it kept s.
+func (r *acpRuntime) keep(session string, s *acpSession) bool {
+	r.keptMu.Lock()
+	defer r.keptMu.Unlock()
+	if r.kept == nil {
+		r.kept = map[string]*keptSession{}
+	}
+	if len(r.kept) >= maxWaiting || r.kept[session] != nil {
+		return false
+	}
+	s.setProgress(nil)
+	r.kept[session] = &keptSession{s: s, timer: time.AfterFunc(answerWait, func() { r.release(session) })}
+	return true
+}
+
+// take takes the process kept for session, nil when none is or it has
+// ended.
+func (r *acpRuntime) take(session string) *acpSession {
+	if session == "" {
+		return nil
+	}
+	r.keptMu.Lock()
+	k := r.kept[session]
+	delete(r.kept, session)
+	r.keptMu.Unlock()
+	if k == nil {
+		return nil
+	}
+	k.timer.Stop()
+	select {
+	case <-k.s.done:
+		k.s.close()
+		return nil
+	default:
+		return k.s
+	}
+}
+
+// release stops the process kept for session, if one is: its task ended
+// without an answer.
+func (r *acpRuntime) release(session string) {
+	if s := r.take(session); s != nil {
+		s.close()
+	}
+}
+
+// releaseAll stops every kept process: the node stops.
+func (r *acpRuntime) releaseAll() {
+	r.keptMu.Lock()
+	sessions := make([]string, 0, len(r.kept))
+	for session := range r.kept {
+		sessions = append(sessions, session)
+	}
+	r.keptMu.Unlock()
+	for _, session := range sessions {
+		r.release(session)
+	}
 }
 
 // failure is err as the task's failure, which the task's caller reads: a
@@ -434,34 +520,21 @@ func (s *acpSession) logFailure(r *acpRuntime, err error) {
 }
 
 // acpTurnInstructions are the turn's instructions for an agent that ends
-// its turns with _meta.agentiscale.status; canAsk false tells it that it
-// cannot ask.
+// its turns with _meta.agentiscale.status.
 const acpTurnInstructions = `When you are done, answer with the result.
 If you cannot go on without information that only the sender can give, ask one
 short question instead; the sender's answer comes in a later message. Ask only when
 you must, never for permission or confirmation, and never for anything your
 configuration or the directory can tell you.`
 
-const acpNoQuestions = `When you are done, answer with the result. You cannot ask the sender
-anything: if information is missing, say what is missing in the result.`
-
-const acpNoQuestionsJSON = `When you are done, answer with status "done" and the result as text.
-You cannot ask the sender anything: if information is missing, say what is missing
-in the result.`
-
 // prompt is the turn's prompt: the task or the answer, framed as
-// untrusted (taskPrompt), with the definition's instructions in front of
+// untrusted (framedPrompt), with the definition's instructions in front of
 // a new task. Every prompt names how the turn ends: the agent's own status
 // when it declares one, else an answer in turnSchema.
-func (r *acpRuntime) prompt(req taskRequest, status, canAsk bool) string {
+func (r *acpRuntime) prompt(req taskRequest, status bool) string {
 	instructions := turnInstructions + "\nAnswer with only a JSON object of this schema: " + turnSchema
-	switch {
-	case status && canAsk:
+	if status {
 		instructions = acpTurnInstructions
-	case status:
-		instructions = acpNoQuestions
-	case !canAsk:
-		instructions = acpNoQuestionsJSON + "\nAnswer with only a JSON object of this schema: " + turnSchema
 	}
 	p := framedPrompt(req, instructions)
 	if req.Session == "" && r.def != nil {
@@ -813,6 +886,18 @@ func (s *acpSession) answer(msg acpMessage) {
 func (s *acpSession) begin(session string) {
 	s.mu.Lock()
 	s.session = session
+	s.text.Reset()
+	s.overflow = false
+	s.mu.Unlock()
+	s.order.Lock()
+	s.promptSent, s.cancelled = false, false
+	s.order.Unlock()
+}
+
+// setProgress makes progress take the steps from here on.
+func (s *acpSession) setProgress(progress func(string)) {
+	s.mu.Lock()
+	s.progress = progress
 	s.mu.Unlock()
 }
 
@@ -868,9 +953,12 @@ func (s *acpSession) update(params json.RawMessage) {
 		}
 		return
 	}
-	if s.progress != nil {
+	s.mu.Lock()
+	progress := s.progress
+	s.mu.Unlock()
+	if progress != nil {
 		if line := acpProgress(n.Update); line != "" {
-			s.progress(line)
+			progress(line)
 		}
 	}
 }

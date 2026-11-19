@@ -303,12 +303,13 @@ agentiscaled agent add acp -command "my-agent acp" -dir ~/work/my-project
 ```
 
 The agent takes its name from the program (`my-agent`) unless `-name` says
-otherwise. Each turn of a task runs the command in the agent's directory. The node
+otherwise. Each task runs the command in the agent's directory, and its process
+stays open while the task waits for an answer to the agent's question. The node
 answers every permission request the agent makes with a rejection, and shows only
 fixed summaries of its steps. The agent declares which of `-owner-config=false`,
 `-dir-instructions=false` and `-dir-skills=false` it enforces, and `agent add`
-refuses one it does not. Whether it can ask questions and call your other agents
-depends on what it supports. Agent vendors: see
+refuses one it does not. Whether it can call your other agents depends on what it
+supports. Agent vendors: see
 [Add agentiscale support to your agent](add-agentiscale-support.md), and check an
 agent with `agentiscaled runtime check -command "my-agent acp"`.
 

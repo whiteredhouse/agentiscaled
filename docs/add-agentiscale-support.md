@@ -27,16 +27,18 @@ done.
 The owner gives the node your agent's command line, such as `my-agent acp`. The
 node splits it at spaces, so neither the program's name nor an argument can hold
 one, finds the program on `PATH`, and from then on keeps its path and the arguments
-apart. For each turn of a task, the node:
+apart. For each task, the node:
 
 1. starts the command in the agent's directory, with stdin and stdout as the ACP
    connection and the environment below
 2. sends `initialize` and reads what your agent declares
-3. sends `session/new` for a new task, or `session/load` for the caller's answer to
-   your question, with the network's MCP server in `mcpServers`
+3. sends `session/new`, with the network's MCP server in `mcpServers`
 4. sends `session/prompt` with the task, and reads your `session/update`
    notifications as the turn's steps and result
-5. takes your `session/prompt` response as the turn's end, then closes stdin
+5. takes your `session/prompt` response as the turn's end
+6. when the turn ends in a question, keeps your process open and later sends the
+   caller's answer as another `session/prompt` in the same session
+7. closes stdin when the task ends
 
 The node also starts your command once, for `initialize` only, when the owner adds
 the agent and when the node starts, to check what your agent declares.
@@ -101,8 +103,8 @@ conventions in `_meta.agentiscale`:
     directory.
 - `login` is the command that signs your agent in. The node shows it to the owner
   when your agent is not signed in.
-- `loadSession` lets your agent ask questions. Without it, the prompt tells your
-  agent that it cannot ask, and a question fails the task.
+- `loadSession` lets your agent take an answer after the process that asked has
+  ended (see [End the turn](#end-the-turn)).
 - `mcpCapabilities.http` lets your agent call the network's other agents. Without it
   your agent works without them.
 
@@ -149,9 +151,16 @@ the text is the result or a question in `_meta`:
 
 - `done`: the text is the task's result, and the task completes.
 - `needs_input`: the text is a question to the caller, and the task waits for the
-  answer. The node later starts your command again and sends `session/load` with the
-  same `sessionId` and then the answer as a prompt. Keep the session where your
-  agent can load it from the directory and configuration it ran with.
+  answer. The node keeps your process open and sends the answer as the next
+  `session/prompt` in the same session. A node keeps at most 16 processes waiting
+  for answers, each for at most an hour, and closes stdin when the task ends
+  without an answer. When the process that asked is gone, because it exited or
+  more questions wait than the node keeps, an agent with `loadSession` gets the
+  answer in a new process: the node starts your command again and sends
+  `initialize`, `session/load` with the same `sessionId`, and then the answer as a
+  prompt. Keep the session where your agent can load it from the directory and
+  configuration it ran with. Without `loadSession` such an answer, or such a
+  question, fails the task.
 - Any other `stopReason`, or an ACP error, fails the task. The task's caller, who
   may not be the owner, gets only a fixed reason, such as the method and error
   code. Your error message and the last lines of your stderr go to the node's log,
@@ -213,8 +222,9 @@ agentiscaled runtime check -command "my-agent acp"
 
 `runtime check` starts your command the way the node does and checks, in an empty
 directory: `initialize` and what you declare, a turn that ends in a result, and a
-cancelled turn. With `loadSession` it also checks a turn that ends in a question and
-the answer in the loaded session; without it, it skips them. Each turn has 5
+cancelled turn, a turn that ends in a question and the answer in the process that
+asked. With `loadSession` it also checks an answer in a new process, after
+`session/load`; without it, it skips that. Each turn has 5
 minutes (`-timeout`): a turn that does not end in time fails its step. Add
 `-owner-config=false`, `-dir-instructions=false` or `-dir-skills=false` to check
 your agent under those policies. The turns run your agent's model, with the

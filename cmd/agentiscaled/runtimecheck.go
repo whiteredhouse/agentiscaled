@@ -125,20 +125,43 @@ func runRuntimeCheck(ctx context.Context, args []string, out io.Writer) error {
 		report("PASS", "turn", fmt.Sprintf("result %q, %d steps", progressLine(res.Text), steps))
 	}
 
-	if !r.info.AgentCapabilities.LoadSession {
-		report("SKIP", "question", "no loadSession: the agent cannot ask questions")
-	} else if res, _, err := turn(ctx, checkQuestionTask, ""); err != nil {
-		report("FAIL", "question", err.Error())
-	} else if !res.Question {
-		report("FAIL", "question", "the turn ended in a result, not needs_input: "+progressLine(res.Text))
-	} else {
-		report("PASS", "question", progressLine(res.Text))
-		if ans, _, err := turn(ctx, checkAnswer, res.Session); err != nil {
-			report("FAIL", "answer", err.Error())
-		} else if ans.Question {
-			report("FAIL", "answer", "the agent asked again: "+progressLine(ans.Text))
-		} else {
-			report("PASS", "answer", fmt.Sprintf("session/load resumed the session; result %q", progressLine(ans.Text)))
+	// ask runs the question turn, and answer gives it the answer.
+	ask := func(step string) (string, bool) {
+		res, _, err := turn(ctx, checkQuestionTask, "")
+		switch {
+		case err != nil:
+			report("FAIL", step, err.Error())
+		case !res.Question:
+			report("FAIL", step, "the turn ended in a result, not needs_input: "+progressLine(res.Text))
+		default:
+			return res.Session, true
+		}
+		return "", false
+	}
+	answer := func(step, session, how string) {
+		ans, _, err := turn(ctx, checkAnswer, session)
+		switch {
+		case err != nil:
+			report("FAIL", step, err.Error())
+		case ans.Question:
+			report("FAIL", step, "the agent asked again: "+progressLine(ans.Text))
+		default:
+			report("PASS", step, fmt.Sprintf("%s; result %q", how, progressLine(ans.Text)))
+		}
+	}
+	if session, ok := ask("question"); ok {
+		report("PASS", "question", "the turn ended in needs_input")
+		answer("answer", session, "answered in the process that asked")
+	}
+	switch {
+	case !r.info.AgentCapabilities.LoadSession:
+		report("SKIP", "load", "no loadSession: an answer that comes after the agent's process ended fails the task")
+	default:
+		if session, ok := ask("load"); ok {
+			// Ending the process that asked makes the answer go
+			// through session/load, as after a node restart.
+			r.release(session)
+			answer("load", session, "session/load resumed the session")
 		}
 	}
 

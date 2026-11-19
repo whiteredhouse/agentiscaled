@@ -592,6 +592,21 @@ type runOutcome struct {
 	err error
 }
 
+// sessionKeeper is a runtime that keeps something for a task that waits
+// for an answer, such as the agent's process (acpRuntime.keep), which it
+// lets go of when the task ends without one.
+type sessionKeeper interface {
+	release(session string)
+	releaseAll()
+}
+
+// release lets the runtime go of what it keeps for session.
+func (s *agentService) release(session string) {
+	if k, ok := s.rt.(sessionKeeper); ok && session != "" {
+		go k.release(session)
+	}
+}
+
 // waitingFor is the task waiting for an answer under id, if it still
 // waits.
 func (s *agentService) waitingFor(id a2a.TaskID) *waitingTask {
@@ -599,6 +614,9 @@ func (s *agentService) waitingFor(id a2a.TaskID) *waitingTask {
 	defer s.mu.Unlock()
 	w := s.waiting[id]
 	if w == nil || time.Since(w.since) > answerWait {
+		if w != nil {
+			s.release(w.session)
+		}
 		delete(s.waiting, id)
 		s.network.forget(id)
 		return nil
@@ -608,7 +626,13 @@ func (s *agentService) waitingFor(id a2a.TaskID) *waitingTask {
 
 // wait keeps a task whose agent asked a question until the answer comes,
 // or says why it cannot wait.
-func (s *agentService) wait(id a2a.TaskID, w waitingTask) string {
+func (s *agentService) wait(id a2a.TaskID, w waitingTask) (why string) {
+	// A task that cannot wait lets go of what its runtime keeps for it.
+	defer func() {
+		if why != "" {
+			s.release(w.session)
+		}
+	}()
 	switch {
 	case w.session == "":
 		return "the agent asked a question, but its runtime cannot carry on the task"
@@ -619,6 +643,7 @@ func (s *agentService) wait(id a2a.TaskID, w waitingTask) string {
 	defer s.mu.Unlock()
 	for other, o := range s.waiting {
 		if time.Since(o.since) > answerWait {
+			s.release(o.session)
 			delete(s.waiting, other)
 			s.network.forget(other)
 		}
@@ -776,8 +801,9 @@ func (s *agentService) Cancel(ctx context.Context, execCtx *a2asrv.ExecutorConte
 			run.cancel(errCancelledByCaller)
 		}
 		// A task waiting for an answer has run already.
-		if _, ok := s.waiting[execCtx.TaskID]; ok {
+		if w, ok := s.waiting[execCtx.TaskID]; ok {
 			begun = true
+			s.release(w.session)
 			delete(s.waiting, execCtx.TaskID)
 			s.network.forget(execCtx.TaskID)
 		}
@@ -932,6 +958,9 @@ func serveAgent(ctx context.Context, s *agentService, name string) (string, erro
 	go func() {
 		<-ctx.Done()
 		_ = srv.Close()
+		if k, ok := s.rt.(sessionKeeper); ok {
+			k.releaseAll()
+		}
 	}()
 	return fmt.Sprintf("http://:%s@%s", token, ln.Addr()), nil
 }

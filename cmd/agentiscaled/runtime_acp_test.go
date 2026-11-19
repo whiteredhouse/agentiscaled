@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,12 +18,14 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/a2aproject/a2a-go/v2/a2a"
 )
 
 // fakeACPAgent is an agent that speaks ACP on stdio, for the tests of the
 // acp runtime. Its flags say what it declares; each prompt asks for a
 // permission, reports a step and a plan, and then:
-//   - with ASK-ME in it, asks a question
+//   - with ASK-ME or runtime check's question task in it, asks a question
 //   - with SLOW or runtime check's long task in it, waits for session/cancel
 //   - else answers with what it saw: its environment, MCP servers, the
 //     permission's outcome and whether the prompt asked for JSON.
@@ -64,6 +67,7 @@ func fakeACPAgent(args []string) {
 	responses := map[int]chan json.RawMessage{}
 	cancelled := make(chan struct{}, 1)
 	nextID := 1000
+	prompts := 0
 
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 1<<20), 16<<20)
@@ -157,6 +161,8 @@ func fakeACPAgent(args []string) {
 			}
 			json.Unmarshal(msg.Params, &p)
 			id := msg.ID
+			prompts++
+			promptsSoFar := prompts
 			go func() {
 				prompt := p.Prompt[0].Text
 				if *hang {
@@ -218,7 +224,7 @@ func fakeACPAgent(args []string) {
 					chunk(p.SessionID, strings.Repeat("b", 700<<10))
 				}
 				switch {
-				case strings.Contains(prompt, "ASK-ME"):
+				case strings.Contains(prompt, "ASK-ME"), strings.Contains(prompt, checkQuestionTask):
 					answer("needs_input", "Which color?")
 				case strings.Contains(prompt, "SLOW"), strings.Contains(prompt, checkLongTask):
 					<-cancelled
@@ -249,7 +255,7 @@ func fakeACPAgent(args []string) {
 						}
 					}
 					slices.Sort(env)
-					answer("done", fmt.Sprintf("env=%s mcp=%s perm=%s:%s json=%v role=%v answer=%v",
+					answer("done", fmt.Sprintf("prompts=%d env=%s mcp=%s perm=%s:%s json=%v role=%v answer=%v", promptsSoFar,
 						strings.Join(env, ","), strings.Join(servers, ","), outcome.Outcome.Outcome, outcome.Outcome.OptionID,
 						strings.Contains(prompt, `"needs_input"`), strings.Contains(prompt, "<role>"), strings.Contains(prompt, "<answer>")))
 				}
@@ -350,13 +356,20 @@ func TestACPRuntimeNoNetworkWithoutHTTP(t *testing.T) {
 }
 
 func TestACPRuntimeQuestionAndAnswer(t *testing.T) {
-	for _, status := range []bool{true, false} {
-		t.Run(fmt.Sprintf("status=%v", status), func(t *testing.T) {
-			flags := []string{"-load"}
-			if status {
-				flags = append(flags, "-status")
-			}
-			r := newFakeACP(t, ownerPolicy, flags...)
+	for _, tc := range []struct {
+		name    string
+		flags   []string
+		release bool // the kept process is gone when the answer comes
+		prompts string
+	}{
+		{"kept", []string{"-load", "-status"}, false, "prompts=2 "},
+		{"kept json", []string{"-load"}, false, "prompts=2 "},
+		{"kept without loadSession", []string{"-status"}, false, "prompts=2 "},
+		{"loaded", []string{"-load", "-status"}, true, "prompts=1 "},
+		{"loaded json", []string{"-load"}, true, "prompts=1 "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newFakeACP(t, ownerPolicy, tc.flags...)
 			r.setDefinition(&agentDefinition{Instructions: "role"})
 			dir := t.TempDir()
 			q, err := r.Run(context.Background(), dir, taskRequest{Text: "ASK-ME"})
@@ -366,6 +379,9 @@ func TestACPRuntimeQuestionAndAnswer(t *testing.T) {
 			if !q.Question || q.Text != "Which color?" || q.Session != "sess-1" {
 				t.Fatalf("question %+v", q)
 			}
+			if tc.release {
+				r.release(q.Session)
+			}
 			var steps []string
 			a, err := r.Run(context.Background(), dir, taskRequest{Text: "blue", Session: q.Session, Progress: func(s string) { steps = append(steps, s) }})
 			if err != nil {
@@ -373,24 +389,68 @@ func TestACPRuntimeQuestionAndAnswer(t *testing.T) {
 			}
 			// The replayed history is not the turn's: no OLD QUESTION in
 			// the result, no step of the replayed tool call.
-			if a.Question || strings.Contains(a.Text, "OLD QUESTION") || !strings.Contains(a.Text, "answer=true") || !strings.Contains(a.Text, "role=false") {
+			if a.Question || strings.Contains(a.Text, "OLD QUESTION") || !strings.Contains(a.Text, "answer=true") || !strings.Contains(a.Text, "role=false") || !strings.Contains(a.Text, tc.prompts) {
 				t.Errorf("answer %+v", a)
 			}
-			if slices.Contains(steps, "Reading replayed.go") {
-				t.Errorf("steps include the replayed history: %q", steps)
+			if slices.Contains(steps, "Reading replayed.go") || !slices.Contains(steps, "Reading main.go") {
+				t.Errorf("steps %q", steps)
+			}
+			if len(r.kept) != 0 {
+				t.Errorf("processes still kept: %v", r.kept)
 			}
 		})
 	}
 }
 
-func TestACPRuntimeQuestionWithoutLoadSession(t *testing.T) {
+func TestACPRuntimeAnswerAfterProcessEnded(t *testing.T) {
 	r := newFakeACP(t, ownerPolicy, "-status")
-	if _, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "ASK-ME"}); err == nil || !strings.Contains(err.Error(), "cannot load a session") {
-		t.Errorf("question from an agent without loadSession: %v", err)
+	q, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "ASK-ME"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "x", Session: "sess-1"}); err == nil {
-		t.Error("an answer to an agent without loadSession should fail")
+	r.release(q.Session)
+	if _, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "x", Session: q.Session}); err == nil || !strings.Contains(err.Error(), "cannot load a session") {
+		t.Errorf("an answer whose process ended, to an agent without loadSession: %v", err)
 	}
+}
+
+func TestACPRuntimeKeepsAtMostMaxWaiting(t *testing.T) {
+	r := newFakeACP(t, ownerPolicy, "-status")
+	t.Cleanup(r.releaseAll)
+	for i := range maxWaiting {
+		if !r.keep(fmt.Sprintf("s%d", i), startFake(t, r)) {
+			t.Fatalf("keep %d", i)
+		}
+	}
+	extra := startFake(t, r)
+	defer extra.close()
+	if r.keep("one-more", extra) {
+		t.Error("kept more than maxWaiting processes")
+	}
+	// Without loadSession, a question past the bound fails the task.
+	if _, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "ASK-ME"}); err == nil || !strings.Contains(err.Error(), "already wait for answers") {
+		t.Errorf("question past the bound: %v", err)
+	}
+	kept := r.kept["s0"].s
+	r.releaseAll()
+	if len(r.kept) != 0 {
+		t.Errorf("releaseAll left %d", len(r.kept))
+	}
+	select {
+	case <-kept.done:
+	case <-time.After(10 * time.Second):
+		t.Error("a released process still runs")
+	}
+}
+
+// startFake starts r's agent as a turn would.
+func startFake(t *testing.T, r *acpRuntime) *acpSession {
+	t.Helper()
+	s, err := r.start(context.Background(), t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }
 
 func TestACPRuntimePolicies(t *testing.T) {
@@ -472,15 +532,23 @@ func TestRuntimeCheck(t *testing.T) {
 	old := checkCancelAfter
 	checkCancelAfter = 2 * time.Second
 	t.Cleanup(func() { checkCancelAfter = old })
-	var out bytes.Buffer
-	err := runRuntimeCheck(context.Background(), []string{"-command", fakeACPCommand(t, "-status", "-http", "-policies", "config-dir")}, &out)
-	if err != nil {
-		t.Fatalf("check: %v\n%s", err, out.String())
-	}
-	// Without loadSession the question is skipped.
-	for _, want := range []string{"PASS  initialize", "PASS  conventions", "INFO  network: advertises", "PASS  turn", "SKIP  question", "PASS  cancel"} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("output lacks %q:\n%s", want, out.String())
+	for _, tc := range []struct {
+		flags []string
+		load  string
+	}{
+		// Without loadSession the answer goes only to the process that asked.
+		{[]string{"-status", "-http", "-policies", "config-dir"}, "SKIP  load"},
+		{[]string{"-status", "-http", "-load"}, "PASS  load: session/load resumed"},
+	} {
+		var out bytes.Buffer
+		err := runRuntimeCheck(context.Background(), []string{"-command", fakeACPCommand(t, tc.flags...)}, &out)
+		if err != nil {
+			t.Fatalf("check %v: %v\n%s", tc.flags, err, out.String())
+		}
+		for _, want := range []string{"PASS  initialize", "PASS  conventions", "INFO  network: advertises", "PASS  turn", "PASS  question", "PASS  answer: answered in the process that asked", tc.load, "PASS  cancel"} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("%v: output lacks %q:\n%s", tc.flags, want, out.String())
+			}
 		}
 	}
 }
@@ -690,3 +758,57 @@ func TestRuntimeCheckRelativeDir(t *testing.T) {
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// keepingFixture is a fixture that keeps something for each waiting task,
+// as the acp runtime keeps the agent's process.
+type keepingFixture struct {
+	*fixture
+	released chan string
+	all      chan struct{}
+}
+
+func (k keepingFixture) release(session string) { k.released <- session }
+func (k keepingFixture) releaseAll()            { close(k.all) }
+
+// A waiting task that ends without an answer lets go of what its runtime
+// keeps for it, and the node's stop of all of them.
+func TestWaitingTaskReleasesWhatTheRuntimeKeeps(t *testing.T) {
+	fix := keepingFixture{newFixture(), make(chan string, 4), make(chan struct{})}
+	dir := t.TempDir()
+	svc, err := newAgentService(dir, fix, dir, "helper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	target, err := serveAgent(ctx, svc, "helper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(target)
+	token, _ := u.User.Password()
+	u.User = nil
+	h := &agentHarness{svc: svc, fix: fix.fixture, url: u.String(), dir: dir, client: a2aClient(t, u.String(), meshHeaders{token, testSender})}
+
+	task := h.send(t, "", "ask", nil)
+	<-fix.prompts
+	fix.ask <- "Which one?"
+	h.await(t, task.ID, a2a.TaskStateInputRequired)
+	if _, err := h.client.CancelTask(context.Background(), &a2a.CancelTaskRequest{ID: task.ID}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case s := <-fix.released:
+		if s != "session-ask" {
+			t.Errorf("released %q", s)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelling a waiting task released nothing")
+	}
+	cancel()
+	select {
+	case <-fix.all:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stopping the node released nothing")
+	}
+}
