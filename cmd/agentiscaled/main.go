@@ -83,8 +83,9 @@ Commands:
   reset    drop the node's identity so 'up' joins it again as a new node; its settings stay
   run      run the node in the foreground with the settings 'up' saved
   mcp      serve the node's MCP tools on stdio, for agent clients
-  task     send a task to an agent and print its answer (send), or control task
-           execution on this node (status, stop, resume)
+  task     send a task to an agent and print its answer (send), wait for a task
+           to end (wait), or control task execution on this node (status, stop,
+           resume)
   skill    print the agentiscale skill, which teaches agents to call other agents
            of your network, or install it for Claude Code and Codex (install)
 
@@ -131,7 +132,10 @@ func main() {
 			err = fmt.Errorf("unknown command %q", cmd)
 		}
 		if err != nil {
-			log.Fatal(err)
+			// task send and task wait say with the exit status how the
+			// task ended.
+			log.Print(err)
+			os.Exit(exitCode(err))
 		}
 		return
 	}
