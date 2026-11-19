@@ -144,7 +144,7 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 		if len(services) != 1 || services[0].Name != "helper" {
 			t.Fatalf("local services: %+v", services)
 		}
-		localAPI, err := serveLocalAgent(ctx, node, &meshnode.NodeConfigComplete{}, map[string]string{a.Name: targetURL}, dir)
+		localAPI, err := serveLocalAgent(ctx, node, &meshnode.NodeConfigComplete{}, map[string]string{a.Name: targetURL}, dir, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

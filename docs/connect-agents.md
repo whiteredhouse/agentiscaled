@@ -327,7 +327,9 @@ arguments, a path, a URL, a search or what the agent says. When the agent cannot
 without something only the caller knows, it asks one question: the task waits
 in state `input_required` with the question as its message, and the caller
 answers with `send_task` giving the task's `task_id`. The agent then carries on
-in the same session. The session is kept in the runtime's configuration like
+in the same session. On the agent's machine, `agentiscaled agent list` shows
+the agent as `waiting for an answer` until the answer comes (or `busy` while a
+task runs). The session is kept in the runtime's configuration like
 any other Claude Code or Codex session (yours with your configuration, so it
 shows in your session history). Offer the few roles you call from other
 machines or clients rather than every definition in a project: each one is

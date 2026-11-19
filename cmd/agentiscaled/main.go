@@ -526,6 +526,19 @@ func run(ctx context.Context, c config) error {
 		if err := node.RegisterStaticServices(ctx, services); err != nil {
 			return fmt.Errorf("register agents: %w", err)
 		}
+		// The catalog reports say what each agent is doing, for the owner's
+		// console; never what a task asks or returns.
+		svcs := make([]*agentService, 0, len(agents))
+		for _, a := range agents {
+			svcs = append(svcs, a.svc)
+		}
+		go reportActivity(nodeCtx, svcs, func(name string, status *api.ServiceStatus) {
+			// The times are the node's clock, which JSON can always render;
+			// a refusal would mean a clock past year 9999.
+			if err := node.SetServiceStatus(api.ServiceType_SERVICE_TYPE_A2A, name, status); err != nil {
+				log.Printf("agent %s: status not reported: %v", name, err)
+			}
+		})
 	}
 	node.StartRenewalLoop(nodeCtx, "", "", "", "")
 
@@ -539,7 +552,13 @@ func run(ctx context.Context, c config) error {
 		for _, a := range agents {
 			targets[a.Name] = a.target
 		}
-		localAPI, err := serveLocalAgent(nodeCtx, node, nodeConfig, targets, c.dataDir)
+		localAPI, err := serveLocalAgent(nodeCtx, node, nodeConfig, targets, c.dataDir, func() []agentActivity {
+			out := make([]agentActivity, 0, len(agents))
+			for _, a := range agents {
+				out = append(out, a.svc.activity())
+			}
+			return out
+		})
 		if err != nil {
 			return fmt.Errorf("start local agent API: %w", err)
 		}
