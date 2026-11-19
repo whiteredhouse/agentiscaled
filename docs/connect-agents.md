@@ -85,9 +85,74 @@ node's `-data-dir` if it is not the default one. The other flags:
 - `-json`: print the task's ID, state, last message and result as JSON instead of
   the answer alone.
 
-It exits with status 0 only when the task completes. If the agent asks a question
-instead, the command prints it with the command that answers it, `task send -task
-<task ID> <agent> -- "<answer>"`, which then follows the task again.
+- `-no-wait`: print the task's ID once the agent has it and return, leaving the task
+  to run. Follow it later with `task wait`.
+
+If the agent asks a question instead of answering, the command prints it with the
+command that answers it, `task send -task <task ID> <agent> -- "<answer>"`, which then
+follows the task again.
+
+### Wait for a task
+
+`agentiscaled task wait <agent> <task ID>` follows a task this node sent, such as one
+sent with `task send -no-wait`, until it ends or the agent asks a question. It shows
+the agent's steps and prints its answer the way `task send` does, and returns at once
+for a task that has already ended. This lets a script start several tasks and collect
+their answers later:
+
+```sh
+review=$(agentiscaled task send -no-wait reviewer "Review the changes on this branch")
+tests=$(agentiscaled task send -no-wait tester "Run the integration tests")
+agentiscaled task wait reviewer "$review" > review.md
+agentiscaled task wait tester "$tests" > tests.md
+```
+
+It takes `-peer`, `-data-dir` and `-json` as `task send` does. `-timeout` (default
+15m) bounds the wait only: unlike `task send`, waiting never cancels the task, so when
+the time passes or you press Ctrl-C the task goes on and you can wait for it again.
+Only the node that sent a task can follow it.
+
+### Exit status
+
+`task send` and `task wait` say with their exit status how the task went:
+
+| Status | Meaning |
+| --- | --- |
+| 0 | The task completed; its answer is on standard output. |
+| 1 | The command failed, for example the agent cannot be reached or the task is not found. |
+| 2 | The task ended without completing: failed, rejected or cancelled. |
+| 3 | The agent asks a question (input required); answer it with `task send -task`. |
+| 4 | `-timeout` passed first. `task send` has cancelled the task; after `task wait` it still runs. |
+
+## Teach your agents to call other agents
+
+The agentiscale skill tells an agent when to hand work to another agent of your
+network and how: which tools to use, what to put in the request, how to follow
+the task and answer its questions, and what to do when it fails. It covers the
+`agentiscale` MCP server, the `agentiscale-network` server of a hosted agent and
+`agentiscaled task send` in a shell. Install it where Claude Code and the Codex
+CLI load your skills:
+
+```sh
+agentiscaled skill install          # both; or name one: claude, codex
+```
+
+It goes to `~/.claude/skills/agentiscale` (under `$CLAUDE_CONFIG_DIR` if you set
+it) for Claude Code and `~/.agents/skills/agentiscale` for Codex. `-dir <project>`
+installs it into a project instead (`.claude/skills` and `.agents/skills` there),
+for everyone who works in it. Run the command again after an update of
+agentiscaled to take the skill's new version.
+
+`agentiscaled skill` prints the skill, for an agent to read in one command or to
+save wherever your agent loads skills from. The skill is also in this repository
+under `skills/`, for skill installers that read a repository:
+
+```sh
+npx skills add whiteredhouse/agentiscaled
+```
+
+A hosted agent that runs with your configuration (the default) loads the skill
+from your user skills like your own runs do.
 
 ## If it does not connect
 

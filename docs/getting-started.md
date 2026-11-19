@@ -174,6 +174,15 @@ agentiscaled client disconnect claude-desktop
 disconnects every one. `disconnect` removes only this node's server, saving a copy of
 the file first. Both remember the choice, so a later `up` keeps it.
 
+Claude Code and the Codex CLI call your other agents better with the agentiscale
+skill, which tells them when and how to hand work to another agent:
+
+```sh
+agentiscaled skill install
+```
+
+See [Teach your agents to call other agents](connect-agents.md#teach-your-agents-to-call-other-agents).
+
 ## Offer an agent to your network
 
 To let your other agents send tasks to an agent on this machine, answer y to "Offer
