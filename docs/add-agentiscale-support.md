@@ -25,8 +25,9 @@ environment. If your agent already speaks ACP for an editor, most of the work is
 done.
 
 The owner gives the node your agent's command line, such as `my-agent acp`. The
-node splits it at spaces, so an argument cannot hold one, and finds the program on
-`PATH`. For each turn of a task, the node:
+node splits it at spaces, so neither the program's name nor an argument can hold
+one, finds the program on `PATH`, and from then on keeps its path and the arguments
+apart. For each turn of a task, the node:
 
 1. starts the command in the agent's directory, with stdin and stdout as the ACP
    connection and the environment below
@@ -151,8 +152,11 @@ the text is the result or a question in `_meta`:
   answer. The node later starts your command again and sends `session/load` with the
   same `sessionId` and then the answer as a prompt. Keep the session where your
   agent can load it from the directory and configuration it ran with.
-- Any other `stopReason`, or an ACP error, fails the task with your message and the
-  last lines of your stderr.
+- Any other `stopReason`, or an ACP error, fails the task. The task's caller, who
+  may not be the owner, gets only a fixed reason, such as the method and error
+  code. Your error message and the last lines of your stderr go to the node's log,
+  which only the owner reads.
+- The turn's text may be up to 1 MiB. A longer one fails the task.
 
 An agent that does not declare `status: true` at `initialize` gets every prompt
 with the node's instructions to answer with only a JSON object,
@@ -163,15 +167,17 @@ it stands. Prefer `status`: it cannot be confused with the agent's own output.
 ## Cancellation
 
 When the caller cancels the task, or it runs past its time, the node sends
-`session/cancel`. End the turn with `stopReason` `cancelled`. After 5 seconds, and
-whenever a turn ends and your process has not exited within 5 seconds of stdin
-closing, the node stops your process and every process it started.
+`session/cancel`. End the turn with `stopReason` `cancelled`. After 5 seconds, even
+if your agent has stopped reading stdin, and whenever a turn ends and your process
+has not exited within 5 seconds of stdin closing, the node stops your process and
+every process it started.
 
 ## Permissions
 
 Nothing can prompt a person while a task runs. The node answers every
-`session/request_permission` with your reject option, or cancels it when you offer
-none. Configure your agent so that what it should do needs no approval and what it
+`session/request_permission` with your `reject_once` option, or cancels the request
+when you offer none. It never picks `reject_always`, which your agent could keep as
+the owner's choice. Configure your agent so that what it should do needs no approval and what it
 should not do is denied.
 
 ## The network's other agents
@@ -206,7 +212,8 @@ agentiscaled runtime check -command "my-agent acp"
 `runtime check` starts your command the way the node does and checks, in an empty
 directory: `initialize` and what you declare, a turn that ends in a result, and a
 cancelled turn. With `loadSession` it also checks a turn that ends in a question and
-the answer in the loaded session; without it, it skips them. Add
+the answer in the loaded session; without it, it skips them. Each turn has 5
+minutes (`-timeout`): a turn that does not end in time fails its step. Add
 `-owner-config=false`, `-dir-instructions=false` or `-dir-skills=false` to check
 your agent under those policies. The turns run your agent's model, with the
 configuration and sign-in the check gives it.

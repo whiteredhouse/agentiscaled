@@ -448,12 +448,10 @@ func checkAgent(a *agentConfig, dataDir string, service bool) error {
 	if command == "" {
 		command = spec.defaultCommand
 	}
-	if a.Runtime == "acp" {
-		// An ACP agent's command line holds its arguments.
-		if a.Command, err = resolveACPCommand(command); err != nil {
-			return err
-		}
-	} else if path, err := exec.LookPath(command); err == nil {
+	if command == "" {
+		return fmt.Errorf("agent %s: the %s runtime needs the agent's command", a.Name, a.Runtime)
+	}
+	if path, err := exec.LookPath(command); err == nil {
 		if abs, err := filepath.Abs(path); err == nil {
 			a.Command = abs
 		}
@@ -467,7 +465,7 @@ func checkAgent(a *agentConfig, dataDir string, service bool) error {
 		}
 	}
 	// The runtime checks the rest, such as the agent's own sign-in.
-	if _, err = spec.new(a.Command, dataDir, policy); err != nil {
+	if _, err = a.newRuntime(dataDir); err != nil {
 		return err
 	}
 	// A credential in this shell's environment does not reach the

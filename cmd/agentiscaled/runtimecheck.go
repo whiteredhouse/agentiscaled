@@ -32,6 +32,7 @@ func runRuntimeCheck(ctx context.Context, args []string, out io.Writer) error {
 	fs.BoolVar(&policy.DirInstructions, "dir-instructions", true, "=false checks the agent with the directory's instruction files turned off")
 	fs.BoolVar(&policy.DirSkills, "dir-skills", true, "=false checks the agent with the directory's skills turned off")
 	fs.BoolVar(&policy.OwnerConfig, "owner-config", true, "=false checks the agent with a configuration of its own")
+	timeout := fs.Duration("timeout", 5*time.Minute, "How long each turn may take")
 	fs.SetOutput(out)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -68,7 +69,11 @@ func runRuntimeCheck(ctx context.Context, args []string, out io.Writer) error {
 		fmt.Fprintf(out, "%-4s  %s\n", result, step)
 	}
 
-	rt, err := newACPRuntime(*command, *dataDir, policy)
+	program, programArgs, err := splitACPCommand(*command)
+	if err != nil {
+		return err
+	}
+	rt, err := newACPRuntime(program, programArgs, *dataDir, policy)
 	if err != nil {
 		report("FAIL", "initialize", err.Error())
 		return errors.New("the agent does not keep the runtime contract")
@@ -87,9 +92,16 @@ func runRuntimeCheck(ctx context.Context, args []string, out io.Writer) error {
 		report("WARN", "network", "no mcpCapabilities.http: the agent works without the network's other agents")
 	}
 
+	// Each turn has a deadline, so an agent that never answers fails its
+	// step rather than hanging the check.
 	turn := func(ctx context.Context, text, session string) (turnResult, int, error) {
 		steps := 0
-		res, err := r.Run(ctx, *dir, taskRequest{Sender: "runtime-check", Text: text, Session: session, Progress: func(string) { steps++ }})
+		tctx, cancel := context.WithTimeout(ctx, *timeout)
+		defer cancel()
+		res, err := r.Run(tctx, *dir, taskRequest{Sender: "runtime-check", Text: text, Session: session, Progress: func(string) { steps++ }})
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			err = fmt.Errorf("no answer within %s (-timeout)", *timeout)
+		}
 		return res, steps, err
 	}
 	res, steps, err := turn(ctx, checkDoneTask, "")

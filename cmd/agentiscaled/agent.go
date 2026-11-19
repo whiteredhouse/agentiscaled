@@ -157,8 +157,10 @@ var runtimes = map[string]struct {
 	// agentPolicy.OwnerConfig the agent finds the same configuration.
 	ownerEnv []string
 }{
-	"codex":  {newCodexRuntime, "codex", "codex", codexOwnerConfigDir, codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
-	"acp":    {new: newACPRuntime},
+	"codex": {newCodexRuntime, "codex", "codex", codexOwnerConfigDir, codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
+	// acp agents are made from their command and arguments
+	// (agentConfig.newRuntime).
+	"acp":    {},
 	"claude": {newClaudeRuntime, "claude", "claude", claudeOwnerConfigDir, claudeSignedIn, claudeEnvSignedIn, claudeLogin, []string{"CLAUDE_CONFIG_DIR"}},
 }
 

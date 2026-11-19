@@ -121,7 +121,11 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 			return errors.New("the acp runtime needs the agent's command: agentiscaled agent add acp -command \"my-agent acp\"")
 		}
 		if offer.name == "" {
-			offer.name = runtimeDefaultName(rt, *command)
+			program, _, _ := splitACPCommand(*command)
+			if rt != "acp" {
+				program = *command
+			}
+			offer.name = runtimeDefaultName(rt, program)
 		}
 		if !validAgentName(offer.name) {
 			return fmt.Errorf("-name %q: use up to 63 lowercase letters, digits and dashes", offer.name)
@@ -148,6 +152,11 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 	}
 
 	offer.command = *command
+	if offer.runtime == "acp" {
+		if offer.command, offer.args, err = splitACPCommand(*command); err != nil {
+			return err
+		}
+	}
 	if fi, err := os.Stat(offer.agentDir); err != nil || !fi.IsDir() {
 		return fmt.Errorf("-dir %s is not a directory", offer.agentDir)
 	}

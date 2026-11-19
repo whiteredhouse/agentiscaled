@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -34,6 +35,11 @@ func fakeACPAgent(args []string) {
 	contract := fs.Int("contract", 1, "declared contract")
 	authRequired := fs.Bool("auth-required", false, "refuse session/new as not signed in")
 	ignoreCancel := fs.Bool("ignore-cancel", false, "never end a cancelled turn")
+	rejectAlwaysOnly := fs.Bool("reject-always-only", false, "offer only allow_once and reject_always")
+	big := fs.Bool("big", false, "send a result over the size limit, then a small chunk")
+	fail := fs.Bool("fail", false, "answer session/prompt with an error, and log a secret to stderr")
+	stopReading := fs.Bool("stop-reading", false, "read nothing after session/new")
+	hang := fs.Bool("hang", false, "never answer session/prompt")
 	fs.Parse(args)
 
 	var mu sync.Mutex
@@ -115,6 +121,9 @@ func fakeACPAgent(args []string) {
 			}
 			if msg.Method == "session/new" {
 				reply(map[string]string{"sessionId": "sess-1"})
+				if *stopReading {
+					select {}
+				}
 				continue
 			}
 			// session/load replays the session's history first.
@@ -135,6 +144,14 @@ func fakeACPAgent(args []string) {
 			id := msg.ID
 			go func() {
 				prompt := p.Prompt[0].Text
+				if *hang {
+					select {}
+				}
+				if *fail {
+					fmt.Fprintln(os.Stderr, "Authorization: Bearer SECRET-TOKEN")
+					send(map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": -32603, "message": "boom SECRET-TOKEN"}})
+					return
+				}
 				end := func(stop, st string) {
 					res := map[string]any{"stopReason": stop}
 					if *status && st != "" {
@@ -161,10 +178,12 @@ func fakeACPAgent(args []string) {
 				send(map[string]any{"jsonrpc": "2.0", "id": pid, "method": "session/request_permission", "params": map[string]any{
 					"sessionId": p.SessionID,
 					"toolCall":  map[string]any{"toolCallId": "t1", "title": "mcp__agentiscale-network__send_task"},
-					"options": []map[string]string{
-						{"optionId": "yes", "name": "Allow", "kind": "allow_once"},
-						{"optionId": "no", "name": "Reject", "kind": "reject_once"},
-					},
+					"options": func() []map[string]string {
+						if *rejectAlwaysOnly {
+							return []map[string]string{{"optionId": "yes", "name": "Allow", "kind": "allow_once"}, {"optionId": "never", "name": "Never", "kind": "reject_always"}}
+						}
+						return []map[string]string{{"optionId": "yes", "name": "Allow", "kind": "allow_once"}, {"optionId": "no", "name": "Reject", "kind": "reject_once"}}
+					}(),
 				}})
 				var outcome struct {
 					Outcome struct{ Outcome, OptionID string }
@@ -173,6 +192,10 @@ func fakeACPAgent(args []string) {
 				update(p.SessionID, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "t2", "title": "cat /secret/token-abc", "kind": "read", "locations": []map[string]string{{"path": "/secret/dir/main.go"}}})
 				update(p.SessionID, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "t3", "title": "curl https://x?q=secret", "kind": "execute", "rawInput": map[string]string{"command": "curl https://x?q=secret"}})
 				update(p.SessionID, map[string]any{"sessionUpdate": "plan", "entries": []map[string]string{{"content": "secret plan", "status": "completed"}, {"content": "b", "status": "in_progress"}}})
+				if *big {
+					chunk(p.SessionID, strings.Repeat("a", 700<<10))
+					chunk(p.SessionID, strings.Repeat("b", 700<<10))
+				}
 				switch {
 				case strings.Contains(prompt, "ASK-ME"):
 					answer("needs_input", "Which color?")
@@ -219,9 +242,18 @@ func fakeACPCommand(t *testing.T, flags ...string) string {
 	return strings.Join(append([]string{script}, flags...), " ")
 }
 
+// newACPFromLine makes the acp runtime from a -command line.
+func newACPFromLine(line, dataDir string, policy agentPolicy) (runtime, error) {
+	program, args, err := splitACPCommand(line)
+	if err != nil {
+		return nil, err
+	}
+	return newACPRuntime(program, args, dataDir, policy)
+}
+
 func newFakeACP(t *testing.T, policy agentPolicy, flags ...string) *acpRuntime {
 	t.Helper()
-	rt, err := newACPRuntime(fakeACPCommand(t, flags...), t.TempDir(), policy)
+	rt, err := newACPFromLine(fakeACPCommand(t, flags...), t.TempDir(), policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,13 +362,13 @@ func TestACPRuntimeQuestionWithoutLoadSession(t *testing.T) {
 func TestACPRuntimePolicies(t *testing.T) {
 	data := t.TempDir()
 	restricted := agentPolicy{}
-	if _, err := newACPRuntime(fakeACPCommand(t, "-policies", "config-dir,dir-instructions"), data, restricted); err == nil || !strings.Contains(err.Error(), "-dir-skills=false") || strings.Contains(err.Error(), "-owner-config") {
+	if _, err := newACPFromLine(fakeACPCommand(t, "-policies", "config-dir,dir-instructions"), data, restricted); err == nil || !strings.Contains(err.Error(), "-dir-skills=false") || strings.Contains(err.Error(), "-owner-config") {
 		t.Errorf("an undeclared policy: %v", err)
 	}
-	if _, err := newACPRuntime(fakeACPCommand(t, "-no-meta"), data, agentPolicy{DirSkills: true, OwnerConfig: true}); err == nil || !strings.Contains(err.Error(), "-dir-instructions=false") {
+	if _, err := newACPFromLine(fakeACPCommand(t, "-no-meta"), data, agentPolicy{DirSkills: true, OwnerConfig: true}); err == nil || !strings.Contains(err.Error(), "-dir-instructions=false") {
 		t.Errorf("a plain ACP agent with a policy: %v", err)
 	}
-	rt, err := newACPRuntime(fakeACPCommand(t, "-policies", "config-dir,dir-instructions,dir-skills", "-status"), data, restricted)
+	rt, err := newACPFromLine(fakeACPCommand(t, "-policies", "config-dir,dir-instructions,dir-skills", "-status"), data, restricted)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +388,7 @@ func TestACPRuntimePolicies(t *testing.T) {
 }
 
 func TestACPRuntimeRefusesNewerContract(t *testing.T) {
-	if _, err := newACPRuntime(fakeACPCommand(t, "-contract", "2"), t.TempDir(), ownerPolicy); err == nil || !strings.Contains(err.Error(), "update agentiscaled") {
+	if _, err := newACPFromLine(fakeACPCommand(t, "-contract", "2"), t.TempDir(), ownerPolicy); err == nil || !strings.Contains(err.Error(), "update agentiscaled") {
 		t.Errorf("newer contract: %v", err)
 	}
 }
@@ -420,18 +452,110 @@ func TestRuntimeCheck(t *testing.T) {
 }
 
 func TestACPCommandLine(t *testing.T) {
-	line := fakeACPCommand(t, "-status")
-	resolved, err := resolveACPCommand(line)
-	if err != nil || resolved != line {
-		t.Errorf("resolve %q: %q, %v", line, resolved, err)
+	program, args, err := splitACPCommand("  my-agent  acp --x ")
+	if err != nil || program != "my-agent" || !slices.Equal(args, []string{"acp", "--x"}) {
+		t.Errorf("split: %q %q %v", program, args, err)
 	}
-	if _, err := resolveACPCommand("no-such-agent-xyz acp"); err == nil {
-		t.Error("a missing program should not resolve")
+	if _, _, err := splitACPCommand(" "); err == nil {
+		t.Error("an empty command should not split")
 	}
-	if got := runtimeDefaultName("acp", "/opt/bin/My-Agent --acp"); got != "my-agent" {
+	if got := runtimeDefaultName("acp", "/opt/My Apps/My-Agent"); got != "my-agent" {
 		t.Errorf("default name %q", got)
 	}
 	if got := runtimeDefaultName("codex", "/x/y"); got != "codex" {
 		t.Errorf("codex default name %q", got)
+	}
+	// The program's path may hold spaces once it is resolved: it stays
+	// apart from the arguments.
+	line := fakeACPCommand(t, "-status")
+	script, flags, _ := splitACPCommand(line)
+	dir := filepath.Join(t.TempDir(), "my apps")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(script, filepath.Join(dir, "fake-acp")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	a := agentConfig{Runtime: "acp", Command: "fake-acp " + strings.Join(flags, " ")}
+	if err := a.splitCommand(); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkAgent(&a, t.TempDir(), false); err == nil {
+		t.Error("checkAgent without a directory should fail")
+	}
+	a.Dir = t.TempDir()
+	if err := checkAgent(&a, t.TempDir(), false); err != nil {
+		t.Fatalf("checkAgent: %v", err)
+	}
+	if a.Command != filepath.Join(dir, "fake-acp") || !slices.Equal(a.Args, flags) || a.Name != "fake-acp" {
+		t.Errorf("checked agent: %q %q %q", a.Command, a.Args, a.Name)
+	}
+	if _, err := a.newRuntime(t.TempDir()); err != nil {
+		t.Errorf("runtime from a path with a space: %v", err)
+	}
+}
+
+func TestACPRuntimeRejectsOnlyOnce(t *testing.T) {
+	r := newFakeACP(t, ownerPolicy, "-status", "-reject-always-only")
+	res, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Text, "perm=cancelled: ") {
+		t.Errorf("with only reject_always the request should be cancelled: %q", res.Text)
+	}
+}
+
+func TestACPRuntimeResultOverLimit(t *testing.T) {
+	r := newFakeACP(t, ownerPolicy, "-status", "-big")
+	if _, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "x"}); err == nil || !strings.Contains(err.Error(), "longer than the limit") {
+		t.Errorf("a result over the limit: %v", err)
+	}
+}
+
+func TestACPRuntimeFailureKeepsDiagnosticsLocal(t *testing.T) {
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	r := newFakeACP(t, ownerPolicy, "-status", "-fail")
+	_, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "x"})
+	if err == nil || strings.Contains(err.Error(), "SECRET") || !strings.Contains(err.Error(), "session/prompt answered with error -32603") {
+		t.Errorf("the caller's error: %v", err)
+	}
+	if !strings.Contains(logged.String(), "SECRET-TOKEN") {
+		t.Errorf("the node's log lacks the agent's diagnostics: %q", logged.String())
+	}
+}
+
+func TestACPRuntimeCancelWhenAgentStopsReading(t *testing.T) {
+	r := newFakeACP(t, ownerPolicy, "-status", "-stop-reading")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		// A prompt bigger than a pipe holds, which the agent never reads.
+		_, err := r.Run(ctx, t.TempDir(), taskRequest{Text: strings.Repeat("x", 1<<20)})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("turn: %v", err)
+		}
+	case <-time.After(time.Second + acpCancelGrace + 10*time.Second):
+		t.Fatalf("the turn did not end %s after it was cancelled", time.Since(start))
+	}
+}
+
+func TestRuntimeCheckTimesOut(t *testing.T) {
+	old := checkCancelAfter
+	checkCancelAfter = 200 * time.Millisecond
+	t.Cleanup(func() { checkCancelAfter = old })
+	var out bytes.Buffer
+	err := runRuntimeCheck(context.Background(), []string{"-timeout", "1s", "-command", fakeACPCommand(t, "-status", "-hang")}, &out)
+	if err == nil || !strings.Contains(out.String(), "FAIL  turn: no answer within 1s (-timeout)") {
+		t.Errorf("check of an agent that never answers: %v\n%s", err, out.String())
 	}
 }
