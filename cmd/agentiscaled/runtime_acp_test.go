@@ -210,7 +210,7 @@ func fakeACPAgent(args []string) {
 					Outcome struct{ Outcome, OptionID string }
 				}
 				json.Unmarshal(<-ch, &outcome)
-				update(p.SessionID, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "t2", "title": "cat /secret/token-abc", "kind": "read", "locations": []map[string]string{{"path": "/secret/dir/main.go"}}})
+				update(p.SessionID, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "t2", "title": "cat /secret/token-abc", "kind": "read", "content": []any{}, "locations": []map[string]string{{"path": "/secret/dir/main.go"}}})
 				update(p.SessionID, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "t3", "title": "curl https://x?q=secret", "kind": "execute", "rawInput": map[string]string{"command": "curl https://x?q=secret"}})
 				update(p.SessionID, map[string]any{"sessionUpdate": "plan", "entries": []map[string]string{{"content": "secret plan", "status": "completed"}, {"content": "b", "status": "in_progress"}}})
 				if *big {

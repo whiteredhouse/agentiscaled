@@ -842,24 +842,27 @@ func (s *acpSession) update(params json.RawMessage) {
 	if !ours {
 		return
 	}
+	// content is one block in a message chunk but a list in a tool call,
+	// so it is read only for a chunk.
 	var u struct {
-		SessionUpdate string `json:"sessionUpdate"`
-		Content       struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
+		SessionUpdate string          `json:"sessionUpdate"`
+		Content       json.RawMessage `json:"content"`
 	}
 	if json.Unmarshal(n.Update, &u) != nil {
 		return
 	}
 	if u.SessionUpdate == "agent_message_chunk" {
-		if u.Content.Type == "text" {
+		var c struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(u.Content, &c) == nil && c.Type == "text" {
 			s.mu.Lock()
-			if s.overflow || s.text.Len()+len(u.Content.Text) > acpMaxResult {
+			if s.overflow || s.text.Len()+len(c.Text) > acpMaxResult {
 				s.overflow = true
 				s.text.Reset()
 			} else {
-				s.text.WriteString(u.Content.Text)
+				s.text.WriteString(c.Text)
 			}
 			s.mu.Unlock()
 		}
