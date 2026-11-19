@@ -161,3 +161,27 @@ func TestTaskCancelIsNotHeldUpByASlowAnswer(t *testing.T) {
 		t.Fatalf("stdout: %s", out)
 	}
 }
+
+// A task waiting for an answer is cancelled too, freeing its agent.
+func TestTaskCancelStopsATaskThatAsks(t *testing.T) {
+	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
+	id := sendNoWait(t, "-data-dir", dir, "helper", "double a number")
+	<-fix.prompts
+	fix.ask <- "Which number?"
+	if err := startTaskWait("-data-dir", dir, "helper", id).wait(t); exitCode(err) != exitInputRequired {
+		t.Fatalf("wait: %v (exit %d)", err, exitCode(err))
+	}
+	run := startTaskCancel("-data-dir", dir, "helper", id)
+	if err := run.wait(t); err != nil || run.out.String() != "task "+id+" cancelled\n" {
+		t.Fatalf("cancel: %v %q", err, run.out.String())
+	}
+	// The agent takes a new task.
+	run = startTaskSend("", "-data-dir", dir, "helper", "next")
+	if p := <-fix.prompts; p.Text != "next" {
+		t.Fatalf("the agent got %q", p.Text)
+	}
+	fix.release <- "ok"
+	if err := run.wait(t); err != nil {
+		t.Fatalf("next task: %v", err)
+	}
+}
