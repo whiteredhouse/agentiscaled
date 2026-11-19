@@ -167,7 +167,9 @@ it stands. Prefer `status`: it cannot be confused with the agent's own output.
 ## Cancellation
 
 When the caller cancels the task, or it runs past its time, the node sends
-`session/cancel`. End the turn with `stopReason` `cancelled`. After 5 seconds, even
+`session/cancel`, never before the prompt it cancels. End the turn with
+`stopReason` `cancelled`. A permission request that the node answers after the
+cancel gets the `cancelled` outcome. After 5 seconds, even
 if your agent has stopped reading stdin, and whenever a turn ends and your process
 has not exited within 5 seconds of stdin closing, the node stops your process and
 every process it started.

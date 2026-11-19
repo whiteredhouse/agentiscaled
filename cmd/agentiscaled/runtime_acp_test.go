@@ -40,6 +40,10 @@ func fakeACPAgent(args []string) {
 	fail := fs.Bool("fail", false, "answer session/prompt with an error, and log a secret to stderr")
 	stopReading := fs.Bool("stop-reading", false, "read nothing after session/new")
 	hang := fs.Bool("hang", false, "never answer session/prompt")
+	closeStdin := fs.Bool("close-stdin", false, "close stdin after session/new, keeping stdout open")
+	badStatus := fs.Bool("bad-status", false, "end turns with a status that is not done or needs_input")
+	badStop := fs.Bool("bad-stop", false, "end turns with a token-shaped stop reason")
+	permAfterCancel := fs.Bool("perm-after-cancel", false, "on cancel, ask for a permission and log its outcome to stderr")
 	fs.Parse(args)
 
 	var mu sync.Mutex
@@ -124,6 +128,10 @@ func fakeACPAgent(args []string) {
 				if *stopReading {
 					select {}
 				}
+				if *closeStdin {
+					os.Stdin.Close()
+					select {}
+				}
 				continue
 			}
 			// session/load replays the session's history first.
@@ -153,6 +161,12 @@ func fakeACPAgent(args []string) {
 					return
 				}
 				end := func(stop, st string) {
+					if *badStop {
+						stop = "tok_SECRET123"
+					}
+					if *badStatus {
+						st = "weird SECRET"
+					}
 					res := map[string]any{"stopReason": stop}
 					if *status && st != "" {
 						res["_meta"] = map[string]any{"agentiscale": map[string]string{"status": st}}
@@ -201,6 +215,19 @@ func fakeACPAgent(args []string) {
 					answer("needs_input", "Which color?")
 				case strings.Contains(prompt, "SLOW"), strings.Contains(prompt, checkLongTask):
 					<-cancelled
+					if *permAfterCancel {
+						mu.Lock()
+						nextID++
+						pid := nextID
+						ch := make(chan json.RawMessage, 1)
+						responses[pid] = ch
+						mu.Unlock()
+						send(map[string]any{"jsonrpc": "2.0", "id": pid, "method": "session/request_permission", "params": map[string]any{
+							"sessionId": p.SessionID, "toolCall": map[string]any{"toolCallId": "t9"},
+							"options": []map[string]string{{"optionId": "no", "name": "Reject", "kind": "reject_once"}},
+						}})
+						fmt.Fprintf(os.Stderr, "perm-after-cancel=%s\n", <-ch)
+					}
 					if *ignoreCancel {
 						select {}
 					}
@@ -557,5 +584,58 @@ func TestRuntimeCheckTimesOut(t *testing.T) {
 	err := runRuntimeCheck(context.Background(), []string{"-timeout", "1s", "-command", fakeACPCommand(t, "-status", "-hang")}, &out)
 	if err == nil || !strings.Contains(out.String(), "FAIL  turn: no answer within 1s (-timeout)") {
 		t.Errorf("check of an agent that never answers: %v\n%s", err, out.String())
+	}
+}
+
+func TestACPRuntimeStdinClosed(t *testing.T) {
+	r := newFakeACP(t, ownerPolicy, "-status", "-close-stdin")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := r.Run(ctx, t.TempDir(), taskRequest{Text: strings.Repeat("x", 1<<20)})
+	if err == nil || ctx.Err() != nil || time.Since(start) > 10*time.Second {
+		t.Errorf("a turn whose agent closed stdin: %v after %s", err, time.Since(start))
+	}
+}
+
+func TestACPRuntimeFixedTurnReasons(t *testing.T) {
+	for flag, want := range map[string]string{
+		"-bad-status": "not done or needs_input",
+		"-bad-stop":   "the agent stopped the turn: an unknown reason",
+	} {
+		r := newFakeACP(t, ownerPolicy, "-status", flag)
+		_, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "x"})
+		if err == nil || strings.Contains(err.Error(), "SECRET") || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v", flag, err)
+		}
+	}
+}
+
+func TestACPRuntimeRelativeCommand(t *testing.T) {
+	script, flags, _ := splitACPCommand(fakeACPCommand(t, "-status"))
+	t.Chdir(filepath.Dir(script))
+	rt, err := newACPRuntime("./"+filepath.Base(script), flags, t.TempDir(), ownerPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rt.(*acpRuntime); r.command != script {
+		t.Errorf("command %q, want %q", r.command, script)
+	}
+	if _, err := rt.Run(context.Background(), t.TempDir(), taskRequest{Text: "x"}); err != nil {
+		t.Errorf("run from another directory: %v", err)
+	}
+}
+
+func TestACPRuntimeCancelsPendingPermissions(t *testing.T) {
+	// The agent asks for a permission after the cancel and then ignores
+	// the cancel, so the node stops it.
+	r := newFakeACP(t, ownerPolicy, "-status", "-perm-after-cancel", "-ignore-cancel")
+	var stderr string
+	r.stderr = func(s string) { stderr = s }
+	ctx, cancel := context.WithCancel(context.Background())
+	var once sync.Once
+	r.Run(ctx, t.TempDir(), taskRequest{Text: "SLOW", Progress: func(string) { once.Do(cancel) }})
+	if !strings.Contains(stderr, `perm-after-cancel={"outcome":{"outcome":"cancelled"}}`) {
+		t.Errorf("a permission asked after the cancel: %q", stderr)
 	}
 }

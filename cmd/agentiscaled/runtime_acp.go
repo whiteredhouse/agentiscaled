@@ -41,6 +41,10 @@ const (
 	acpMaxResult = 1 << 20
 )
 
+// acpStopReasons are the stop reasons of ACP besides end_turn, which a
+// failure may name.
+var acpStopReasons = []string{"max_tokens", "max_turn_requests", "refusal", "cancelled"}
+
 // The policies an agent can declare that it enforces.
 const (
 	acpPolicyConfigDir       = "config-dir"
@@ -67,6 +71,9 @@ type acpRuntime struct {
 	info acpAgent
 	// stopped, if set, takes each turn's stop reason; runtime check uses it.
 	stopped func(string)
+	// stderr, if set, takes what the agent wrote to stderr in each turn,
+	// once its run ends; tests use it.
+	stderr func(string)
 }
 
 func (r *acpRuntime) setDefinition(d *agentDefinition) { r.def = d }
@@ -163,6 +170,11 @@ func newACPRuntime(program string, args []string, dataDir string, policy agentPo
 	path, err := exec.LookPath(program)
 	if err != nil {
 		return nil, fmt.Errorf("the agent command %q was not found: %w", program, err)
+	}
+	// Each run starts in another directory, where a relative path would
+	// name another program or none.
+	if path, err = filepath.Abs(path); err != nil {
+		return nil, err
 	}
 	config, err := acpConfigDir(path, dataDir, policy)
 	if err != nil {
@@ -262,7 +274,12 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 	if err != nil {
 		return turnResult{}, err
 	}
-	defer s.close()
+	defer func() {
+		s.close()
+		if r.stderr != nil {
+			r.stderr(s.stderr.String())
+		}
+	}()
 	info, err := s.initialize(ctx)
 	if err != nil {
 		return turnResult{}, r.failure(ctx, s, err)
@@ -305,8 +322,6 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 	// What the agent sends from here on is this turn's: session/load
 	// replays the session's history before it answers.
 	s.begin(session)
-	stop := context.AfterFunc(ctx, func() { s.cancel(session) })
-	defer stop()
 	var prompted struct {
 		StopReason string `json:"stopReason"`
 		Meta       struct {
@@ -315,10 +330,21 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 			} `json:"agentiscale"`
 		} `json:"_meta"`
 	}
-	err = s.call(context.Background(), "session/prompt", map[string]any{
+	// The prompt goes out only while the turn may run, and a cancel only
+	// after it (sendPrompt, cancel).
+	ch, err := s.sendPrompt(ctx, map[string]any{
 		"sessionId": session,
 		"prompt":    []map[string]string{{"type": "text", "text": r.prompt(req, conventions.Status, canAsk)}},
-	}, &prompted)
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return turnResult{}, ctx.Err()
+		}
+		return turnResult{}, r.failure(ctx, s, err)
+	}
+	stop := context.AfterFunc(ctx, func() { s.cancel(session) })
+	defer stop()
+	err = s.await(context.Background(), "session/prompt", ch, &prompted)
 	if ctx.Err() != nil {
 		if r.stopped != nil && err == nil {
 			r.stopped(prompted.StopReason)
@@ -333,7 +359,7 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 	}
 	if prompted.StopReason != "end_turn" {
 		reason := "an unknown reason"
-		if plainName.MatchString(prompted.StopReason) {
+		if slices.Contains(acpStopReasons, prompted.StopReason) {
 			reason = prompted.StopReason
 		}
 		s.logFailure(r, fmt.Errorf("stop reason %q", prompted.StopReason))
@@ -350,7 +376,10 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 		result, err = parseTurn(text, session)
 	}
 	if err != nil {
-		return turnResult{}, err
+		// What the agent sent may hold anything: the caller gets a
+		// fixed reason, the node's log the agent's.
+		s.logFailure(r, err)
+		return turnResult{}, errors.New("the agent ended the turn with an answer that is not done or needs_input, or an empty question")
 	}
 	if result.Question && !canAsk {
 		return turnResult{}, errors.New("the agent asked a question, but it cannot load a session to take the answer")
@@ -445,7 +474,7 @@ func (r *acpRuntime) start(ctx context.Context, dir string, progress func(string
 	cmd.Env = r.env()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	s := &acpSession{cmd: cmd, progress: progress, pending: map[int64]chan acpResponse{},
-		out: make(chan []byte), dead: make(chan struct{}), done: make(chan struct{})}
+		out: make(chan []byte), dead: make(chan struct{}), broken: make(chan struct{}), done: make(chan struct{})}
 	cmd.Stderr = &s.stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -479,9 +508,18 @@ type acpSession struct {
 	// dead is closed when the node stops the agent's processes.
 	dead     chan struct{}
 	killOnce sync.Once
-	mu       sync.Mutex
-	nextID   int64
-	pending  map[int64]chan acpResponse
+	// broken is closed when a write to stdin fails, which writeErr says.
+	broken   chan struct{}
+	writeErr error
+	// order puts the prompt, the cancel and the answers to the agent's
+	// requests in order: a cancel goes only after a prompt that went out,
+	// and an answer after a cancel cancels.
+	order      sync.Mutex
+	promptSent bool
+	cancelled  bool
+	mu         sync.Mutex
+	nextID     int64
+	pending    map[int64]chan acpResponse
 	// session is the session whose updates are the turn's, once begun.
 	session string
 	text    strings.Builder
@@ -546,6 +584,15 @@ func (s *acpSession) initialize(ctx context.Context) (acpAgent, error) {
 
 // call sends a request and decodes its result into out, if set.
 func (s *acpSession) call(ctx context.Context, method string, params any, out any) error {
+	ch, err := s.request(ctx, method, params)
+	if err != nil {
+		return err
+	}
+	return s.await(ctx, method, ch, out)
+}
+
+// request sends a request; its response comes on the channel.
+func (s *acpSession) request(ctx context.Context, method string, params any) (chan acpResponse, error) {
 	s.mu.Lock()
 	s.nextID++
 	id := s.nextID
@@ -553,8 +600,26 @@ func (s *acpSession) call(ctx context.Context, method string, params any, out an
 	s.pending[id] = ch
 	s.mu.Unlock()
 	if err := s.send(ctx, map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}); err != nil {
-		return err
+		return nil, err
 	}
+	return ch, nil
+}
+
+// sendPrompt sends session/prompt unless ctx has ended.
+func (s *acpSession) sendPrompt(ctx context.Context, params any) (chan acpResponse, error) {
+	s.order.Lock()
+	defer s.order.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	ch, err := s.request(ctx, "session/prompt", params)
+	s.promptSent = err == nil
+	return ch, err
+}
+
+// await waits for the response on ch and decodes its result into out, if
+// set.
+func (s *acpSession) await(ctx context.Context, method string, ch chan acpResponse, out any) error {
 	select {
 	case resp := <-ch:
 		if resp.err != nil {
@@ -573,9 +638,20 @@ func (s *acpSession) call(ctx context.Context, method string, params any, out an
 		return s.ended(method)
 	case <-s.dead:
 		return &acpExit{method: method}
+	case <-s.broken:
+		return s.brokenErr(method)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// brokenErr is the failed write to stdin, during method.
+func (s *acpSession) brokenErr(method string) error {
+	s.mu.Lock()
+	err := s.writeErr
+	s.mu.Unlock()
+	log.Printf("acp agent %s: writing to its stdin failed during %s: %v", s.cmd.Path, method, err)
+	return &acpExit{method: method}
 }
 
 func (s *acpSession) ended(method string) error {
@@ -602,6 +678,8 @@ func (s *acpSession) send(ctx context.Context, msg any) error {
 		return &acpExit{method: "a write"}
 	case <-s.dead:
 		return &acpExit{method: "a write"}
+	case <-s.broken:
+		return s.brokenErr("a write")
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -613,6 +691,12 @@ func (s *acpSession) write() {
 		select {
 		case b := <-s.out:
 			if _, err := s.stdin.Write(b); err != nil {
+				// Every request waiting for an answer, and every
+				// sender, learns that none comes.
+				s.mu.Lock()
+				s.writeErr = err
+				s.mu.Unlock()
+				close(s.broken)
 				return
 			}
 		case <-s.done:
@@ -687,10 +771,13 @@ func (s *acpSession) answer(msg acpMessage) {
 	}
 	json.Unmarshal(msg.Params, &p)
 	// Only a one-time rejection: the agent may keep an "always" choice,
-	// which the owner did not make.
+	// which the owner did not make. Once the turn is cancelled, ACP has
+	// every pending request answered as cancelled.
+	s.order.Lock()
+	defer s.order.Unlock()
 	outcome := map[string]any{"outcome": "cancelled"}
 	for _, o := range p.Options {
-		if o.Kind == "reject_once" {
+		if o.Kind == "reject_once" && !s.cancelled {
 			outcome = map[string]any{"outcome": "selected", "optionId": o.OptionID}
 			break
 		}
@@ -772,6 +859,13 @@ func (s *acpSession) cancel(session string) {
 		timer.Stop()
 	}()
 	go func() {
+		s.order.Lock()
+		s.cancelled = true
+		sent := s.promptSent
+		s.order.Unlock()
+		if !sent {
+			return
+		}
 		ctx, stop := context.WithTimeout(context.Background(), acpCancelGrace)
 		defer stop()
 		s.send(ctx, map[string]any{"jsonrpc": "2.0", "method": "session/cancel", "params": map[string]string{"sessionId": session}})
