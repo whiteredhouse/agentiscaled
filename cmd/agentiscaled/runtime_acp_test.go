@@ -185,7 +185,9 @@ func fakeACPAgent(args []string) {
 				default:
 					var env []string
 					for _, kv := range os.Environ() {
-						if strings.HasPrefix(kv, "AGENTISCALE_") && !strings.HasPrefix(kv, "AGENTISCALE_FAKE") {
+						// Only the contract's variables: CI sets others.
+						name, _, _ := strings.Cut(kv, "=")
+						if slices.Contains([]string{"AGENTISCALE_ENV", "AGENTISCALE_CONTRACT", "AGENTISCALE_CONFIG_DIR", "AGENTISCALE_DIR_INSTRUCTIONS", "AGENTISCALE_DIR_SKILLS"}, name) {
 							env = append(env, kv)
 						}
 					}
