@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -83,7 +88,6 @@ func TestTaskCancelUsage(t *testing.T) {
 		{"-data-dir", dir},
 		{"-data-dir", dir, "helper"},
 		{"-data-dir", dir, "bad name", "abc"},
-		{"-data-dir", dir, "helper", "-x y"},
 		{"-data-dir", dir, "-timeout", "0s", "helper", "abc"},
 	} {
 		if err := startTaskCancel(args...).wait(t); err == nil {
@@ -94,5 +98,66 @@ func TestTaskCancelUsage(t *testing.T) {
 	run := startTaskCancel("-data-dir", dir, "helper", "", "")
 	if err := run.wait(t); err != nil || run.out.String() != "" {
 		t.Fatalf("empty IDs: %v %q", err, run.out.String())
+	}
+}
+
+// A malformed ID, an unknown task and an agent that does not answer about
+// one task fail only those: the other tasks are still cancelled, and -json
+// says why each failed.
+func TestTaskCancelGoesOnPastBadTasks(t *testing.T) {
+	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
+	running := sendNoWait(t, "-data-dir", dir, "helper", "take forever")
+	<-fix.prompts
+	unknown := "0f9a7c52-0000-4000-8000-000000000000"
+	run := startTaskCancel("-data-dir", dir, "-json", "helper", "not an id", unknown, running)
+	err := run.wait(t)
+	if exitCode(err) != 1 || !strings.Contains(err.Error(), "2 of 3 tasks not cancelled") {
+		t.Fatalf("got %v (exit %d)", err, exitCode(err))
+	}
+	var shown []cancelled
+	if err := json.Unmarshal([]byte(run.out.String()), &shown); err != nil || len(shown) != 3 {
+		t.Fatalf("json %q: %v", run.out.String(), err)
+	}
+	if shown[0].TaskID != "not an id" || shown[0].Error != "not a task ID" ||
+		shown[1].TaskID != unknown || !strings.Contains(shown[1].Error, "not found at helper") ||
+		shown[2].TaskID != running || shown[2].Terminal != "cancelled" || shown[2].Error != "" {
+		t.Fatalf("json: %+v", shown)
+	}
+}
+
+func TestTaskCancelIsNotHeldUpByASlowAnswer(t *testing.T) {
+	net := newFakeNetwork(t)
+	h := newAgentHarness(t, testSender)
+	remote := randomPeer(t)
+	net.offer(remote)
+	net.route(remote, h.url)
+	running := sendNoWait(t, "-data-dir", net.dir, "helper", "take forever")
+	<-h.fix.prompts
+
+	// The agent's node holds any call about the slow task.
+	slow := "0f9a7c52-0000-4000-8000-000000000000"
+	u, _ := url.Parse(h.url)
+	proxy := httputil.NewSingleHostReverseProxy(u)
+	proxy.Transport = meshHeaders{"secret", testSender}
+	proxy.FlushInterval = -1
+	net.mu.Lock()
+	net.routes[remote] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if bytes.Contains(body, []byte(slow)) {
+			<-r.Context().Done()
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		proxy.ServeHTTP(w, r)
+	})
+	net.mu.Unlock()
+
+	run := startTaskCancel("-data-dir", net.dir, "-timeout", "2s", "helper", slow, running)
+	err := run.wait(t)
+	if exitCode(err) != 1 || !strings.Contains(err.Error(), "1 of 2 tasks not cancelled") {
+		t.Fatalf("got %v (exit %d)\n%s", err, exitCode(err), run.out)
+	}
+	if out := run.out.String(); !strings.HasPrefix(out, "task "+slow+": ") || !strings.HasSuffix(out, "task "+running+" cancelled\n") {
+		t.Fatalf("stdout: %s", out)
 	}
 }

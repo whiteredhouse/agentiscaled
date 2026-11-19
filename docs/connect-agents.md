@@ -124,9 +124,11 @@ agentiscaled task cancel reviewer "$review"
 ```
 
 A task that has already ended is left as it is, and an empty task ID is skipped, so a
-cleanup step can pass every ID it may have. The command prints one line for each task
-(with `-json`, a JSON array) and exits 0 when each task is cancelled or had already
-ended, else 1. It takes `-peer`, `-data-dir` and `-timeout` (default 30s).
+cleanup step can pass every ID it may have. The tasks are cancelled together, and one
+that fails, such as an unknown task, does not stop the others. The command prints one
+line for each task (with `-json`, a JSON array whose failed entries have an `error`)
+and exits 0 when each task is cancelled or had already ended, else 1. It takes
+`-peer`, `-data-dir` and `-timeout` (default 30s).
 
 ### Exit status
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -22,8 +23,9 @@ on them and can take other tasks. A task that has already ended is left as
 it is. An empty TASK is skipped, so that a cleanup step can pass the IDs of
 tasks that may not have been sent.
 
-It prints one line for each task, and exits 0 when each task is cancelled
-or had already ended, else 1.
+The tasks are cancelled together, so a slow answer about one does not hold
+up the others. It prints one line for each task, and exits 0 when each task
+is cancelled or had already ended, else 1.
 
 Flags:
 `
@@ -58,13 +60,9 @@ func runTaskCancel(ctx context.Context, args []string, out, errOut io.Writer) er
 	}
 	var ids []string
 	for _, id := range pos[1:] {
-		if id == "" {
-			continue
+		if id != "" {
+			ids = append(ids, id)
 		}
-		if !taskID.MatchString(id) {
-			return fmt.Errorf("%q is not a task ID", id)
-		}
-		ids = append(ids, id)
 	}
 	if o.timeout <= 0 {
 		return errors.New("-timeout must be positive")
@@ -92,27 +90,50 @@ func runTaskCancel(ctx context.Context, args []string, out, errOut io.Writer) er
 	return safeError(cancelTasks(ctx, tasks, agent, ids, o, out))
 }
 
-// cancelTasks finds agent and cancels each of its tasks ids, reporting
-// each; it fails if any task could not be cancelled.
+// cancelled is what task cancel prints about a task with -json: the task,
+// or why it could not be cancelled.
+type cancelled struct {
+	taskOut
+	Error string `json:"error,omitempty"`
+}
+
+// cancelTasks finds agent and cancels each of its tasks ids, all at once,
+// reporting each in order; it fails if any task could not be cancelled.
 func cancelTasks(ctx context.Context, tasks *a2aTasks, agent string, ids []string, o taskSendOptions, out io.Writer) error {
 	target, _, err := findAgent(ctx, tasks, agent, o.peer, 0)
 	if err != nil {
 		return err
 	}
-	var (
-		shown  []taskOut
-		failed int
-	)
-	for _, id := range ids {
-		task, line, err := cancelOne(ctx, tasks, target, id)
-		if err != nil {
+	shown := make([]cancelled, len(ids))
+	lines := make([]string, len(ids))
+	var wg sync.WaitGroup
+	for i, id := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if !taskID.MatchString(id) {
+				// Not an ID this command can name: the others still go.
+				shown[i] = cancelled{taskOut{TaskID: id}, "not a task ID"}
+				lines[i] = fmt.Sprintf("%q is not a task ID", id)
+				return
+			}
+			task, line, err := cancelOne(ctx, tasks, target, id)
+			if err != nil {
+				shown[i] = cancelled{taskOut{TaskID: id}, err.Error()}
+				lines[i] = fmt.Sprintf("task %s: %v", id, err)
+				return
+			}
+			shown[i], lines[i] = cancelled{taskOut: task}, line
+		}()
+	}
+	wg.Wait()
+	failed := 0
+	for i := range ids {
+		if shown[i].Error != "" {
 			failed++
-			line = fmt.Sprintf("task %s: %v", id, err)
-			task = taskOut{TaskID: id}
 		}
-		shown = append(shown, task)
 		if !o.json {
-			fmt.Fprintln(out, terminalSafe(line))
+			fmt.Fprintln(out, terminalSafe(lines[i]))
 		}
 	}
 	if o.json {
