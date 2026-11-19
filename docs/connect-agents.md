@@ -442,16 +442,18 @@ agents. Each turn of a task gets its own Agent Mesh token, which the node mints
 from its own credential (`/oauth/token` on its local API) and seals: it allows only
 A2A calls (`a2a://*`), names the node, so it works only through it, and expires
 when the task's running time is up. The agent's run reaches it as one more MCP
-server, `agentiscale-network`, on a loopback port of the node, with the token as
-its bearer credential: `--mcp-config` in a file only you can read, outside the
+server, `agentiscale-network`, on a loopback port of the node, with a bearer
+credential of its own: a secret of that server's, the same over the task's turns,
+which is no credential anywhere else and whose tools run only while a turn runs. The server holds the turn's token and makes the calls with it: `--mcp-config` in a file only you can read, outside the
 agent's directory, with its tools allowed, for Claude Code; `-c mcp_servers.agentiscale-network.*`
-with the token in `AGENTISCALE_NETWORK_TOKEN`, which the commands Codex runs do not
+with the bearer in `AGENTISCALE_NETWORK_TOKEN`, which the commands Codex runs do not
 get, and its tools approved, for Codex. Neither run asks before it uses them: the
-token is what bounds them. It has `list_agents`, `get_agent_card`, `send_task`, `get_task` and
+turn's token is what bounds them. It has `list_agents`, `get_agent_card`, `send_task`, `get_task` and
 `cancel_task`. Every call goes to the node with the token, and the node checks it
 (signature, expiry, revocation, the A2A-only rule) and sends it on in place of its
 own credential. When the turn ends, the node revokes the token and the MCP server
-refuses it.
+runs no tool call until the task's next turn, if any, and refuses the bearer once
+the task ends.
 
 With `-owner-config=false` this server is the run's only way into the network: the
 run has no MCP server of yours and cannot reach the node's socket or credential in

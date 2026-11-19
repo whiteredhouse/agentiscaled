@@ -544,6 +544,9 @@ func run(ctx context.Context, c config) error {
 			if err != nil {
 				return fmt.Errorf("start agent %s: %w", a.Name, err)
 			}
+			// The agent's processes kept for answers stop before the node
+			// exits, also one that does not exit when its stdin closes.
+			defer a.svc.releaseAll()
 			a.target = target
 			services = append(services, api.ServiceConfig{
 				Type:        api.ServiceTypeStringA2A,

@@ -197,9 +197,10 @@ When the owner allows it, `session/new` and `session/load` name one more MCP
 server, `agentiscale-network`, an HTTP server on a loopback port of the node, with a
 bearer token in its `headers`. Its tools are `list_agents`, `get_agent_card`,
 `send_task`, `get_task` and `cancel_task`. Allow the tools of this server without
-asking: the node configured it, and its token is what bounds them. The token works
-only while the turn runs. Don't write it to disk, logs or the directory, and don't
-pass it to the commands your agent runs.
+asking: the node configured it, and its token is what bounds them. The token stays
+the same over a task's turns, so a process kept for an answer keeps its connection,
+but the server runs its tools only while a turn runs. Don't write it to disk, logs or the
+directory, and don't pass it to the commands your agent runs.
 
 ## Subagent roles
 

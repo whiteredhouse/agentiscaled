@@ -107,6 +107,16 @@ func TestCodexCallsTheNetwork(t *testing.T) {
 // requests the stand-in got, with the token they presented.
 func fakeNodeNetwork(t *testing.T, token string) (access *networkAccess, calls func() string) {
 	t.Helper()
+	network, calls := fakeNodeNetworkServer(t)
+	access, closeGrant := network.open(token, "caller", network.sentBy("t-1"), time.Now().Add(10*time.Minute))
+	t.Cleanup(closeGrant)
+	return access, calls
+}
+
+// fakeNodeNetworkServer serves the network (taskNetwork) with no grant yet,
+// in front of fakeNodeNetwork's stand-in.
+func fakeNodeNetworkServer(t *testing.T) (network *taskNetwork, calls func() string) {
+	t.Helper()
 	var presented []string
 	var mu sync.Mutex
 	agentSocket := filepath.Join(shortTempDir(t), "agent.sock")
@@ -126,16 +136,14 @@ func fakeNodeNetwork(t *testing.T, token string) (access *networkAccess, calls f
 	})}
 	go api.Serve(ln)
 	t.Cleanup(func() { api.Close() })
-	network := &taskNetwork{agentSocket: agentSocket, grants: map[[32]byte]*networkGrant{}, sent: map[a2a.TaskID]*sentTasks{}}
+	network = &taskNetwork{agentSocket: agentSocket, grants: map[[32]byte]*networkGrant{}, sent: map[a2a.TaskID]*sentTasks{}}
 	srv := httptest.NewServer(network)
 	network.url = srv.URL + "/mcp"
-	access, closeGrant := network.open(token, "caller", network.sentBy("t-1"), time.Now().Add(10*time.Minute))
 	t.Cleanup(func() {
-		closeGrant()
 		network.wait()
 		srv.Close()
 	})
-	return access, func() string {
+	return network, func() string {
 		mu.Lock()
 		defer mu.Unlock()
 		return strings.Join(presented, "\n")

@@ -270,7 +270,7 @@ func (r *acpRuntime) Describe(card *a2a.AgentCard) {
 func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turnResult, error) {
 	// An answer goes to the agent's process that asked, if it is still
 	// kept (keep); else to a new one that loads the session.
-	s := r.take(req.Session)
+	s := r.take(req.Task, req.Session)
 	resumed := s != nil
 	if !resumed {
 		var err error
@@ -290,20 +290,26 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 			r.stderr(s.stderr.String())
 		}
 	}()
-	info := r.info
+	// A process keeps what it declared at its own initialize, also when
+	// the agent has been updated since.
 	if !resumed {
-		var err error
-		if info, err = s.initialize(ctx); err != nil {
+		info, err := s.initialize(ctx)
+		if err != nil {
 			return turnResult{}, r.failure(ctx, s, err)
 		}
+		s.info = info
 		// The agent may have changed since the node started.
 		r.info = info
 		if err := r.checkPolicy(); err != nil {
 			return turnResult{}, err
 		}
 	}
+	info := s.info
 	conventions := info.conventions()
 
+	// A kept process has the servers of its session/new, whose bearer
+	// stays the task's over its turns: each turn opens the network to it
+	// with the turn's own token (taskNetwork).
 	servers := []any{}
 	if req.Network != nil && info.AgentCapabilities.MCPCapabilities.HTTP {
 		servers = append(servers, map[string]any{
@@ -398,7 +404,7 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 	}
 	if result.Question {
 		// The process waits for the answer, with the session open.
-		if kept = r.keep(result.Session, s); !kept && !info.AgentCapabilities.LoadSession {
+		if kept = r.keep(req.Task, result.Session, s); !kept && !info.AgentCapabilities.LoadSession {
 			return turnResult{}, fmt.Errorf("the agent asked a question, but %d of its processes already wait for answers and it cannot load a session to take one later", maxWaiting)
 		}
 	}
@@ -408,40 +414,47 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 // keptSession is an agent's process that waits, with its session open,
 // for the answer to the question its last turn asked.
 type keptSession struct {
-	s     *acpSession
-	timer *time.Timer
+	s       *acpSession
+	session string
+	timer   *time.Timer
 }
 
-// keep keeps s, whose turn asked a question in session, for the answer:
-// at most maxWaiting processes, each at most answerWait, as the agent
-// service keeps the task. It says whether it kept s.
-func (r *acpRuntime) keep(session string, s *acpSession) bool {
+// keep keeps s, whose turn of the node's task asked a question in
+// session, for the answer: at most maxWaiting processes, each at most
+// answerWait, as the agent service keeps the task. It says whether it kept
+// s. Processes are kept by the node's task, not by their sessions: two
+// processes may name theirs alike.
+func (r *acpRuntime) keep(task, session string, s *acpSession) bool {
+	if task == "" {
+		return false
+	}
 	r.keptMu.Lock()
 	defer r.keptMu.Unlock()
 	if r.kept == nil {
 		r.kept = map[string]*keptSession{}
 	}
-	if len(r.kept) >= maxWaiting || r.kept[session] != nil {
+	if len(r.kept) >= maxWaiting || r.kept[task] != nil {
 		return false
 	}
 	s.setProgress(nil)
-	r.kept[session] = &keptSession{s: s, timer: time.AfterFunc(answerWait, func() { r.release(session) })}
+	r.kept[task] = &keptSession{s: s, session: session, timer: time.AfterFunc(answerWait, func() { r.release(task) })}
 	return true
 }
 
-// take takes the process kept for session, nil when none is or it has
-// ended.
-func (r *acpRuntime) take(session string) *acpSession {
-	if session == "" {
+// take takes the process kept for task's question in session, nil when
+// none is or it has ended.
+func (r *acpRuntime) take(task, session string) *acpSession {
+	if task == "" || session == "" {
 		return nil
 	}
 	r.keptMu.Lock()
-	k := r.kept[session]
-	delete(r.kept, session)
-	r.keptMu.Unlock()
-	if k == nil {
+	k := r.kept[task]
+	if k == nil || k.session != session {
+		r.keptMu.Unlock()
 		return nil
 	}
+	delete(r.kept, task)
+	r.keptMu.Unlock()
 	k.timer.Stop()
 	select {
 	case <-k.s.done:
@@ -452,25 +465,36 @@ func (r *acpRuntime) take(session string) *acpSession {
 	}
 }
 
-// release stops the process kept for session, if one is: its task ended
+// release stops the process kept for task, if one is: the task ended
 // without an answer.
-func (r *acpRuntime) release(session string) {
-	if s := r.take(session); s != nil {
-		s.close()
+func (r *acpRuntime) release(task string) {
+	r.keptMu.Lock()
+	k := r.kept[task]
+	delete(r.kept, task)
+	r.keptMu.Unlock()
+	if k != nil {
+		k.timer.Stop()
+		k.s.close()
 	}
 }
 
-// releaseAll stops every kept process: the node stops.
+// releaseAll stops every kept process, together, and returns once they
+// have stopped: the node stops.
 func (r *acpRuntime) releaseAll() {
 	r.keptMu.Lock()
-	sessions := make([]string, 0, len(r.kept))
-	for session := range r.kept {
-		sessions = append(sessions, session)
-	}
+	kept := r.kept
+	r.kept = nil
 	r.keptMu.Unlock()
-	for _, session := range sessions {
-		r.release(session)
+	var wg sync.WaitGroup
+	for _, k := range kept {
+		k.timer.Stop()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			k.s.close()
+		}()
 	}
+	wg.Wait()
 }
 
 // failure is err as the task's failure, which the task's caller reads: a
@@ -573,6 +597,8 @@ func (r *acpRuntime) start(ctx context.Context, dir string, progress func(string
 // acpSession is one run of the agent's command: the node's ACP client
 // connection to it.
 type acpSession struct {
+	// info is what the agent declared at this process's initialize.
+	info     acpAgent
 	cmd      *exec.Cmd
 	stdin    io.WriteCloser
 	stderr   tailBuffer

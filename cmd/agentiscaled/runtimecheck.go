@@ -103,11 +103,19 @@ func runRuntimeCheck(ctx context.Context, args []string, out io.Writer) error {
 
 	// Each turn has a deadline, so an agent that never answers fails its
 	// step rather than hanging the check.
+	// Each new task gets an ID of its own, as the node gives it, and an
+	// answer its question's.
+	tasks := 0
+	task := ""
 	turn := func(ctx context.Context, text, session string) (turnResult, int, error) {
+		if session == "" {
+			tasks++
+			task = fmt.Sprintf("runtime-check-%d", tasks)
+		}
 		steps := 0
 		tctx, cancel := context.WithTimeout(ctx, *timeout)
 		defer cancel()
-		res, err := r.Run(tctx, *dir, taskRequest{Sender: "runtime-check", Text: text, Session: session, Progress: func(string) { steps++ }})
+		res, err := r.Run(tctx, *dir, taskRequest{Sender: "runtime-check", Text: text, Session: session, Task: task, Progress: func(string) { steps++ }})
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			err = fmt.Errorf("no answer within %s (-timeout)", *timeout)
 		}
@@ -126,7 +134,7 @@ func runRuntimeCheck(ctx context.Context, args []string, out io.Writer) error {
 	}
 
 	// ask runs the question turn, and answer gives it the answer.
-	ask := func(step string) (string, bool) {
+	ask := func(step string) (string, string, bool) {
 		res, _, err := turn(ctx, checkQuestionTask, "")
 		switch {
 		case err != nil:
@@ -134,11 +142,12 @@ func runRuntimeCheck(ctx context.Context, args []string, out io.Writer) error {
 		case !res.Question:
 			report("FAIL", step, "the turn ended in a result, not needs_input: "+progressLine(res.Text))
 		default:
-			return res.Session, true
+			return task, res.Session, true
 		}
-		return "", false
+		return "", "", false
 	}
-	answer := func(step, session, how string) {
+	answer := func(step, asked, session, how string) {
+		task = asked
 		ans, _, err := turn(ctx, checkAnswer, session)
 		switch {
 		case err != nil:
@@ -149,19 +158,19 @@ func runRuntimeCheck(ctx context.Context, args []string, out io.Writer) error {
 			report("PASS", step, fmt.Sprintf("%s; result %q", how, progressLine(ans.Text)))
 		}
 	}
-	if session, ok := ask("question"); ok {
+	if asked, session, ok := ask("question"); ok {
 		report("PASS", "question", "the turn ended in needs_input")
-		answer("answer", session, "answered in the process that asked")
+		answer("answer", asked, session, "answered in the process that asked")
 	}
 	switch {
 	case !r.info.AgentCapabilities.LoadSession:
 		report("SKIP", "load", "no loadSession: an answer that comes after the agent's process ended fails the task")
 	default:
-		if session, ok := ask("load"); ok {
+		if asked, session, ok := ask("load"); ok {
 			// Ending the process that asked makes the answer go
-			// through session/load, as after a node restart.
-			r.release(session)
-			answer("load", session, "session/load resumed the session")
+			// through session/load, as when the process has exited.
+			r.release(asked)
+			answer("load", asked, session, "session/load resumed the session")
 		}
 	}
 

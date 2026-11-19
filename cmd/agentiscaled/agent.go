@@ -84,6 +84,8 @@ type taskRequest struct {
 	// lines (progressLine). It is called from one goroutine at a time and
 	// must not block.
 	Progress func(string)
+	// Task is the node's ID of the task, the same over its turns.
+	Task string
 	// Network, if set, is the turn's way to the network's other agents,
 	// which the runtime offers the agent as an MCP server. It works only
 	// while the turn runs.
@@ -475,7 +477,7 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		// the task's history.
 		progress := make(chan string, 1)
 		done := make(chan runOutcome, 1)
-		req := taskRequest{Sender: from.peer, Text: request, Session: prior.session, Progress: func(line string) {
+		req := taskRequest{Sender: from.peer, Text: request, Session: prior.session, Task: string(execCtx.TaskID), Progress: func(line string) {
 			select {
 			case <-progress:
 			default:
@@ -541,6 +543,16 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 			}
 		}
 		out, err := res.out, res.err
+		// A question that does not reach the caller, because the turn was
+		// cancelled or the task cannot wait, lets go of what the runtime
+		// keeps for it.
+		if err == nil && out.Question {
+			defer func() {
+				if !asked {
+					s.release(execCtx.TaskID)
+				}
+			}()
+		}
 
 		switch cause := context.Cause(runCtx); {
 		case errors.Is(cause, errCancelledByCaller):
@@ -594,16 +606,25 @@ type runOutcome struct {
 
 // sessionKeeper is a runtime that keeps something for a task that waits
 // for an answer, such as the agent's process (acpRuntime.keep), which it
-// lets go of when the task ends without one.
+// lets go of when the task ends without one. releaseAll lets go of all of
+// it and returns once it has.
 type sessionKeeper interface {
-	release(session string)
+	release(task string)
 	releaseAll()
 }
 
-// release lets the runtime go of what it keeps for session.
-func (s *agentService) release(session string) {
-	if k, ok := s.rt.(sessionKeeper); ok && session != "" {
-		go k.release(session)
+// release lets the runtime go of what it keeps for task.
+func (s *agentService) release(task a2a.TaskID) {
+	if k, ok := s.rt.(sessionKeeper); ok && task != "" {
+		go k.release(string(task))
+	}
+}
+
+// releaseAll lets the runtime go of what it keeps for every task, and
+// returns once it has: the node stops.
+func (s *agentService) releaseAll() {
+	if k, ok := s.rt.(sessionKeeper); ok {
+		k.releaseAll()
 	}
 }
 
@@ -615,7 +636,7 @@ func (s *agentService) waitingFor(id a2a.TaskID) *waitingTask {
 	w := s.waiting[id]
 	if w == nil || time.Since(w.since) > answerWait {
 		if w != nil {
-			s.release(w.session)
+			s.release(id)
 		}
 		delete(s.waiting, id)
 		s.network.forget(id)
@@ -630,7 +651,7 @@ func (s *agentService) wait(id a2a.TaskID, w waitingTask) (why string) {
 	// A task that cannot wait lets go of what its runtime keeps for it.
 	defer func() {
 		if why != "" {
-			s.release(w.session)
+			s.release(id)
 		}
 	}()
 	switch {
@@ -643,7 +664,7 @@ func (s *agentService) wait(id a2a.TaskID, w waitingTask) (why string) {
 	defer s.mu.Unlock()
 	for other, o := range s.waiting {
 		if time.Since(o.since) > answerWait {
-			s.release(o.session)
+			s.release(other)
 			delete(s.waiting, other)
 			s.network.forget(other)
 		}
@@ -801,9 +822,9 @@ func (s *agentService) Cancel(ctx context.Context, execCtx *a2asrv.ExecutorConte
 			run.cancel(errCancelledByCaller)
 		}
 		// A task waiting for an answer has run already.
-		if w, ok := s.waiting[execCtx.TaskID]; ok {
+		if _, ok := s.waiting[execCtx.TaskID]; ok {
 			begun = true
-			s.release(w.session)
+			s.release(execCtx.TaskID)
 			delete(s.waiting, execCtx.TaskID)
 			s.network.forget(execCtx.TaskID)
 		}
@@ -958,9 +979,8 @@ func serveAgent(ctx context.Context, s *agentService, name string) (string, erro
 	go func() {
 		<-ctx.Done()
 		_ = srv.Close()
-		if k, ok := s.rt.(sessionKeeper); ok {
-			k.releaseAll()
-		}
+		// The node also waits for this as it stops (runNode).
+		s.releaseAll()
 	}()
 	return fmt.Sprintf("http://:%s@%s", token, ln.Addr()), nil
 }

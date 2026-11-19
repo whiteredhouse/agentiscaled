@@ -553,3 +553,54 @@ func TestSentTasksBound(t *testing.T) {
 		t.Fatal("a task not sent passed the check")
 	}
 }
+
+// A task's grant keeps its bearer and MCP session over its turns, as an
+// agent's process kept for an answer does: each turn's calls carry that
+// turn's token, and between turns and after the task nothing is admitted.
+func TestNetworkGrantSpansTurns(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	network, calls := fakeNodeNetworkServer(t)
+	g, err := network.grantFor("caller", "t-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := network.grantFor("caller", "t-1"); again != g {
+		t.Fatal("a task's second turn got another grant")
+	}
+	access := &networkAccess{URL: network.url, Token: g.bearer}
+	end := g.begin("turn-one-token", time.Now().Add(time.Minute))
+	session, err := networkSession(ctx, access)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	list := func() error {
+		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_agents"})
+		if err == nil && res.IsError {
+			err = errors.New(res.Content[0].(*mcp.TextContent).Text)
+		}
+		return err
+	}
+	if err := list(); err != nil {
+		t.Fatal(err)
+	}
+	end()
+	if err := list(); err == nil {
+		t.Error("a call between turns was admitted")
+	}
+	end = g.begin("turn-two-token", time.Now().Add(time.Minute))
+	if err := list(); err != nil {
+		t.Fatalf("the next turn on the same session: %v", err)
+	}
+	end()
+	got := calls()
+	if !strings.Contains(got, "GET /info Bearer turn-one-token") || !strings.Contains(got, "GET /info Bearer turn-two-token") || strings.Count(got, "GET /info") != 2 {
+		t.Errorf("the node got %q", got)
+	}
+	network.forget("t-1")
+	g.begin("late-token", time.Now().Add(time.Minute))
+	if err := list(); err == nil {
+		t.Error("a call after the task ended was admitted")
+	}
+}

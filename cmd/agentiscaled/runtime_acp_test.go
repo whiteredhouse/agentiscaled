@@ -372,7 +372,7 @@ func TestACPRuntimeQuestionAndAnswer(t *testing.T) {
 			r := newFakeACP(t, ownerPolicy, tc.flags...)
 			r.setDefinition(&agentDefinition{Instructions: "role"})
 			dir := t.TempDir()
-			q, err := r.Run(context.Background(), dir, taskRequest{Text: "ASK-ME"})
+			q, err := r.Run(context.Background(), dir, taskRequest{Text: "ASK-ME", Task: "task-1"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -380,10 +380,10 @@ func TestACPRuntimeQuestionAndAnswer(t *testing.T) {
 				t.Fatalf("question %+v", q)
 			}
 			if tc.release {
-				r.release(q.Session)
+				r.release("task-1")
 			}
 			var steps []string
-			a, err := r.Run(context.Background(), dir, taskRequest{Text: "blue", Session: q.Session, Progress: func(s string) { steps = append(steps, s) }})
+			a, err := r.Run(context.Background(), dir, taskRequest{Text: "blue", Session: q.Session, Task: "task-1", Progress: func(s string) { steps = append(steps, s) }})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -404,13 +404,54 @@ func TestACPRuntimeQuestionAndAnswer(t *testing.T) {
 
 func TestACPRuntimeAnswerAfterProcessEnded(t *testing.T) {
 	r := newFakeACP(t, ownerPolicy, "-status")
-	q, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "ASK-ME"})
+	q, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "ASK-ME", Task: "task-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.release(q.Session)
-	if _, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "x", Session: q.Session}); err == nil || !strings.Contains(err.Error(), "cannot load a session") {
+	r.release("task-1")
+	if _, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "x", Session: q.Session, Task: "task-1"}); err == nil || !strings.Contains(err.Error(), "cannot load a session") {
 		t.Errorf("an answer whose process ended, to an agent without loadSession: %v", err)
+	}
+}
+
+// Two processes may name their sessions alike: each answer goes to the
+// process of its own task.
+func TestACPRuntimeKeepsProcessesByTask(t *testing.T) {
+	r := newFakeACP(t, ownerPolicy, "-load", "-status")
+	t.Cleanup(r.releaseAll)
+	dir := t.TempDir()
+	for _, task := range []string{"task-1", "task-2"} {
+		q, err := r.Run(context.Background(), dir, taskRequest{Text: "ASK-ME", Task: task})
+		if err != nil || !q.Question || q.Session != "sess-1" {
+			t.Fatalf("%s: %+v %v", task, q, err)
+		}
+	}
+	first := r.kept["task-1"].s
+	a, err := r.Run(context.Background(), dir, taskRequest{Text: "blue", Session: "sess-1", Task: "task-2"})
+	if err != nil || !strings.Contains(a.Text, "prompts=2 ") {
+		t.Fatalf("answer: %+v %v", a, err)
+	}
+	if len(r.kept) != 1 || r.kept["task-1"] == nil || r.kept["task-1"].s != first {
+		t.Errorf("task-2's answer took another process: %v", r.kept)
+	}
+	// A kept process takes only the answer to its own session.
+	if s := r.take("task-1", "sess-other"); s != nil {
+		t.Error("took a process for another session")
+	}
+}
+
+// A process kept for an answer keeps what it declared at its initialize,
+// also when the agent has declared otherwise since.
+func TestACPRuntimeKeptProcessKeepsItsDeclarations(t *testing.T) {
+	r := newFakeACP(t, ownerPolicy, "-status")
+	t.Cleanup(r.releaseAll)
+	if _, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "ASK-ME", Task: "task-1"}); err != nil {
+		t.Fatal(err)
+	}
+	r.info.Meta.Agentiscale = nil
+	a, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "blue", Session: "sess-1", Task: "task-1"})
+	if err != nil || !strings.Contains(a.Text, "json=false") {
+		t.Errorf("the answer to a process that declared status: %+v %v", a, err)
 	}
 }
 
@@ -418,20 +459,20 @@ func TestACPRuntimeKeepsAtMostMaxWaiting(t *testing.T) {
 	r := newFakeACP(t, ownerPolicy, "-status")
 	t.Cleanup(r.releaseAll)
 	for i := range maxWaiting {
-		if !r.keep(fmt.Sprintf("s%d", i), startFake(t, r)) {
+		if !r.keep(fmt.Sprintf("t%d", i), "s", startFake(t, r)) {
 			t.Fatalf("keep %d", i)
 		}
 	}
 	extra := startFake(t, r)
 	defer extra.close()
-	if r.keep("one-more", extra) {
+	if r.keep("one-more", "s", extra) {
 		t.Error("kept more than maxWaiting processes")
 	}
 	// Without loadSession, a question past the bound fails the task.
-	if _, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "ASK-ME"}); err == nil || !strings.Contains(err.Error(), "already wait for answers") {
+	if _, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "ASK-ME", Task: "past"}); err == nil || !strings.Contains(err.Error(), "already wait for answers") {
 		t.Errorf("question past the bound: %v", err)
 	}
-	kept := r.kept["s0"].s
+	kept := r.kept["t0"].s
 	r.releaseAll()
 	if len(r.kept) != 0 {
 		t.Errorf("releaseAll left %d", len(r.kept))
@@ -767,8 +808,19 @@ type keepingFixture struct {
 	all      chan struct{}
 }
 
-func (k keepingFixture) release(session string) { k.released <- session }
-func (k keepingFixture) releaseAll()            { close(k.all) }
+func (k keepingFixture) release(task string) { k.released <- task }
+func (k keepingFixture) releaseAll()         { close(k.all) }
+
+// Run asks its question only once the turn is cancelled for a task named
+// late, as when cancellation comes while the turn ends.
+func (k keepingFixture) Run(ctx context.Context, dir string, req taskRequest) (turnResult, error) {
+	if req.Text != "late" {
+		return k.fixture.Run(ctx, dir, req)
+	}
+	k.prompts <- req
+	<-ctx.Done()
+	return turnResult{Text: "Too late?", Question: true, Session: "session-late"}, nil
+}
 
 // A waiting task that ends without an answer lets go of what its runtime
 // keeps for it, and the node's stop of all of them.
@@ -797,14 +849,25 @@ func TestWaitingTaskReleasesWhatTheRuntimeKeeps(t *testing.T) {
 	if _, err := h.client.CancelTask(context.Background(), &a2a.CancelTaskRequest{ID: task.ID}); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case s := <-fix.released:
-		if s != "session-ask" {
-			t.Errorf("released %q", s)
+	released := func(what string, id a2a.TaskID) {
+		t.Helper()
+		select {
+		case s := <-fix.released:
+			if s != string(id) {
+				t.Errorf("%s released %q, not %q", what, s, id)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s released nothing", what)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("cancelling a waiting task released nothing")
 	}
+	released("cancelling a waiting task", task.ID)
+	// A question the cancellation discards before the task waits.
+	late := h.send(t, "", "late", nil)
+	<-fix.prompts
+	if _, err := h.client.CancelTask(context.Background(), &a2a.CancelTaskRequest{ID: late.ID}); err != nil {
+		t.Fatal(err)
+	}
+	released("cancelling a turn that then asked", late.ID)
 	cancel()
 	select {
 	case <-fix.all:
