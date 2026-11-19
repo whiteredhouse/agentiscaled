@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/google/agentmesh/api"
 )
 
 // fakeACPAgent is an agent that speaks ACP on stdio, for the tests of the
@@ -867,8 +869,65 @@ func (k keepingFixture) Run(ctx context.Context, dir string, req taskRequest) (t
 		return k.fixture.Run(ctx, dir, req)
 	}
 	k.prompts <- req
+	req.progress("Thinking")
 	<-ctx.Done()
 	return turnResult{Text: "Too late?", Question: true, Session: "session-late"}, nil
+}
+
+// A question the caller never gets, because its input_required event or
+// a progress event before it cannot be published, ends the task: it does
+// not wait, and its runtime lets go of what it keeps for it.
+func TestUnpublishedQuestionEndsTheTask(t *testing.T) {
+	for _, tc := range []struct {
+		name, text string
+		refuse     func(a2a.Event) bool
+	}{
+		{"question event", "ask", func(e a2a.Event) bool {
+			ev, ok := e.(*a2a.TaskStatusUpdateEvent)
+			return ok && ev.Status.State == a2a.TaskStateInputRequired
+		}},
+		{"progress event", "late", func(e a2a.Event) bool {
+			ev, ok := e.(*a2a.TaskStatusUpdateEvent)
+			return ok && ev.Metadata[metaProgress] == true
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fix := keepingFixture{newFixture(), make(chan string, 4), make(chan struct{})}
+			dir := t.TempDir()
+			svc, err := newAgentService(dir, fix, dir, "helper")
+			if err != nil {
+				t.Fatal(err)
+			}
+			execCtx := &a2asrv.ExecutorContext{
+				Message:       a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(tc.text)),
+				TaskID:        a2a.TaskID("task-" + tc.text),
+				ContextID:     "ctx",
+				ServiceParams: a2asrv.NewServiceParams(map[string][]string{api.HeaderPeerID: {testSender}}),
+			}
+			go func() {
+				<-fix.prompts
+				fix.ask <- "Which one?"
+			}()
+			for ev := range svc.Execute(context.Background(), execCtx) {
+				if tc.refuse(ev) {
+					break
+				}
+			}
+			select {
+			case got := <-fix.released:
+				if got != string(execCtx.TaskID) {
+					t.Errorf("released %q", got)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the runtime kept what it holds for the task")
+			}
+			svc.mu.Lock()
+			defer svc.mu.Unlock()
+			if len(svc.waiting) != 0 {
+				t.Errorf("the task still waits: %v", svc.waiting)
+			}
+		})
+	}
 }
 
 // A waiting task that ends without an answer lets go of what its runtime
@@ -917,6 +976,15 @@ func TestWaitingTaskReleasesWhatTheRuntimeKeeps(t *testing.T) {
 		t.Fatal(err)
 	}
 	released("cancelling a turn that then asked", late.ID)
+	// A question nobody answers in time ends its task by itself.
+	old := answerWait
+	answerWait = 300 * time.Millisecond
+	t.Cleanup(func() { answerWait = old })
+	lapsed := h.send(t, "", "lapse", nil)
+	<-fix.prompts
+	fix.ask <- "Anyone?"
+	h.await(t, lapsed.ID, a2a.TaskStateInputRequired)
+	released("a question nobody answered", lapsed.ID)
 	cancel()
 	select {
 	case <-fix.all:
