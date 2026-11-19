@@ -249,7 +249,7 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sidecar.Shutdown(context.Background())
-	localAPI, err := serveLocalAgent(ctx, node, &meshnode.NodeConfigComplete{}, targets, dir)
+	localAPI, err := serveLocalAgent(ctx, node, &meshnode.NodeConfigComplete{}, targets, dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -66,6 +66,7 @@ func localAgentsFixture(t *testing.T, role *api.PolicyRole, expiry time.Time, cf
 	}
 	t.Cleanup(func() { sidecar.Close() })
 	fixes, targets := map[string]*fixture{}, map[string]string{}
+	var agents []*agentService
 	for _, name := range names {
 		fix := newFixture()
 		agent, err := newAgentService(t.TempDir(), fix, dir, name)
@@ -77,8 +78,15 @@ func localAgentsFixture(t *testing.T, role *api.PolicyRole, expiry time.Time, cf
 			t.Fatal(err)
 		}
 		fixes[name], targets[name] = fix, target
+		agents = append(agents, agent)
 	}
-	server, err := serveLocalAgent(ctx, n, cfg, targets, dir)
+	server, err := serveLocalAgent(ctx, n, cfg, targets, dir, func() []agentActivity {
+		var out []agentActivity
+		for _, a := range agents {
+			out = append(out, a.activity())
+		}
+		return out
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +333,7 @@ func TestLocalAgentTransportStreamsAndRejectsTCP(t *testing.T) {
 	if err := os.Symlink(filepath.Join(authDir, meshnode.DefaultSocketName), filepath.Join(dir, meshnode.DefaultSocketName)); err != nil {
 		t.Fatal(err)
 	}
-	server, err := serveLocalAgent(ctx, n, &meshnode.NodeConfigComplete{}, map[string]string{"helper": target}, dir)
+	server, err := serveLocalAgent(ctx, n, &meshnode.NodeConfigComplete{}, map[string]string{"helper": target}, dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

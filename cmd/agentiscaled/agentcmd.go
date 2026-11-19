@@ -3,15 +3,18 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 )
 
 const agentUsage = `usage: agentiscaled agent add|remove|list
@@ -280,25 +283,107 @@ func runAgentList(args []string, out io.Writer) error {
 		fmt.Fprintln(out, "This machine offers no agent. Offer one with 'agentiscaled agent add'.")
 		return nil
 	}
+	activity, running := nodeActivity(*dataDir)
 	defined := slices.ContainsFunc(s.Agents, func(a agentConfig) bool { return a.Definition != "" })
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	if defined {
-		fmt.Fprintln(tw, "NAME\tRUNTIME\tDIRECTORY\tDEFINITION")
+		fmt.Fprintln(tw, "NAME\tSTATE\tRUNTIME\tDIRECTORY\tDEFINITION")
 	} else {
-		fmt.Fprintln(tw, "NAME\tRUNTIME\tDIRECTORY")
+		fmt.Fprintln(tw, "NAME\tSTATE\tRUNTIME\tDIRECTORY")
 	}
+	now := time.Now()
 	for _, a := range s.Agents {
+		state := activityText(activity, running, a.Name, now)
 		if !defined {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", a.Name, a.Runtime, homeRelative(a.Dir))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Name, state, a.Runtime, homeRelative(a.Dir))
 			continue
 		}
 		def := "-"
 		if a.Definition != "" {
 			def = homeRelative(definitionCopy(*dataDir, a.Name, a.Definition))
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Name, a.Runtime, homeRelative(a.Dir), def)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", a.Name, state, a.Runtime, homeRelative(a.Dir), def)
 	}
 	return tw.Flush()
+}
+
+// activityTimeout bounds `agent list`'s question to the running node.
+var activityTimeout = 2 * time.Second
+
+// nodeActivity asks the node running from dataDir what its agents are
+// doing. running is false when no node answers on the local agent socket;
+// a node too old to say leaves activity nil.
+func nodeActivity(dataDir string) (activity map[string]agentActivity, running bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), activityTimeout)
+	defer cancel()
+	client := socketClient(filepath.Join(dataDir, localAgentSocketName))
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://agentiscaled/agents", nil)
+	if err != nil {
+		return nil, false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, true
+	}
+	var answer localAgentsActivity
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&answer); err != nil {
+		return nil, true
+	}
+	activity = map[string]agentActivity{}
+	for _, a := range answer.Agents {
+		activity[a.Name] = a
+	}
+	return activity, true
+}
+
+// activityText is what `agent list` shows in an agent's STATE column.
+func activityText(activity map[string]agentActivity, running bool, name string, now time.Time) string {
+	if !running {
+		return "node not running"
+	}
+	if activity == nil {
+		return "-"
+	}
+	a, ok := activity[name]
+	if !ok {
+		// Added since the node started; a restart serves it.
+		return "not served yet"
+	}
+	var parts []string
+	if a.State == activityBusy {
+		parts = append(parts, "busy"+sinceText(a.Since, now))
+	}
+	switch {
+	case a.Waiting == 1:
+		parts = append(parts, "waiting for an answer"+sinceText(a.WaitingSince, now))
+	case a.Waiting > 1:
+		parts = append(parts, fmt.Sprintf("waiting for %d answers", a.Waiting)+sinceText(a.WaitingSince, now))
+	}
+	if len(parts) == 0 {
+		return activityIdle
+	}
+	return strings.Join(parts, ", ")
+}
+
+// sinceText is how long ago t was, rounded for a glance: " (45s)",
+// " (12m)", " (2h5m)".
+func sinceText(t *time.Time, now time.Time) string {
+	if t == nil {
+		return ""
+	}
+	d := max(now.Sub(*t), 0)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf(" (%ds)", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf(" (%dm)", int(d.Minutes()))
+	}
+	return fmt.Sprintf(" (%dh%dm)", int(d.Hours()), int(d.Minutes())%60)
 }
 
 // runtimeTitle is how a runtime's agent files are called.

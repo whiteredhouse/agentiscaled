@@ -25,6 +25,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
 	"github.com/google/agentmesh/api"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // The bounds on hosted agents' tasks.
@@ -217,9 +218,10 @@ type agentService struct {
 }
 
 type agentRun struct {
-	taskID a2a.TaskID
-	cancel context.CancelCauseFunc
-	begun  bool
+	taskID  a2a.TaskID
+	cancel  context.CancelCauseFunc
+	begun   bool
+	started time.Time
 }
 
 // waitingTask is a task that waits for the caller's answer to its agent's
@@ -651,8 +653,91 @@ func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, sender string, can
 		return nil, "refused: the node could not record the request", nil
 	}
 	delete(s.waiting, execCtx.TaskID)
-	s.current = &agentRun{taskID: execCtx.TaskID, cancel: cancel}
+	s.current = &agentRun{taskID: execCtx.TaskID, cancel: cancel, started: time.Now()}
 	return s.current, "", nil
+}
+
+// agentActivity is what an agent is doing now, as `agentiscaled agent
+// list` shows it.
+type agentActivity struct {
+	Name string `json:"name"`
+	// State is busy while a turn of a task runs and idle otherwise.
+	// Whether the owner has stopped task execution holds for all of the
+	// node's agents, which `agentiscaled status` says.
+	State string `json:"state"`
+	// Since is when the running turn began.
+	Since *time.Time `json:"since,omitempty"`
+	// Waiting counts the tasks whose agent asked the caller a question and
+	// waits for the answer, and WaitingSince is when the longest waiting
+	// one asked.
+	Waiting      int        `json:"waiting,omitempty"`
+	WaitingSince *time.Time `json:"waiting_since,omitempty"`
+}
+
+const (
+	activityIdle = "idle"
+	activityBusy = "busy"
+)
+
+// activity says what the agent is doing now.
+func (s *agentService) activity() agentActivity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a := agentActivity{Name: s.name, State: activityIdle}
+	if s.current != nil {
+		a.State = activityBusy
+		started := s.current.started
+		a.Since = &started
+	}
+	for _, w := range s.waiting {
+		// Lapsed questions stay in the map until the next one is asked.
+		if time.Since(w.since) > answerWait {
+			continue
+		}
+		a.Waiting++
+		if a.WaitingSince == nil || w.since.Before(*a.WaitingSince) {
+			since := w.since
+			a.WaitingSince = &since
+		}
+	}
+	return a
+}
+
+// serviceStatus is the activity as the node's catalog reports carry it,
+// which the owner's console shows. It carries no task content.
+func (a agentActivity) serviceStatus() *api.ServiceStatus {
+	st := &api.ServiceStatus{State: api.ServiceState_SERVICE_STATE_IDLE, InputRequired: uint32(a.Waiting)}
+	if a.State == activityBusy {
+		st.State = api.ServiceState_SERVICE_STATE_BUSY
+	}
+	if a.Since != nil {
+		st.Since = timestamppb.New(*a.Since)
+	}
+	if a.WaitingSince != nil {
+		st.InputRequiredSince = timestamppb.New(*a.WaitingSince)
+	}
+	return st
+}
+
+// activityEvery is how often the node looks at what its agents are doing
+// for its catalog reports; the mesh node reports a change early on its
+// own, at most once per a few seconds.
+var activityEvery = time.Second
+
+// reportActivity hands each agent's activity to set until ctx ends.
+func reportActivity(ctx context.Context, agents []*agentService, set func(name string, status *api.ServiceStatus)) {
+	ticker := time.NewTicker(activityEvery)
+	defer ticker.Stop()
+	for {
+		for _, s := range agents {
+			set(s.name, s.activity().serviceStatus())
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *agentService) finish(run *agentRun) {

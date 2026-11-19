@@ -293,7 +293,8 @@ func (t *a2aTasks) get(ctx context.Context, req *mcp.CallToolRequest, in getTask
 }
 
 // watch waits up to wait for task id to settle, passes each new step of
-// its work to notify when set, and returns the task.
+// its work to notify when set, and returns the task. When ctx ends first,
+// it returns the task as last read, if it read it, with ctx's error.
 func (t *a2aTasks) watch(ctx context.Context, target taskTarget, id a2a.TaskID, wait time.Duration, notify func(string)) (taskOut, error) {
 	c, err := t.client(ctx, target)
 	if err != nil {
@@ -311,17 +312,22 @@ func (t *a2aTasks) watch(ctx context.Context, target taskTarget, id a2a.TaskID, 
 		}
 	}
 	followed := false
+	var last taskOut
 	for {
 		task, err := c.GetTask(ctx, &a2a.GetTaskRequest{ID: id, HistoryLength: &none})
 		if err != nil {
 			if ctx.Err() != nil {
-				return taskOut{}, ctx.Err()
+				return last, ctx.Err()
+			}
+			if errors.Is(err, a2a.ErrTaskNotFound) {
+				return taskOut{}, taskNotFound(target, string(id))
 			}
 			return taskOut{}, unreachable(target, err)
 		}
 		if settled(task.Status.State) || !time.Now().Before(deadline) {
 			return describeTask(task), nil
 		}
+		last = describeTask(task)
 		report(task.Status)
 		if !followed {
 			// The agent sends the task's events as they happen, until the
@@ -333,7 +339,7 @@ func (t *a2aTasks) watch(ctx context.Context, target taskTarget, id a2a.TaskID, 
 		}
 		select {
 		case <-ctx.Done():
-			return taskOut{}, ctx.Err()
+			return last, ctx.Err()
 		case <-time.After(time.Second):
 		}
 	}
@@ -404,9 +410,17 @@ func (t *a2aTasks) cancel(ctx context.Context, _ *mcp.CallToolRequest, in taskIn
 	}
 	task, err := c.CancelTask(ctx, &a2a.CancelTaskRequest{ID: a2a.TaskID(in.TaskID)})
 	if err != nil {
+		if errors.Is(err, a2a.ErrTaskNotFound) {
+			return nil, taskOut{}, taskNotFound(in.taskTarget, in.TaskID)
+		}
 		return nil, taskOut{}, unreachable(in.taskTarget, err)
 	}
 	return toolResult(describeTask(task))
+}
+
+// taskNotFound reports a task the agent does not show the caller.
+func taskNotFound(target taskTarget, id string) error {
+	return fmt.Errorf("task %s not found at %s: an agent shows a task only to whoever sent it (%w)", id, target.Service, a2a.ErrTaskNotFound)
 }
 
 // unreachable reports a call that did not get an answer from the agent. The
