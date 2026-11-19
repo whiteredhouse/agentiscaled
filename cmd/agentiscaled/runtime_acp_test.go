@@ -99,7 +99,7 @@ func fakeACPAgent(args []string) {
 				if *policies != "" {
 					p = strings.Split(*policies, ",")
 				}
-				res["_meta"] = map[string]any{"agentiscale": map[string]any{"contract": *contract, "policies": p, "status": *status, "login": []string{"fake-acp", "login"}}}
+				res["_meta"] = map[string]any{"agentiscale": map[string]any{"contract": *contract, "policies": p, "status": *status, "login": []string{"/opt/My Agent/fake-acp", "login", "--account", "Jo's team"}}}
 			}
 			reply(res)
 		case "session/new", "session/load":
@@ -430,7 +430,7 @@ func TestACPRuntimeRefusesNewerContract(t *testing.T) {
 func TestACPRuntimeNotSignedIn(t *testing.T) {
 	r := newFakeACP(t, ownerPolicy, "-auth-required")
 	_, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "x"})
-	if err == nil || !strings.Contains(err.Error(), "not signed in: run\n  fake-acp login") {
+	if err == nil || !strings.Contains(err.Error(), "not signed in: run\n  '/opt/My Agent/fake-acp' login --account 'Jo'\\''s team'") {
 		t.Errorf("not signed in: %v", err)
 	}
 }
@@ -478,7 +478,7 @@ func TestRuntimeCheck(t *testing.T) {
 		t.Fatalf("check: %v\n%s", err, out.String())
 	}
 	// Without loadSession the question is skipped.
-	for _, want := range []string{"PASS  initialize", "PASS  conventions", "PASS  network", "PASS  turn", "SKIP  question", "PASS  cancel"} {
+	for _, want := range []string{"PASS  initialize", "PASS  conventions", "INFO  network: advertises", "PASS  turn", "SKIP  question", "PASS  cancel"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}

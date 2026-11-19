@@ -96,7 +96,7 @@ func runRuntimeCheck(ctx context.Context, args []string, out io.Writer) error {
 		report("PASS", "conventions", fmt.Sprintf("contract %d, policies [%s], status %v", c.Contract, strings.Join(c.Policies, " "), c.Status))
 	}
 	if r.info.AgentCapabilities.MCPCapabilities.HTTP {
-		report("PASS", "network", "takes HTTP MCP servers, so it can call the network's other agents")
+		report("INFO", "network", "advertises HTTP MCP servers, so turns get the network's other agents; this check does not connect one")
 	} else {
 		report("WARN", "network", "no mcpCapabilities.http: the agent works without the network's other agents")
 	}

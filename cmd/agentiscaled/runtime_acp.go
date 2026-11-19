@@ -403,7 +403,11 @@ func (r *acpRuntime) failure(ctx context.Context, s *acpSession, err error) erro
 	}
 	if rpcErr.Code == acpAuthRequired {
 		if login := r.info.conventions().Login; len(login) > 0 {
-			shown := strings.Join(login, " ")
+			quoted := make([]string, len(login))
+			for i, arg := range login {
+				quoted[i] = shellQuote(arg)
+			}
+			shown := strings.Join(quoted, " ")
 			if r.config != "" {
 				shown = "AGENTISCALE_CONFIG_DIR=" + shellQuote(r.config) + " " + shown
 			}
