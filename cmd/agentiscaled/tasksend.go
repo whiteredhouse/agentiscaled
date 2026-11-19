@@ -120,9 +120,13 @@ func runTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 	} else if h != nil {
 		return errors.New(h.Message)
 	}
+	// -timeout counts from now, waiting for a node that is starting too.
+	deadline := time.Now().Add(o.timeout)
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	socket := filepath.Join(o.dataDir, meshnode.DefaultSocketName)
 	if err := waitForSocket(ctx, socket, nodeStartWait); err != nil {
-		return fmt.Errorf("no running agentiscaled at %s: start it first (%w)", socket, err)
+		return timedOut(fmt.Errorf("no running agentiscaled at %s: start it first (%w)", socket, err), ctx, o.timeout)
 	}
 	if f, ok := out.(*os.File); ok {
 		o.terminal = isTerminal(f)
@@ -131,7 +135,7 @@ func runTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 	tasks := &a2aTasks{http: node, base: "http://agentiscaled", local: socketClient(filepath.Join(o.dataDir, localAgentSocketName))}
 	// Errors carry the agent's words and the network's: shown on the
 	// caller's terminal, they must not drive it.
-	return safeError(sendAndFollow(ctx, tasks, agent, text, o, out, errOut))
+	return safeError(sendAndFollow(ctx, deadline, tasks, agent, text, o, out, errOut))
 }
 
 // readMessage reads the message from standard input, or stops waiting for
@@ -155,12 +159,8 @@ func readMessage(ctx context.Context, stdin io.Reader) ([]byte, error) {
 }
 
 // sendAndFollow finds agent, sends it text and follows the task until it
-// settles or o.timeout passes.
-func sendAndFollow(ctx context.Context, tasks *a2aTasks, agent, text string, o taskSendOptions, out, errOut io.Writer) error {
-	deadline := time.Now().Add(o.timeout)
-	ctx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
-
+// settles or the deadline, which ends ctx, passes.
+func sendAndFollow(ctx context.Context, deadline time.Time, tasks *a2aTasks, agent, text string, o taskSendOptions, out, errOut io.Writer) error {
 	target, where, err := findAgent(ctx, tasks, agent, o.peer, o.waitAgent)
 	if err != nil {
 		return timedOut(err, ctx, o.timeout)
@@ -233,6 +233,9 @@ func followTask(ctx context.Context, tasks *a2aTasks, target taskTarget, agent s
 		}
 		next, err := tasks.watch(ctx, target, a2a.TaskID(task.TaskID), wait, notify)
 		if err != nil {
+			if next.State != "" {
+				task = next
+			}
 			return task, err
 		}
 		task = next

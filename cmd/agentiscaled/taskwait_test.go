@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -180,5 +181,72 @@ func TestExitCode(t *testing.T) {
 	}
 	if withExit(exitTimeout, nil) != nil {
 		t.Fatal("withExit")
+	}
+}
+
+// -timeout includes waiting for the node: with none running, the command
+// gives up when it passes, with the timeout's exit status.
+func TestTaskTimeoutCoversWaitingForTheNode(t *testing.T) {
+	dir := shortTempDir(t)
+	for name, run := range map[string]*sendRun{
+		"wait": startTaskWait("-data-dir", dir, "-timeout", "200ms", "helper", "abc"),
+		"send": startTaskSend("", "-data-dir", dir, "-timeout", "200ms", "helper", "hi"),
+	} {
+		start := time.Now()
+		err := run.wait(t)
+		if took := time.Since(start); took > 5*time.Second {
+			t.Errorf("%s took %s with -timeout 200ms", name, took)
+		}
+		if exitCode(err) != exitTimeout || !strings.Contains(err.Error(), "no answer within 200ms: no running agentiscaled") {
+			t.Errorf("%s: %v (exit %d)", name, err, exitCode(err))
+		}
+	}
+}
+
+// A wait that times out at once still reports the task and how to wait
+// again, as JSON with -json.
+func TestTaskWaitReportsTheTaskWhenTimingOutEarly(t *testing.T) {
+	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
+	id := sendNoWait(t, "-data-dir", dir, "helper", "take a while")
+	<-fix.prompts
+	run := startTaskWait("-data-dir", dir, "-timeout", "50ms", "-json", "helper", id)
+	err := run.wait(t)
+	if exitCode(err) != exitTimeout || !strings.Contains(err.Error(), "wait again with: agentiscaled task wait ") {
+		t.Fatalf("got %v (exit %d)", err, exitCode(err))
+	}
+	var shown taskOut
+	if err := json.Unmarshal([]byte(run.out.String()), &shown); err != nil || shown.TaskID != id {
+		t.Fatalf("json %q: %+v %v", run.out.String(), shown, err)
+	}
+	fix.release <- "done"
+}
+
+// When the agent cannot be read as the wait ends, the task's ID and the
+// command to wait again are still reported.
+func TestTaskWaitReportsTheTaskWhenItsStateCannotBeRead(t *testing.T) {
+	defer func(d time.Duration) { lastReadTimeout = d }(lastReadTimeout)
+	lastReadTimeout = 100 * time.Millisecond
+	net := newFakeNetwork(t)
+	remote := randomPeer(t)
+	net.offer(remote)
+	hang := make(chan struct{})
+	defer close(hang)
+	net.mu.Lock()
+	net.routes[remote] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-hang:
+		case <-r.Context().Done():
+		}
+	})
+	net.mu.Unlock()
+	id := "0f9a7c52-0000-4000-8000-000000000000"
+	run := startTaskWait("-data-dir", net.dir, "-timeout", "300ms", "-json", "helper", id)
+	err := run.wait(t)
+	if exitCode(err) != exitTimeout || !strings.Contains(err.Error(), "task "+id+" has not settled") || !strings.Contains(err.Error(), "wait again with: agentiscaled task wait -data-dir ") || !strings.HasSuffix(err.Error(), "-peer "+remote+" helper "+id) {
+		t.Fatalf("got %v (exit %d)", err, exitCode(err))
+	}
+	var shown taskOut
+	if err := json.Unmarshal([]byte(run.out.String()), &shown); err != nil || shown.TaskID != id {
+		t.Fatalf("json %q: %+v %v", run.out.String(), shown, err)
 	}
 }

@@ -134,34 +134,38 @@ func runTaskWait(ctx context.Context, args []string, out, errOut io.Writer) erro
 	} else if h != nil {
 		return errors.New(h.Message)
 	}
+	// -timeout counts from now, waiting for a node that is starting too.
+	deadline := time.Now().Add(o.timeout)
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	socket := filepath.Join(o.dataDir, meshnode.DefaultSocketName)
 	if err := waitForSocket(ctx, socket, nodeStartWait); err != nil {
-		return fmt.Errorf("no running agentiscaled at %s: start it first (%w)", socket, err)
+		return timedOut(fmt.Errorf("no running agentiscaled at %s: start it first (%w)", socket, err), ctx, o.timeout)
 	}
 	if f, ok := out.(*os.File); ok {
 		o.terminal = isTerminal(f)
 	}
 	tasks := &a2aTasks{http: socketClient(socket), base: "http://agentiscaled", local: socketClient(filepath.Join(o.dataDir, localAgentSocketName))}
-	return safeError(waitForTask(ctx, tasks, agent, id, o, out, errOut))
+	return safeError(waitForTask(ctx, deadline, tasks, agent, id, o, out, errOut))
 }
 
-// waitForTask finds agent and follows its task id until the task settles or
-// o.timeout passes, and reports it.
-func waitForTask(ctx context.Context, tasks *a2aTasks, agent, id string, o taskSendOptions, out, errOut io.Writer) error {
-	deadline := time.Now().Add(o.timeout)
-	ctx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
+// lastReadTimeout bounds the read of a task's state after a wait ends.
+var lastReadTimeout = cancelTimeout
 
+// waitForTask finds agent and follows its task id until the task settles or
+// the deadline, which ends ctx, passes, and reports it.
+func waitForTask(ctx context.Context, deadline time.Time, tasks *a2aTasks, agent, id string, o taskSendOptions, out, errOut io.Writer) error {
 	target, _, err := findAgent(ctx, tasks, agent, o.peer, 0)
 	if err != nil {
 		return timedOut(err, ctx, o.timeout)
 	}
 	task, err := followTask(ctx, tasks, target, agent, taskOut{TaskID: id}, deadline, errOut)
+	task.TaskID = id
 	if ctx.Err() != nil {
 		why := endedBy(ctx, o.timeout)
 		// The wait ended in the middle of a watch: read where the task is,
 		// to report it.
-		readCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), cancelTimeout)
+		readCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), lastReadTimeout)
 		defer stop()
 		if now, err := tasks.watch(readCtx, target, a2a.TaskID(id), 0, nil); err == nil {
 			task = now
@@ -170,10 +174,13 @@ func waitForTask(ctx context.Context, tasks *a2aTasks, agent, id string, o taskS
 			// It settled as time ran out.
 			return settle(out, o, target, agent, task)
 		}
-		if task.State == "" {
-			return withExit(timeoutExit(ctx), fmt.Errorf("task %s: %s; it was not stopped", id, why))
+		state := "has not settled"
+		if task.State != "" {
+			state = "is still " + task.State
 		}
-		return report(out, o, task, withExit(timeoutExit(ctx), fmt.Errorf("task %s is still %s: %s; it goes on, wait again with: %s", id, task.State, why, waitCommand(o, target, id))))
+		// The task's ID and the command to wait again, even when its state
+		// could not be read: a script goes on from them.
+		return report(out, o, task, withExit(timeoutExit(ctx), fmt.Errorf("task %s %s: %s; it goes on, wait again with: %s", id, state, why, waitCommand(o, target, id))))
 	}
 	if err != nil {
 		return err
