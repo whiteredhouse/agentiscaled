@@ -35,6 +35,19 @@ func digest(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// durableCredential returns the credential without the time each trusted key
+// was last vouched for. Since the fork's key pruning change (in 0.13.0) a node
+// sets that time to now for every key the mesh lists on each /keys sync, so it
+// moves on every start while the credential itself, the trusted keys and the
+// rest stay as they were.
+func durableCredential(credential *api.MemberCredential) *api.MemberCredential {
+	durable := proto.Clone(credential).(*api.MemberCredential)
+	for _, key := range durable.TrustedKeys {
+		key.ReceiveTime = nil
+	}
+	return durable
+}
+
 // inspect copies the stopped database before opening it. NewStore may migrate
 // schemas, so the observer must never write the actual upgrade subject.
 // Never return key material or credentials to the controller/report.
@@ -75,7 +88,7 @@ func inspect(dir string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	identity, err := (proto.MarshalOptions{Deterministic: true}).Marshal(credential)
+	identity, err := (proto.MarshalOptions{Deterministic: true}).Marshal(durableCredential(credential))
 	if err != nil {
 		return nil, err
 	}
