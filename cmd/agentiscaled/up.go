@@ -425,7 +425,7 @@ func checkAgent(a *agentConfig, dataDir string, service bool) error {
 		return fmt.Errorf("agent runtime %q: unknown (have %s)", a.Runtime, strings.Join(runtimeNames(), ", "))
 	}
 	if a.Name == "" {
-		a.Name = spec.defaultName
+		a.Name = runtimeDefaultName(a.Runtime, a.Command)
 	}
 	if err := agentNameError(a.Name); err != nil {
 		return err
@@ -448,7 +448,12 @@ func checkAgent(a *agentConfig, dataDir string, service bool) error {
 	if command == "" {
 		command = spec.defaultCommand
 	}
-	if path, err := exec.LookPath(command); err == nil {
+	if a.Runtime == "acp" {
+		// An ACP agent's command line holds its arguments.
+		if a.Command, err = resolveACPCommand(command); err != nil {
+			return err
+		}
+	} else if path, err := exec.LookPath(command); err == nil {
 		if abs, err := filepath.Abs(path); err == nil {
 			a.Command = abs
 		}

@@ -34,6 +34,10 @@ import (
 func TestMain(m *testing.M) {
 	// Tests see only Codex installed, whatever this machine has.
 	installedRuntimes = func() []string { return []string{"codex"} }
+	if os.Getenv("AGENTISCALE_FAKE_ACP") == "1" {
+		fakeACPAgent(os.Args[1:])
+		os.Exit(0)
+	}
 	if os.Getenv("AGENTISCALED_TEST_MAIN") == "1" {
 		watchPoll, watchCheckAfter, watchCheckEvery = 50*time.Millisecond, 300*time.Millisecond, 500*time.Millisecond
 		main()

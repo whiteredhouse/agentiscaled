@@ -1,15 +1,12 @@
 # Add agentiscale support to your agent
 
-> **Status: proposed.** This page is the design of the contract, under review.
-> No release runs agents through it yet.
-
 If you build a coding agent, you can make it an agent of any agentiscale network
 from your own code. You don't need a pull request to agentiscaled, and you don't
 need to wait for an agentiscaled release.
 
 Once your agent supports agentiscale, its users can:
 
-- offer it to their network with `agentiscaled agent add acp -command <your command>`,
+- offer it to their network with `agentiscaled agent add acp -command "<your command>"`,
   so that any client or agent on any of their machines can send it tasks over A2A
 - follow each task as it works, from the steps your agent reports
 - answer the questions your agent asks, on the same task
@@ -27,16 +24,21 @@ over stdio, plus a few agentiscale conventions in ACP's `_meta` fields and in th
 environment. If your agent already speaks ACP for an editor, most of the work is
 done.
 
-For each turn of a task, the node:
+The owner gives the node your agent's command line, such as `my-agent acp`. The
+node splits it at spaces, so an argument cannot hold one, and finds the program on
+`PATH`. For each turn of a task, the node:
 
-1. starts your command in the agent's directory, with stdin and stdout as the ACP
+1. starts the command in the agent's directory, with stdin and stdout as the ACP
    connection and the environment below
-2. sends `initialize` and reads your capabilities
-3. sends `session/new` (a new task) or `session/load` (the caller's answer to your
-   question), with the network's MCP server in `mcpServers`
+2. sends `initialize` and reads what your agent declares
+3. sends `session/new` for a new task, or `session/load` for the caller's answer to
+   your question, with the network's MCP server in `mcpServers`
 4. sends `session/prompt` with the task, and reads your `session/update`
-   notifications as the turn's steps
-5. takes your `session/prompt` response as the turn's end, then stops your process
+   notifications as the turn's steps and result
+5. takes your `session/prompt` response as the turn's end, then closes stdin
+
+The node also starts your command once, for `initialize` only, when the owner adds
+the agent and when the node starts, to check what your agent declares.
 
 The node is the ACP client. It offers no `fs` or `terminal` capability: your agent
 works on the directory with its own tools, under its own configuration and the
@@ -52,10 +54,14 @@ Every process the node starts for your agent gets:
 | `AGENTISCALE_DIR_INSTRUCTIONS` | `0` when the owner turned off the directory's instruction files |
 | `AGENTISCALE_DIR_SKILLS` | `0` when the owner turned off the directory's skills |
 
+With `-owner-config=false` the process gets only what a process needs from the
+node's environment (`PATH`, `HOME`, locale, proxy and certificate settings) and
+none of the owner's credentials.
+
 ## Declare what you support
 
-Answer `initialize` with `protocolVersion` 1 and say in `_meta` which of the
-owner's policies your agent enforces:
+Answer `initialize` with `protocolVersion` 1, and declare agentiscale's
+conventions in `_meta.agentiscale`:
 
 ```json
 {
@@ -65,10 +71,10 @@ owner's policies your agent enforces:
     "loadSession": true,
     "mcpCapabilities": { "http": true }
   },
-  "authMethods": [{ "id": "login", "name": "Sign in", "description": "Run my-agent login" }],
   "_meta": {
     "agentiscale": {
       "contract": 1,
+      "status": true,
       "policies": ["config-dir", "dir-instructions", "dir-skills"],
       "login": ["my-agent", "login"]
     }
@@ -76,10 +82,14 @@ owner's policies your agent enforces:
 }
 ```
 
-- `policies` lists the policies your agent enforces when the environment asks it
-  to. The node refuses to run an agent with a policy it did not declare: an owner
-  who turns off their own configuration gets an error at `agent add`, not an
-  agent that quietly uses it.
+- `contract` is the version of this page your agent keeps.
+- `status: true` says your agent ends each turn with
+  `_meta.agentiscale.status` (see [End the turn](#end-the-turn)). The node reads
+  it at `initialize`, before it writes the prompt.
+- `policies` lists the owner's policies your agent enforces when the environment
+  asks it to. The node refuses to run an agent with a policy it did not declare:
+  an owner who turns off their own configuration gets an error at `agent add`, not
+  an agent that quietly uses it.
   - `config-dir`: with `AGENTISCALE_CONFIG_DIR` set, read and write your
     configuration, sign-in, sessions and settings only there, take no credential
     from the environment, and give the run only read-only tools, confined to the
@@ -88,34 +98,46 @@ owner's policies your agent enforces:
     files from the directory, such as `AGENTS.md`.
   - `dir-skills`: with `AGENTISCALE_DIR_SKILLS=0`, load no skills from the
     directory.
-- `loadSession` lets your agent ask questions. Without it the node tells your agent
-  that it cannot ask, and a question ends the task.
+- `login` is the command that signs your agent in. The node shows it to the owner
+  when your agent is not signed in.
+- `loadSession` lets your agent ask questions. Without it, the prompt tells your
+  agent that it cannot ask, and a question fails the task.
 - `mcpCapabilities.http` lets your agent call the network's other agents. Without it
-  the agent works without them.
-- `login` is the command that signs your agent in. The node runs it, with the same
-  environment, for `agentiscaled agent add` when your agent needs a sign-in. Leave
-  it out if your agent signs in some other way.
+  your agent works without them.
+
+An ACP agent that declares no `_meta.agentiscale` still runs with the owner's own
+configuration and every policy on, but no other way.
 
 ## Sign-in
 
 The node never reads or stores your agent's credentials. If your agent is not
-signed in, answer `session/new` with ACP's `auth_required` error. `agent add` then
-runs your `login` command, and a task sent to an agent that is not signed in fails
-with your error message.
+signed in, answer `session/new` with ACP's `auth_required` error (`-32000`). The
+task fails with your `login` command, with `AGENTISCALE_CONFIG_DIR` set when the
+agent has a configuration of its own, so the owner can run it.
 
 ## Steps
 
 Send the turn's steps as `session/update` notifications, as you would to an editor.
-The node turns `tool_call`, `tool_call_update` with a `title`, and `plan` updates
-into one-line progress messages on the task. It shows `agent_message_chunk` text
-only as the result. Keep titles short and plain, such as `Read config.go` or
-`Run go test ./...`: the node cuts each line and drops what it cannot show safely.
+A step is shown to the task's caller, who may not be the owner, so the node never
+shows your tool call's `title`, its input or a plan entry's text, which can hold a
+command's arguments, a path, a search or a credential. It writes a fixed summary
+from structured fields instead:
+
+| Update | Step |
+| --- | --- |
+| `tool_call` of `kind` `read`, `edit`, `delete` or `move` | `Reading`, `Editing`, `Deleting` or `Moving`, and the base name of its first `locations` path, such as `Editing main.go` |
+| `tool_call` of `kind` `search`, `execute`, `fetch` or `think` | `Searching`, `Running a command`, `Fetching a page` or `Thinking` |
+| any other `tool_call` | `Using a tool` |
+| `plan` | the position of the first entry that is not `completed`, such as `Working on step 2 of 5` |
+
+Set `kind` and `locations` on your tool calls to get useful steps.
 
 ## End the turn
 
 Your `session/prompt` response ends the turn. Its text is the
-`agent_message_chunk` text you sent during the turn. Say whether it is the result
-or a question in `_meta`:
+`agent_message_chunk` text you sent after the node sent the prompt: the history
+that `session/load` replays before it answers is not part of the turn. Say whether
+the text is the result or a question in `_meta`:
 
 ```json
 {
@@ -129,46 +151,50 @@ or a question in `_meta`:
   answer. The node later starts your command again and sends `session/load` with the
   same `sessionId` and then the answer as a prompt. Keep the session where your
   agent can load it from the directory and configuration it ran with.
-- Any other `stopReason`, or an ACP error, fails the task with your message.
+- Any other `stopReason`, or an ACP error, fails the task with your message and the
+  last lines of your stderr.
 
-An agent that sends no `status` gets the node's instructions in the prompt to end
-its answer in a small JSON object, `{"status":"done"|"needs_input","text":"…"}`, as
-Codex and Claude Code do. Prefer `_meta`: it cannot be confused with the agent's
-own output.
+An agent that does not declare `status: true` at `initialize` gets every prompt
+with the node's instructions to answer with only a JSON object,
+`{"status":"done"|"needs_input","text":"…"}`, as Codex and Claude Code do. A
+`status` in the response wins over the text. Text that is neither is the result as
+it stands. Prefer `status`: it cannot be confused with the agent's own output.
 
-## Cancellation and limits
+## Cancellation
 
 When the caller cancels the task, or it runs past its time, the node sends
-`session/cancel`, waits a few seconds, and then stops your process and the
-processes it started. Answer `session/cancel` by ending the turn with
-`stopReason` `cancelled`.
+`session/cancel`. End the turn with `stopReason` `cancelled`. After 5 seconds, and
+whenever a turn ends and your process has not exited within 5 seconds of stdin
+closing, the node stops your process and every process it started.
+
+## Permissions
 
 Nothing can prompt a person while a task runs. The node answers every
-`session/request_permission` with the reject option, except for the tools of the
-network's own MCP server (`agentiscale-network`). Configure your agent so that
-what it should do needs no approval, and what it should not do is denied.
+`session/request_permission` with your reject option, or cancels it when you offer
+none. Configure your agent so that what it should do needs no approval and what it
+should not do is denied.
 
 ## The network's other agents
 
-When the owner allows it, `session/new` names one more MCP server,
-`agentiscale-network`, an HTTP server on a loopback port of the node, with a bearer
-token in its `headers`. Its tools are `list_agents`, `get_agent_card`,
-`send_task`, `get_task` and `cancel_task`. The token works only while the turn
-runs. Don't write it to disk, logs or the directory, and don't pass it to the
-commands your agent runs.
+When the owner allows it, `session/new` and `session/load` name one more MCP
+server, `agentiscale-network`, an HTTP server on a loopback port of the node, with a
+bearer token in its `headers`. Its tools are `list_agents`, `get_agent_card`,
+`send_task`, `get_task` and `cancel_task`. Allow the tools of this server without
+asking: the node configured it, and its token is what bounds them. The token works
+only while the turn runs. Don't write it to disk, logs or the directory, and don't
+pass it to the commands your agent runs.
 
 ## Subagent roles
 
 When the owner gives your agent a role with `-definition`, the node adds the role's
-instructions in front of the first prompt of each task. A role's model and tool
-settings don't apply to your agent.
+instructions in front of the first prompt of each task, in a `<role>` block. A
+role's model and tool settings don't apply to your agent.
 
 ## Keep it safe
 
 - The task text comes from another agent: it is untrusted. The node says so in the
   prompt. Keep your own permission rules in charge, not the task.
-- Write nothing but ACP messages to stdout. Write logs to stderr: the node shows the
-  last lines of stderr when a turn fails.
+- Write nothing but ACP messages to stdout. Write logs to stderr.
 - Exit when stdin closes.
 
 ## Check your integration
@@ -177,9 +203,14 @@ settings don't apply to your agent.
 agentiscaled runtime check -command "my-agent acp"
 ```
 
-`runtime check` starts your command the way the node does, checks `initialize`,
-the policies you declare, a session, a turn that ends in `done` and one that
-ends in `needs_input`, a load of that session, and a cancel, and says what failed.
+`runtime check` starts your command the way the node does and checks, in an empty
+directory: `initialize` and what you declare, a turn that ends in a result, and a
+cancelled turn. With `loadSession` it also checks a turn that ends in a question and
+the answer in the loaded session; without it, it skips them. Add
+`-owner-config=false`, `-dir-instructions=false` or `-dir-skills=false` to check
+your agent under those policies. The turns run your agent's model, with the
+configuration and sign-in the check gives it.
+
 Then offer your agent on a test node and send it a task:
 
 ```sh
@@ -189,6 +220,7 @@ agentiscaled task send my-agent "List the files in this directory"
 
 ## Versions
 
-This page is version 1 of the contract (`AGENTISCALE_CONTRACT=1`). A node accepts
-the versions it knows and refuses an agent that declares only newer ones. Fields
-added to `_meta` within a version are optional: ignore the ones you don't know.
+This page is version 1 of the contract (`AGENTISCALE_CONTRACT=1`), on ACP protocol
+version 1. A node refuses an agent that declares a newer contract than it knows.
+Fields added to `_meta.agentiscale` within a version are optional: ignore the ones
+you don't know.

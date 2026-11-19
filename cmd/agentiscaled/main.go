@@ -76,7 +76,8 @@ Commands:
   up       sign in, join this machine to your network and keep the node running
   client   connect agent clients (Claude Desktop, Codex CLI) to the node, or disconnect them
   agent    offer an agent from this machine to your network (add, remove, list)
-  runtime  list supported agent runtimes and their local configuration
+  runtime  list supported agent runtimes and their local configuration, or check
+           an agent's support of the agentiscale runtime contract (check)
   down     stop the node's background service; its identity stays
   status   show the node's service, network and mesh connection
   version  print the version
@@ -108,7 +109,7 @@ func main() {
 		case "agent":
 			err = runAgent(ctx, args, os.Stdout)
 		case "runtime":
-			err = runRuntimes(args, os.Stdout)
+			err = runRuntimes(ctx, args, os.Stdout)
 		case "down":
 			err = runDown(args, os.Stdout)
 		case "reset":
@@ -223,8 +224,8 @@ func agentFlags(fs *flag.FlagSet) func() *agentConfig {
 		}
 		a.setPolicy(policy)
 		if a.Name == "" {
-			if spec, ok := runtimes[a.Runtime]; ok {
-				a.Name = spec.defaultName
+			if _, ok := runtimes[a.Runtime]; ok {
+				a.Name = runtimeDefaultName(a.Runtime, a.Command)
 			}
 		}
 		return &a
@@ -337,7 +338,7 @@ func newAgent(a *agentConfig, dataDir string) (*agentService, error) {
 		return nil, fmt.Errorf("agent %s: unknown runtime %q (have %s)", a.Name, a.Runtime, strings.Join(runtimeNames(), ", "))
 	}
 	if a.Name == "" {
-		a.Name = spec.defaultName
+		a.Name = runtimeDefaultName(a.Runtime, a.Command)
 	}
 	if err := agentNameError(a.Name); err != nil {
 		return nil, err

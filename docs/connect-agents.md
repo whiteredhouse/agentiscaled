@@ -208,6 +208,26 @@ agent's directory, no MCP servers but the network's own (see
 stops `CLAUDE.md` files from loading. `-dir-skills=false` turns off every
 skill and command of the run, since Claude Code cannot turn off only the directory's.
 
+### Other agents (ACP)
+
+`agent add acp` offers any agent that speaks the
+[Agent Client Protocol](https://agentclientprotocol.com) on stdio. Give its command
+line, split at spaces:
+
+```sh
+agentiscaled agent add acp -command "my-agent acp" -dir ~/work/my-project
+```
+
+The agent takes its name from the program (`my-agent`) unless `-name` says
+otherwise. Each turn of a task runs the command in the agent's directory. The node
+answers every permission request the agent makes with a rejection, and shows only
+fixed summaries of its steps. The agent declares which of `-owner-config=false`,
+`-dir-instructions=false` and `-dir-skills=false` it enforces, and `agent add`
+refuses one it does not. Whether it can ask questions and call your other agents
+depends on what it supports. Agent vendors: see
+[Add agentiscale support to your agent](add-agentiscale-support.md), and check an
+agent with `agentiscaled runtime check -command "my-agent acp"`.
+
 ### Give an agent a subagent's role
 
 A project's subagent definitions, Claude Code's `.claude/agents/<name>.md` or

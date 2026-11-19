@@ -157,6 +157,7 @@ var runtimes = map[string]struct {
 	ownerEnv []string
 }{
 	"codex":  {newCodexRuntime, "codex", "codex", codexOwnerConfigDir, codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
+	"acp":    {new: newACPRuntime},
 	"claude": {newClaudeRuntime, "claude", "claude", claudeOwnerConfigDir, claudeSignedIn, claudeEnvSignedIn, claudeLogin, []string{"CLAUDE_CONFIG_DIR"}},
 }
 

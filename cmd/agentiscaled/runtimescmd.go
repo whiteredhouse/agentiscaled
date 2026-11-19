@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,12 +10,19 @@ import (
 )
 
 const runtimesUsage = `usage: agentiscaled runtime list
+       agentiscaled runtime check -command "my-agent acp" [flags]
 
-List supported runtimes and look up their default commands on PATH.
+list: List supported runtimes and look up their default commands on PATH.
 CONFIG DIR is the user config directory selected by the current shell.
+
+check: Check that an agent that speaks ACP keeps the agentiscale runtime
+contract (docs/add-agentiscale-support.md).
 `
 
-func runRuntimes(args []string, out io.Writer) error {
+func runRuntimes(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) > 0 && args[0] == "check" {
+		return runRuntimeCheck(ctx, args[1:], out)
+	}
 	list := len(args) > 0 && args[0] == "list"
 	if list {
 		args = args[1:]
@@ -31,6 +39,11 @@ func runRuntimes(args []string, out io.Writer) error {
 	fmt.Fprintln(table, "RUNTIME\tCOMMAND\tEXECUTABLE\tCONFIG DIR")
 	for _, name := range runtimeNames() {
 		spec := runtimes[name]
+		if spec.defaultCommand == "" {
+			// An ACP agent's command is the owner's choice (-command).
+			fmt.Fprintf(table, "%s\t-\tset with -command\t-\n", name)
+			continue
+		}
 		executable, err := exec.LookPath(spec.defaultCommand)
 		if err != nil {
 			executable = "not found on PATH"

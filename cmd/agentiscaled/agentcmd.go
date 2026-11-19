@@ -46,7 +46,7 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 	dir := fs.String("dir", "", "Directory the agent works in (default: a new workspace of its own)")
 	name := fs.String("name", "", "Name of the agent in your network (default: the runtime's)")
 	description := fs.String("description", "", "What the agent does, as other agents see it on its card (default: the runtime's)")
-	command := fs.String("command", "", "Command of the agent CLI (default: the runtime's, e.g. codex)")
+	command := fs.String("command", "", "Command of the agent CLI (default: the runtime's, e.g. codex); for acp, the command line that starts the agent on stdio, split at spaces (required)")
 	definition := fs.String("definition", "", "Subagent definition to give the agent its role: a Claude Code agent file (.claude/agents/NAME.md) or a Codex agent file (.codex/agents/NAME.toml). Either runtime runs either format: its instructions join the system prompt of each task. It also sets the default name, description and directory (the project it is in)")
 	var policy agentPolicy
 	fs.BoolVar(&policy.DirInstructions, "dir-instructions", true, "Let the agent load the instruction files (AGENTS.md, CLAUDE.md) of its directory; =false ignores them")
@@ -98,8 +98,7 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 	switch {
 	case len(rest) == 1:
 		rt := rest[0]
-		spec, ok := runtimes[rt]
-		if !ok {
+		if _, ok := runtimes[rt]; !ok {
 			return fmt.Errorf("unknown runtime %q (have %s)", rt, strings.Join(runtimeNames(), ", "))
 		}
 		offer = &agentOffer{runtime: rt, name: *name, description: *description, agentDir: *dir, policy: policy}
@@ -115,8 +114,11 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 				offer.agentDir = definitionRoot(defPath)
 			}
 		}
+		if rt == "acp" && strings.TrimSpace(*command) == "" {
+			return errors.New("the acp runtime needs the agent's command: agentiscaled agent add acp -command \"my-agent acp\"")
+		}
 		if offer.name == "" {
-			offer.name = spec.defaultName
+			offer.name = runtimeDefaultName(rt, *command)
 		}
 		if !validAgentName(offer.name) {
 			return fmt.Errorf("-name %q: use up to 63 lowercase letters, digits and dashes", offer.name)
