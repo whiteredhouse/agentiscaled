@@ -226,8 +226,9 @@ or `.codex/agents/<name>.toml`); see [Give an agent a subagent's role](connect-a
 `agent add` again with the same name changes that agent, and `agent add` with
 another name offers one more agent from the same node, next to the first: there
 is no second sign-in, node or service. `agent list` shows the agents this machine
-offers, and `agent remove <name>` stops offering one, leaving its directory as it
-is; each restarts the node's background service. `up` keeps the offered agents as
+offers and, while the node runs, what each is doing: `idle`, `busy` with a task, or
+`waiting for an answer` to a question it asked its caller (see [Connect agents](connect-agents.md)), with how long. `agent remove <name>` stops offering one, leaving its directory as it
+is; `agent add` and `agent remove` restart the node's background service. `up` keeps the offered agents as
 they are; it takes no agent flags. `status`, `down`, `reset` and `tasks` address
 this same node, and `task stop` stops the tasks of all its agents, and `status` shows whether tasks are stopped. Reset keeps its
 agents' configuration and runtime sign-ins.

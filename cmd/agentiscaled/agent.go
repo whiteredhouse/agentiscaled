@@ -216,9 +216,10 @@ type agentService struct {
 }
 
 type agentRun struct {
-	taskID a2a.TaskID
-	cancel context.CancelCauseFunc
-	begun  bool
+	taskID  a2a.TaskID
+	cancel  context.CancelCauseFunc
+	begun   bool
+	started time.Time
 }
 
 // waitingTask is a task that waits for the caller's answer to its agent's
@@ -650,8 +651,54 @@ func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, sender string, can
 		return nil, "refused: the node could not record the request", nil
 	}
 	delete(s.waiting, execCtx.TaskID)
-	s.current = &agentRun{taskID: execCtx.TaskID, cancel: cancel}
+	s.current = &agentRun{taskID: execCtx.TaskID, cancel: cancel, started: time.Now()}
 	return s.current, "", nil
+}
+
+// agentActivity is what an agent is doing now, as `agentiscaled agent
+// list` shows it.
+type agentActivity struct {
+	Name string `json:"name"`
+	// State is busy while a turn of a task runs and idle otherwise.
+	// Whether the owner has stopped task execution holds for all of the
+	// node's agents, which `agentiscaled status` says.
+	State string `json:"state"`
+	// Since is when the running turn began.
+	Since *time.Time `json:"since,omitempty"`
+	// Waiting counts the tasks whose agent asked the caller a question and
+	// waits for the answer, and WaitingSince is when the longest waiting
+	// one asked.
+	Waiting      int        `json:"waiting,omitempty"`
+	WaitingSince *time.Time `json:"waiting_since,omitempty"`
+}
+
+const (
+	activityIdle = "idle"
+	activityBusy = "busy"
+)
+
+// activity says what the agent is doing now.
+func (s *agentService) activity() agentActivity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a := agentActivity{Name: s.name, State: activityIdle}
+	if s.current != nil {
+		a.State = activityBusy
+		started := s.current.started
+		a.Since = &started
+	}
+	for _, w := range s.waiting {
+		// Lapsed questions stay in the map until the next one is asked.
+		if time.Since(w.since) > answerWait {
+			continue
+		}
+		a.Waiting++
+		if a.WaitingSince == nil || w.since.Before(*a.WaitingSince) {
+			since := w.since
+			a.WaitingSince = &since
+		}
+	}
+	return a
 }
 
 func (s *agentService) finish(run *agentRun) {
