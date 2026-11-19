@@ -657,21 +657,23 @@ func (s *agentService) expireLocked(id a2a.TaskID) {
 		return
 	}
 	s.endTaskLocked(id)
-	go s.lapse(a2a.TaskInfo{TaskID: id, ContextID: w.contextID})
+	// The reason is written here, not in lapse: its goroutine may run after
+	// answerWait changed.
+	reason := fmt.Sprintf("timed out: no answer came within %s of the question", answerWait)
+	go s.lapse(a2a.TaskInfo{TaskID: id, ContextID: w.contextID}, reason)
 }
 
 // lapse publishes that the task, whose answer did not come in time, has
 // timed out. It is the agent's own update to its task, not a caller's: the
 // task store and whoever follows the task get the terminal state, as from any
 // other end of a task.
-func (s *agentService) lapse(task a2a.TaskInfo) {
+func (s *agentService) lapse(task a2a.TaskInfo, reason string) {
 	if s.updates == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(s.life, 10*time.Second)
 	defer cancel()
-	end := a2a.NewStatusUpdateEvent(task, a2a.TaskStateFailed, agentText(task,
-		fmt.Sprintf("timed out: no answer came within %s of the question", answerWait)))
+	end := a2a.NewStatusUpdateEvent(task, a2a.TaskStateFailed, agentText(task, reason))
 	end.Metadata = map[string]any{metaTerminal: "timeout", metaExecutionBegun: true}
 	if _, err := s.updates.UpdateTask(ctx, task.TaskID, end); err != nil {
 		log.Printf("agent %s: publish the timeout of task %s: %v", s.name, task.TaskID, err)
