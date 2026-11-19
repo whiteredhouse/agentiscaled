@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
+	meshnode "github.com/google/agentmesh/export/node"
 	"github.com/google/agentmesh/export/standalone"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const protocolJoinCode = "protocol-JOIN-SENTINEL"
@@ -245,5 +247,53 @@ func TestEnrollmentLocksKeepDiagnosticsAndJoinStageAvailable(t *testing.T) {
 	}
 	if status, _ := protocolRequest(t, control.URL, http.MethodGet, "/inspect-secondary?path=/unconfigured", "", nil); status < 400 || status >= 500 {
 		t.Fatalf("inspection accepted a caller-selected path: HTTP %d", status)
+	}
+}
+
+// A node marks every key the mesh lists as just vouched for on each /keys
+// sync, so only the time moves between starts: inspection must not read that
+// as a changed credential, and must still see a changed key or biscuit.
+func TestInspectIgnoresTrustedKeyVouchTimes(t *testing.T) {
+	dir := t.TempDir()
+	key, _ := protocolKey(t)
+	raw, err := crypto.MarshalPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signing := bytes.Repeat([]byte{7}, 32)
+	write := func(received time.Time, signingKey, biscuit []byte) map[string]string {
+		t.Helper()
+		store, err := meshnode.NewStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		credential := &api.MemberCredential{ControlPlaneUrl: "http://127.0.0.1:1", Biscuit: biscuit,
+			ExpireTime:      timestamppb.New(time.Unix(1_900_000_000, 0)),
+			TrustedKeys:     []*api.TrustedSigningKey{{PublicKey: signingKey, ReceiveTime: timestamppb.New(received)}},
+			IssuedUnderKeys: [][]byte{signing}}
+		if err := store.SaveKey(raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SetCredential(credential); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		result, err := inspect(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	before := write(time.Unix(1_800_000_000, 0), signing, []byte("biscuit"))
+	if after := write(time.Unix(1_800_000_600, 0), signing, []byte("biscuit")); !reflect.DeepEqual(before, after) {
+		t.Fatalf("a new vouch time changed the inspected identity: %v != %v", before, after)
+	}
+	if after := write(time.Unix(1_800_000_600, 0), bytes.Repeat([]byte{8}, 32), []byte("biscuit")); after["identity_sha256"] == before["identity_sha256"] {
+		t.Fatal("a different trusted key left the inspected identity unchanged")
+	}
+	if after := write(time.Unix(1_800_000_600, 0), signing, []byte("renewed")); after["identity_sha256"] == before["identity_sha256"] {
+		t.Fatal("a renewed biscuit left the inspected identity unchanged")
 	}
 }
