@@ -525,7 +525,11 @@ func run(ctx context.Context, c config) error {
 			svcs = append(svcs, a.svc)
 		}
 		go reportActivity(nodeCtx, svcs, func(name string, status *api.ServiceStatus) {
-			node.SetServiceStatus(api.ServiceType_SERVICE_TYPE_A2A, name, status)
+			// The times are the node's clock, which JSON can always render;
+			// a refusal would mean a clock past year 9999.
+			if err := node.SetServiceStatus(api.ServiceType_SERVICE_TYPE_A2A, name, status); err != nil {
+				log.Printf("agent %s: status not reported: %v", name, err)
+			}
 		})
 	}
 	node.StartRenewalLoop(nodeCtx, "", "", "", "")
