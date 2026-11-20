@@ -919,12 +919,9 @@ func (s *agentService) card(name string) *a2a.AgentCard {
 func (s *agentService) handler(name, token string) http.Handler {
 	card := s.card(name)
 	cardHandler := a2asrv.NewStaticAgentCardHandler(card)
-	// The caller authenticator also tells the server's own updates (lapse)
-	// apart, which reach every task.
-	store := taskstore.NewInMemory(&taskstore.InMemoryStoreConfig{
-		Authenticator:       a2asrv.NewTaskStoreAuthenticator(),
-		CallerAuthenticator: a2asrv.NewTaskStoreCallerAuthenticator(),
-	})
+	// The caller authenticator tells the server's own updates (lapse) apart,
+	// which reach every task.
+	store := taskstore.NewInMemory(&taskstore.InMemoryStoreConfig{CallerAuthenticator: a2asrv.NewTaskStoreCallerAuthenticator()})
 	requests := a2asrv.NewHandler(s, a2asrv.WithTaskStore(store),
 		a2asrv.WithCallInterceptors(peerIdentity{tasks: store}))
 	s.updates, _ = requests.(a2asrv.TaskUpdater)
