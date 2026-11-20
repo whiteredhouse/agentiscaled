@@ -4,7 +4,7 @@ go 1.26.6
 
 require (
 	github.com/BurntSushi/toml v1.5.0
-	github.com/a2aproject/a2a-go/v2 v2.7.0
+	github.com/a2aproject/a2a-go/v2 v2.9.0
 	github.com/eclipse-biscuit/biscuit-go/v2 v2.2.2
 	github.com/google/agentmesh v0.2.0
 	github.com/google/uuid v1.6.0
@@ -161,3 +161,5 @@ require (
 // agentiscale's fork of Google Agent Mesh v0.2.0, which exports the node
 // package. See AGENTISCALE.md on the fork's agentiscale branch.
 replace github.com/google/agentmesh => github.com/whiteredhouse/agentmesh v0.0.0-20261119122308-80f35885f93c
+
+replace github.com/a2aproject/a2a-go/v2 => github.com/whiteredhouse/a2a-go/v2 v2.0.0-20261120100715-b42bfa995f64

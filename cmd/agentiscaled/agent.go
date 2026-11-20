@@ -84,6 +84,8 @@ type taskRequest struct {
 	// lines (progressLine). It is called from one goroutine at a time and
 	// must not block.
 	Progress func(string)
+	// Task is the node's ID of the task, the same over its turns.
+	Task string
 	// Network, if set, is the turn's way to the network's other agents,
 	// which the runtime offers the agent as an MCP server. It works only
 	// while the turn runs.
@@ -157,7 +159,10 @@ var runtimes = map[string]struct {
 	// agentPolicy.OwnerConfig the agent finds the same configuration.
 	ownerEnv []string
 }{
-	"codex":  {newCodexRuntime, "codex", "codex", codexOwnerConfigDir, codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
+	"codex": {newCodexRuntime, "codex", "codex", codexOwnerConfigDir, codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
+	// acp agents are made from their command and arguments
+	// (agentConfig.newRuntime).
+	"acp":    {},
 	"claude": {newClaudeRuntime, "claude", "claude", claudeOwnerConfigDir, claudeSignedIn, claudeEnvSignedIn, claudeLogin, []string{"CLAUDE_CONFIG_DIR"}},
 }
 
@@ -211,6 +216,9 @@ type agentService struct {
 	// waiting holds the tasks whose agent asked the caller a question,
 	// until the answer comes.
 	waiting map[a2a.TaskID]*waitingTask
+	// updates publishes the agent's own updates to its tasks, outside a
+	// request (handler): the timeout of a question nobody answered (lapse).
+	updates a2asrv.TaskUpdater
 	// delivered holds every request that started a task, so that a delivery
 	// retry never runs a task twice.
 	delivered *deliveries
@@ -237,6 +245,10 @@ type waitingTask struct {
 	// depth is how far the task had been delegated when it came, which
 	// its answers cannot change.
 	depth int
+	// timer ends the task when its answer has not come in time.
+	timer *time.Timer
+	// contextID is the task's A2A context, which the timeout names (lapse).
+	contextID string
 }
 
 // answerWait is how long a task waits for the caller to answer the agent's
@@ -454,6 +466,15 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 			return
 		}
 		defer s.finish(run)
+		// From here the task either asks the caller a question, and waits
+		// for the answer, or ends: on every other path, whatever it holds
+		// over its turns goes (endTask).
+		waits := false
+		defer func() {
+			if !waits {
+				s.endTask(execCtx.TaskID)
+			}
+		}()
 
 		if !yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateWorking, nil), nil) {
 			return
@@ -472,7 +493,7 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		// the task's history.
 		progress := make(chan string, 1)
 		done := make(chan runOutcome, 1)
-		req := taskRequest{Sender: from.peer, Text: request, Session: prior.session, Progress: func(line string) {
+		req := taskRequest{Sender: from.peer, Text: request, Session: prior.session, Task: string(execCtx.TaskID), Progress: func(line string) {
 			select {
 			case <-progress:
 			default:
@@ -482,19 +503,13 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		// The turn may call other agents with a token of its own, which ends
 		// with the turn: revoked when it ends, expired when its time is up.
 		release := func() {}
-		asked := false
-		defer func() {
-			// The tasks it sent stay its own while it waits for an answer.
-			if !asked {
-				s.network.forget(execCtx.TaskID)
-			}
-		}()
 		if s.network != nil && depth < maxDelegationDepth {
 			left := s.deadline - prior.used
 			access, revoke, err := s.network.grant(runCtx, s.name, execCtx.TaskID, left, depth+1)
 			if err != nil {
-				log.Printf("agent %s: task %s runs without the network: %v", s.name, execCtx.TaskID, err)
-			} else {
+				log.Printf("agent %s: this turn of task %s runs without the network: %v", s.name, execCtx.TaskID, err)
+			}
+			if access != nil {
 				req.Network, release = access, revoke
 			}
 		}
@@ -556,15 +571,15 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		}
 		if out.Question {
 			if why := s.wait(execCtx.TaskID, waitingTask{sender: sender, session: out.Session, question: out.Text, since: time.Now(),
-				used: prior.used + time.Since(started), questions: prior.questions + 1, depth: depth}); why != "" {
+				used: prior.used + time.Since(started), questions: prior.questions + 1, depth: depth, contextID: execCtx.ContextID}); why != "" {
 				end(a2a.TaskStateFailed, "failed", "task failed: "+why, nil)
 				return
 			}
-			asked = true
 			// The slot is free before the caller learns of the question,
 			// so that the answer finds it free.
 			s.finish(run)
-			yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateInputRequired, agentText(execCtx, out.Text)), nil)
+			// A question the caller never gets ends the task.
+			waits = yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateInputRequired, agentText(execCtx, out.Text)), nil)
 			return
 		}
 		artifact := a2a.NewArtifactEvent(execCtx, a2a.NewTextPart(out.Text))
@@ -589,6 +604,85 @@ type runOutcome struct {
 	err error
 }
 
+// sessionKeeper is a runtime that keeps something for a task that waits
+// for an answer, such as the agent's process (acpRuntime.keep), which it
+// lets go of when the task ends without one. releaseAll lets go of all of
+// it and returns once it has.
+type sessionKeeper interface {
+	release(task string)
+	releaseAll()
+}
+
+// release lets the runtime go of what it keeps for task.
+func (s *agentService) release(task a2a.TaskID) {
+	if k, ok := s.rt.(sessionKeeper); ok && task != "" {
+		go k.release(string(task))
+	}
+}
+
+// releaseAll lets the runtime go of what it keeps for every task, and
+// returns once it has: the node stops.
+func (s *agentService) releaseAll() {
+	if k, ok := s.rt.(sessionKeeper); ok {
+		k.releaseAll()
+	}
+}
+
+// endTask lets go of everything the task under id holds over its turns:
+// its wait for an answer, what its runtime keeps for it (its agent's
+// process) and its network (the grant and the tasks it sent). Every way a
+// task ends comes here, and coming again does nothing more.
+func (s *agentService) endTask(id a2a.TaskID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.endTaskLocked(id)
+}
+
+func (s *agentService) endTaskLocked(id a2a.TaskID) {
+	if w := s.waiting[id]; w != nil && w.timer != nil {
+		w.timer.Stop()
+	}
+	delete(s.waiting, id)
+	s.release(id)
+	s.network.forget(id)
+}
+
+// expireLocked ends the waiting task under id, whose answer did not come
+// in time, and publishes its timeout (lapse). Every way a wait runs out
+// comes here, but an answer that comes late, whose turn publishes the
+// timeout itself (waitingFor).
+func (s *agentService) expireLocked(id a2a.TaskID) {
+	w := s.waiting[id]
+	if w == nil {
+		return
+	}
+	s.endTaskLocked(id)
+	// The reason is written here, not in lapse: its goroutine may run after
+	// answerWait changed.
+	reason := fmt.Sprintf("timed out: no answer came within %s of the question", answerWait)
+	go s.lapse(a2a.TaskInfo{TaskID: id, ContextID: w.contextID}, reason)
+}
+
+// lapse publishes that the task, whose answer did not come in time, has
+// timed out. It is the agent's own update to its task, not a caller's: the
+// task store and whoever follows the task get the terminal state, as from any
+// other end of a task.
+func (s *agentService) lapse(task a2a.TaskInfo, reason string) {
+	if s.updates == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(s.life, 10*time.Second)
+	defer cancel()
+	end := a2a.NewStatusUpdateEvent(task, a2a.TaskStateFailed, agentText(task, reason))
+	end.Metadata = map[string]any{metaTerminal: "timeout", metaExecutionBegun: true}
+	_, err := s.updates.UpdateTask(ctx, end)
+	// A late answer which runs now ends the task itself, timed out
+	// (waitingFor).
+	if err != nil && !errors.Is(err, a2asrv.ErrTaskActive) {
+		log.Printf("agent %s: publish the timeout of task %s: %v", s.name, task.TaskID, err)
+	}
+}
+
 // waitingFor is the task waiting for an answer under id, if it still
 // waits.
 func (s *agentService) waitingFor(id a2a.TaskID) *waitingTask {
@@ -596,8 +690,7 @@ func (s *agentService) waitingFor(id a2a.TaskID) *waitingTask {
 	defer s.mu.Unlock()
 	w := s.waiting[id]
 	if w == nil || time.Since(w.since) > answerWait {
-		delete(s.waiting, id)
-		s.network.forget(id)
+		s.endTaskLocked(id)
 		return nil
 	}
 	return w
@@ -605,7 +698,7 @@ func (s *agentService) waitingFor(id a2a.TaskID) *waitingTask {
 
 // wait keeps a task whose agent asked a question until the answer comes,
 // or says why it cannot wait.
-func (s *agentService) wait(id a2a.TaskID, w waitingTask) string {
+func (s *agentService) wait(id a2a.TaskID, w waitingTask) (why string) {
 	switch {
 	case w.session == "":
 		return "the agent asked a question, but its runtime cannot carry on the task"
@@ -616,14 +709,23 @@ func (s *agentService) wait(id a2a.TaskID, w waitingTask) string {
 	defer s.mu.Unlock()
 	for other, o := range s.waiting {
 		if time.Since(o.since) > answerWait {
-			delete(s.waiting, other)
-			s.network.forget(other)
+			s.expireLocked(other)
 		}
 	}
 	if len(s.waiting) >= maxWaiting {
 		return fmt.Sprintf("the agent asked a question, but %d tasks already wait for answers", maxWaiting)
 	}
-	s.waiting[id] = &w
+	// A task whose answer does not come in time ends then, not only when
+	// someone next looks.
+	wp := &w
+	wp.timer = time.AfterFunc(answerWait, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.waiting[id] == wp {
+			s.expireLocked(id)
+		}
+	})
+	s.waiting[id] = wp
 	return ""
 }
 
@@ -650,6 +752,9 @@ func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, sender string, can
 	if err := s.delivered.record(sender, execCtx.Message.ID, execCtx.TaskID); err != nil {
 		log.Printf("agent service: record delivery: %v", err)
 		return nil, "refused: the node could not record the request", nil
+	}
+	if w := s.waiting[execCtx.TaskID]; w != nil && w.timer != nil {
+		w.timer.Stop()
 	}
 	delete(s.waiting, execCtx.TaskID)
 	s.current = &agentRun{taskID: execCtx.TaskID, cancel: cancel, started: time.Now()}
@@ -775,8 +880,7 @@ func (s *agentService) Cancel(ctx context.Context, execCtx *a2asrv.ExecutorConte
 		// A task waiting for an answer has run already.
 		if _, ok := s.waiting[execCtx.TaskID]; ok {
 			begun = true
-			delete(s.waiting, execCtx.TaskID)
-			s.network.forget(execCtx.TaskID)
+			s.endTaskLocked(execCtx.TaskID)
 		}
 		s.mu.Unlock()
 		text := "cancelled before the task started"
@@ -815,9 +919,13 @@ func (s *agentService) card(name string) *a2a.AgentCard {
 func (s *agentService) handler(name, token string) http.Handler {
 	card := s.card(name)
 	cardHandler := a2asrv.NewStaticAgentCardHandler(card)
-	store := taskstore.NewInMemory(&taskstore.InMemoryStoreConfig{Authenticator: a2asrv.NewTaskStoreAuthenticator()})
-	rpc := a2asrv.NewJSONRPCHandler(boundedStreams{a2asrv.NewHandler(s, a2asrv.WithTaskStore(store),
-		a2asrv.WithCallInterceptors(peerIdentity{tasks: store}))})
+	// The caller authenticator tells the server's own updates (lapse) apart,
+	// which reach every task.
+	store := taskstore.NewInMemory(&taskstore.InMemoryStoreConfig{CallerAuthenticator: a2asrv.NewTaskStoreCallerAuthenticator()})
+	requests := a2asrv.NewHandler(s, a2asrv.WithTaskStore(store),
+		a2asrv.WithCallInterceptors(peerIdentity{tasks: store}))
+	s.updates, _ = requests.(a2asrv.TaskUpdater)
+	rpc := a2asrv.NewJSONRPCHandler(boundedStreams{requests})
 	want := []byte("Bearer " + token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
@@ -929,6 +1037,8 @@ func serveAgent(ctx context.Context, s *agentService, name string) (string, erro
 	go func() {
 		<-ctx.Done()
 		_ = srv.Close()
+		// The node also waits for this as it stops (runNode).
+		s.releaseAll()
 	}()
 	return fmt.Sprintf("http://:%s@%s", token, ln.Addr()), nil
 }

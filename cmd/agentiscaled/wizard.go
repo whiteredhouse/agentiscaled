@@ -180,15 +180,16 @@ type agentOffer struct {
 	name        string
 	description string // empty for the runtime's
 	agentDir    string
-	command     string // empty for the runtime's
-	definition  string // absolute path, empty for none
+	command     string   // empty for the runtime's
+	args        []string // an acp agent's arguments
+	definition  string   // absolute path, empty for none
 	dataDir     string
 	policy      agentPolicy
 }
 
 // config is the offered agent as the node keeps it.
 func (o *agentOffer) config() agentConfig {
-	a := agentConfig{Runtime: o.runtime, Name: o.name, Dir: o.agentDir, Command: o.command, Description: o.description, Definition: o.definition}
+	a := agentConfig{Runtime: o.runtime, Name: o.name, Dir: o.agentDir, Command: o.command, Args: o.args, Description: o.description, Definition: o.definition}
 	a.setPolicy(o.policy)
 	return a
 }

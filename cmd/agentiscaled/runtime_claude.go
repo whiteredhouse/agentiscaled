@@ -330,13 +330,19 @@ func (r *claudeRuntime) Run(ctx context.Context, dir string, req taskRequest) (t
 // macOS the sign-in is in the user's keychain, under a name of the config
 // directory's.
 func claudeEnv(environ []string, config string) []string {
+	return append([]string{"CLAUDE_CONFIG_DIR=" + config}, processEnv(environ)...)
+}
+
+// processEnv is what of environ a process needs to run and reach the
+// network, and none of the owner's credentials.
+func processEnv(environ []string) []string {
 	keep := map[string]bool{
 		"PATH": true, "HOME": true, "USER": true, "LOGNAME": true, "SHELL": true, "TMPDIR": true,
 		"LANG": true, "TERM": true, "TZ": true,
 		"HTTP_PROXY": true, "HTTPS_PROXY": true, "ALL_PROXY": true, "NO_PROXY": true,
 		"NODE_EXTRA_CA_CERTS": true, "SSL_CERT_FILE": true, "SSL_CERT_DIR": true,
 	}
-	env := []string{"CLAUDE_CONFIG_DIR=" + config}
+	var env []string
 	for _, kv := range environ {
 		k, _, _ := strings.Cut(kv, "=")
 		if keep[strings.ToUpper(k)] || strings.HasPrefix(k, "LC_") {

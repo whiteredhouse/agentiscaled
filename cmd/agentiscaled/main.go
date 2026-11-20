@@ -76,7 +76,8 @@ Commands:
   up       sign in, join this machine to your network and keep the node running
   client   connect agent clients (Claude Desktop, Codex CLI) to the node, or disconnect them
   agent    offer an agent from this machine to your network (add, remove, list)
-  runtime  list supported agent runtimes and their local configuration
+  runtime  list supported agent runtimes and their local configuration, or check
+           an agent's support of the agentiscale runtime contract (check)
   down     stop the node's background service; its identity stays
   status   show the node's service, network and mesh connection
   version  print the version
@@ -111,7 +112,7 @@ func main() {
 		case "agent":
 			err = runAgent(ctx, args, os.Stdout)
 		case "runtime":
-			err = runRuntimes(args, os.Stdout)
+			err = runRuntimes(ctx, args, os.Stdout)
 		case "skill":
 			err = runSkill(args, os.Stdout, os.Stderr)
 		case "down":
@@ -186,6 +187,9 @@ type agentConfig struct {
 	Dir string `json:"dir"`
 	// Command is the agent CLI, as an absolute path once checked.
 	Command string `json:"command,omitempty"`
+	// Args are the arguments Command takes, for an acp agent, which starts
+	// on stdio with them.
+	Args []string `json:"args,omitempty"`
 	// Description replaces the runtime's on the agent's card.
 	Description string `json:"description,omitempty"`
 	// Definition is the node's copy of the subagent definition the agent
@@ -201,6 +205,28 @@ type agentConfig struct {
 	// Env locates the owner's configuration of the agent's runtime, such
 	// as CODEX_HOME, as `agent add` found it (agentOwnerEnv).
 	Env []string `json:"env,omitempty"`
+}
+
+// newRuntime makes the agent's runtime, which checks that it can run.
+func (a agentConfig) newRuntime(dataDir string) (runtime, error) {
+	if a.Runtime == "acp" {
+		return newACPRuntime(a.Command, a.Args, dataDir, a.policy())
+	}
+	return runtimes[a.Runtime].new(a.Command, dataDir, a.policy())
+}
+
+// splitCommand splits an acp agent's -command line into Command and Args;
+// other runtimes take Command as it is.
+func (a *agentConfig) splitCommand() error {
+	if a.Runtime != "acp" || len(a.Args) > 0 {
+		return nil
+	}
+	program, args, err := splitACPCommand(a.Command)
+	if err != nil {
+		return err
+	}
+	a.Command, a.Args = program, args
+	return nil
 }
 
 func (a agentConfig) policy() agentPolicy {
@@ -230,9 +256,13 @@ func agentFlags(fs *flag.FlagSet) func() *agentConfig {
 			return nil
 		}
 		a.setPolicy(policy)
+		if a.Runtime == "acp" {
+			// An empty command fails when the agent is checked.
+			a.splitCommand()
+		}
 		if a.Name == "" {
-			if spec, ok := runtimes[a.Runtime]; ok {
-				a.Name = spec.defaultName
+			if _, ok := runtimes[a.Runtime]; ok {
+				a.Name = runtimeDefaultName(a.Runtime, a.Command)
 			}
 		}
 		return &a
@@ -340,12 +370,11 @@ func newAgents(c *config) ([]*hostedAgent, error) {
 // newAgent makes the service of one agent, whose runtime must be able to
 // run. The node's environment is set up already (newAgents).
 func newAgent(a *agentConfig, dataDir string) (*agentService, error) {
-	spec, ok := runtimes[a.Runtime]
-	if !ok {
+	if _, ok := runtimes[a.Runtime]; !ok {
 		return nil, fmt.Errorf("agent %s: unknown runtime %q (have %s)", a.Name, a.Runtime, strings.Join(runtimeNames(), ", "))
 	}
 	if a.Name == "" {
-		a.Name = spec.defaultName
+		a.Name = runtimeDefaultName(a.Runtime, a.Command)
 	}
 	if err := agentNameError(a.Name); err != nil {
 		return nil, err
@@ -363,7 +392,7 @@ func newAgent(a *agentConfig, dataDir string) (*agentService, error) {
 	if err := agentDirApart(dir, dataDir); err != nil {
 		return nil, err
 	}
-	rt, err := spec.new(a.Command, dataDir, a.policy())
+	rt, err := a.newRuntime(dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("agent %s: %w", a.Name, err)
 	}
@@ -515,6 +544,9 @@ func run(ctx context.Context, c config) error {
 			if err != nil {
 				return fmt.Errorf("start agent %s: %w", a.Name, err)
 			}
+			// The agent's processes kept for answers stop before the node
+			// exits, also one that does not exit when its stdin closes.
+			defer a.svc.releaseAll()
 			a.target = target
 			services = append(services, api.ServiceConfig{
 				Type:        api.ServiceTypeStringA2A,

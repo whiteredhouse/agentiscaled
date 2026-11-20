@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,8 +66,11 @@ type taskNetwork struct {
 	// calls are the tool calls being served, of every grant.
 	calls sync.WaitGroup
 
-	mu     sync.Mutex
+	mu sync.Mutex
+	// grants are the tasks' grants by the hash of their bearers, and
+	// byTask the same grants by their tasks.
 	grants map[[sha256.Size]byte]*networkGrant
+	byTask map[a2a.TaskID]*networkGrant
 	// sent holds, for each running task of a hosted agent, the tasks it has
 	// sent, across the turns of the task and so across their tokens. The
 	// node is the sender of all of them, as of its owner's own tasks and
@@ -74,11 +79,80 @@ type taskNetwork struct {
 	sent map[a2a.TaskID]*sentTasks
 }
 
-// networkGrant is one turn's token and the MCP server it opens.
+// networkGrant is the network of one task of a hosted agent over all its
+// turns: one MCP server, which the run reaches with the grant's bearer, a
+// secret of this server's that is no credential anywhere else. A turn opens
+// it with the turn's token (begin) until the turn ends; between turns the
+// server refuses requests and has no token to call with, and calls in
+// flight end with the turn. So a run whose process outlives its turn, such
+// as an ACP agent waiting for an answer, keeps its MCP session, and its
+// next turn's calls carry that turn's token.
 type networkGrant struct {
-	expires time.Time
+	bearer  string
 	handler *mcp.StreamableHTTPHandler
-	close   func()
+	server  *mcp.Server
+
+	mu   sync.Mutex
+	turn *grantTurn // nil between turns
+}
+
+// grantTurn is the turn that holds a grant open.
+type grantTurn struct {
+	token   string
+	expires time.Time
+	life    context.Context
+	end     context.CancelFunc
+}
+
+// current is the turn holding g open, nil when none is or its token has
+// expired.
+func (g *networkGrant) current() *grantTurn {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.turn != nil && !time.Now().Before(g.turn.expires) {
+		g.turn.end()
+		g.turn = nil
+	}
+	return g.turn
+}
+
+// begin opens g to a turn with token until expires, or until the returned
+// end.
+func (g *networkGrant) begin(token string, expires time.Time) (end func()) {
+	life, cancel := context.WithCancel(context.Background())
+	t := &grantTurn{token: token, expires: expires, life: life, end: cancel}
+	g.mu.Lock()
+	if g.turn != nil {
+		g.turn.end()
+	}
+	g.turn = t
+	g.mu.Unlock()
+	return func() {
+		g.mu.Lock()
+		if g.turn == t {
+			g.turn = nil
+		}
+		g.mu.Unlock()
+		// Ending does not wait for calls in flight: it cancels them.
+		cancel()
+	}
+}
+
+// close ends g for good: its turn and its MCP sessions.
+func (g *networkGrant) close() {
+	g.mu.Lock()
+	if g.turn != nil {
+		g.turn.end()
+		g.turn = nil
+	}
+	g.mu.Unlock()
+	// A session closes once its calls have returned, which their cancelled
+	// requests make them do; nothing waits for that.
+	go func() {
+		for session := range g.server.Sessions() {
+			_ = session.Close()
+		}
+	}()
 }
 
 // sentTasks are the tasks one task of a hosted agent has sent, and the sends
@@ -144,6 +218,7 @@ func serveTaskNetwork(ctx context.Context, socket, agentSocket string, discover 
 		url:    "http://" + ln.Addr().String() + "/mcp",
 		node:   socketClient(socket),
 		grants: map[[sha256.Size]byte]*networkGrant{},
+		byTask: map[a2a.TaskID]*networkGrant{},
 		sent:   map[a2a.TaskID]*sentTasks{},
 	}
 	n.node.Timeout = 10 * time.Second
@@ -160,8 +235,8 @@ func serveTaskNetwork(ctx context.Context, socket, agentSocket string, discover 
 	return n, nil
 }
 
-// ServeHTTP admits a request only with the bearer token of a turn that is
-// still running.
+// ServeHTTP admits a request only with the bearer of a task that has not
+// ended; only a turn that runs can call a tool.
 func (n *taskNetwork) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || bearer == "" || r.URL.Path != "/mcp" {
@@ -171,12 +246,10 @@ func (n *taskNetwork) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := sha256.Sum256([]byte(bearer))
 	n.mu.Lock()
 	g := n.grants[key]
-	expired := g != nil && !time.Now().Before(g.expires)
 	n.mu.Unlock()
-	if expired {
-		g.close()
-	}
-	if g == nil || expired {
+	// Between turns the bearer still reaches its server, so that the run
+	// keeps its MCP session, but no tool call runs (newGrant).
+	if g == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -187,23 +260,32 @@ func (n *taskNetwork) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ttl, whose calls go out at delegation depth depth, and opens the network to
 // it. release revokes the token; call it when the turn ends, and forget when
 // the task ends.
-func (n *taskNetwork) grant(ctx context.Context, agent string, task a2a.TaskID, ttl time.Duration, depth int) (*networkAccess, func(), error) {
+//
+// The task's endpoint (access) comes also when the turn gets no token
+// (err), so that a run whose process lasts into a later turn, which may get
+// one, knows it: its tool calls then fail until then. access is nil only
+// when the endpoint itself cannot be made.
+func (n *taskNetwork) grant(ctx context.Context, agent string, task a2a.TaskID, ttl time.Duration, depth int) (access *networkAccess, release func(), err error) {
+	g, err := n.grantFor(agent, task)
+	if err != nil {
+		return nil, nil, err
+	}
+	access = &networkAccess{URL: n.url, Token: g.bearer}
 	if ttl <= 0 {
-		return nil, nil, errors.New("no running time left")
+		return access, func() {}, errors.New("no running time left")
 	}
 	claim, err := taskClaim(depth, task)
 	if err != nil {
-		return nil, nil, err
+		return access, func() {}, err
 	}
 	expires := time.Now().Add(ttl)
 	token, err := n.mint(ctx, claim, expires)
 	if err != nil {
-		return nil, nil, fmt.Errorf("mint the task's network token: %w", err)
+		return access, func() {}, fmt.Errorf("mint the task's network token: %w", err)
 	}
-	access, closeGrant := n.open(token, agent, n.sentBy(task), expires)
-	release := func() {
-		// Closing does not wait for calls in flight: it cancels them.
-		closeGrant()
+	endTurn := g.begin(token, expires)
+	release = func() {
+		endTurn()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := n.revoke(ctx, token); err != nil {
@@ -212,6 +294,31 @@ func (n *taskNetwork) grant(ctx context.Context, agent string, task a2a.TaskID, 
 		}
 	}
 	return access, release, nil
+}
+
+// grantFor is task's grant, made on its first turn.
+func (n *taskNetwork) grantFor(agent string, task a2a.TaskID) (*networkGrant, error) {
+	n.mu.Lock()
+	g := n.byTask[task]
+	n.mu.Unlock()
+	if g != nil {
+		return g, nil
+	}
+	g, err := n.newGrant(agent, n.sentBy(task))
+	if err != nil {
+		return nil, err
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.byTask == nil {
+		n.byTask = map[a2a.TaskID]*networkGrant{}
+	}
+	if other := n.byTask[task]; other != nil {
+		delete(n.grants, sha256.Sum256([]byte(g.bearer)))
+		return other, nil
+	}
+	n.byTask[task] = g
+	return g, nil
 }
 
 // sentBy is the record of the tasks task has sent.
@@ -233,19 +340,48 @@ func (n *taskNetwork) forget(task a2a.TaskID) {
 	}
 	n.mu.Lock()
 	delete(n.sent, task)
+	g := n.byTask[task]
+	delete(n.byTask, task)
+	if g != nil {
+		delete(n.grants, sha256.Sum256([]byte(g.bearer)))
+	}
 	n.mu.Unlock()
+	if g != nil {
+		g.close()
+	}
 }
 
-// open serves the network's agents to the bearer of token until expires or
-// until close, with the token as the caller's credential for every call, and
-// only the tasks in sent to follow, answer or cancel.
+// open serves the network's agents to a grant of its own for one turn with
+// token, until expires or until close, with the token as the caller's
+// credential for every call, and only the tasks in sent to follow, answer or
+// cancel.
 func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Time) (access *networkAccess, close func()) {
-	// Every call made for the grant ends with it, also one stalled on a
-	// peer.
-	life, endLife := context.WithCancel(context.Background())
+	g, err := n.newGrant(agent, sent)
+	if err != nil {
+		// Only a failing source of randomness gets here.
+		panic(err)
+	}
+	end := g.begin(token, expires)
+	return &networkAccess{URL: n.url, Token: g.bearer}, func() {
+		end()
+		n.mu.Lock()
+		delete(n.grants, sha256.Sum256([]byte(g.bearer)))
+		n.mu.Unlock()
+		g.close()
+	}
+}
+
+// newGrant makes a grant of agent's whose tools may use only the tasks in
+// sent, with no turn yet.
+func (n *taskNetwork) newGrant(agent string, sent *sentTasks) (*networkGrant, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return nil, err
+	}
+	g := &networkGrant{bearer: hex.EncodeToString(b)}
 	tasks := &a2aTasks{
-		http: meshTokenClient(life, n.socket, token), base: "http://agentiscaled",
-		local: meshTokenClient(life, n.agentSocket, token),
+		http: grantClient(n.socket), base: "http://agentiscaled",
+		local: grantClient(n.agentSocket),
 		self:  agent, sent: sent,
 	}
 	server := mcp.NewServer(&mcp.Implementation{Name: networkServerName, Version: "0.1.0"},
@@ -258,38 +394,37 @@ func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Ti
 		return n.listAgents(ctx, tasks)
 	})
 	addA2ATools(server, tasks)
-	// A call ends with the grant, also one waiting for a task to settle.
+	// A call ends with its turn, also one waiting for a task to settle.
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 			n.calls.Add(1)
 			defer n.calls.Done()
-			ctx, cancel := context.WithCancel(ctx)
+			t := g.current()
+			if t == nil {
+				// The session's own methods still work, so that it
+				// lasts into the task's next turn.
+				if method == "tools/call" {
+					return nil, errors.New("your task has no network access now: its turn has ended, or its token could not be made")
+				}
+				return next(ctx, method, req)
+			}
+			// The call is the admitting turn's: every request it makes
+			// carries that turn's token and ends with it (grantToken),
+			// also once a later turn holds the grant.
+			ctx, cancel := context.WithCancel(context.WithValue(ctx, grantTurnKey{}, t))
 			defer cancel()
-			defer context.AfterFunc(life, cancel)()
+			defer context.AfterFunc(t.life, cancel)()
 			return next(ctx, method, req)
 		}
 	})
-	key := sha256.Sum256([]byte(token))
-	// Sessions a runtime leaves open end with the grant, or when idle for
-	// longer than a task may run.
-	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{SessionTimeout: taskDeadline})
-	closeGrant := func() {
-		n.mu.Lock()
-		delete(n.grants, key)
-		n.mu.Unlock()
-		endLife()
-		// A session closes once its calls have returned, which their
-		// cancelled requests make them do; nothing waits for that.
-		go func() {
-			for session := range server.Sessions() {
-				_ = session.Close()
-			}
-		}()
-	}
+	g.server = server
+	// Sessions a runtime leaves open end with the task, or when idle for
+	// longer than a task may run and wait for an answer.
+	g.handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{SessionTimeout: taskDeadline + answerWait})
 	n.mu.Lock()
-	n.grants[key] = &networkGrant{expires: expires, handler: handler, close: closeGrant}
+	n.grants[sha256.Sum256([]byte(g.bearer))] = g
 	n.mu.Unlock()
-	return &networkAccess{URL: n.url, Token: token}, closeGrant
+	return g, nil
 }
 
 // mint asks the node for its own credential narrowed to A2A calls until
@@ -408,6 +543,11 @@ type meshToken struct {
 }
 
 func (m meshToken) RoundTrip(r *http.Request) (*http.Response, error) {
+	// A request made after its turn ended is not sent; cancellation
+	// stops those already on their way.
+	if m.life.Err() != nil {
+		return nil, errors.New("the turn the request was made for has ended")
+	}
 	ctx, cancel := context.WithCancel(r.Context())
 	stop := context.AfterFunc(m.life, cancel)
 	done := func() { stop(); cancel() }
@@ -420,6 +560,31 @@ func (m meshToken) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	resp.Body = &bodyThen{ReadCloser: resp.Body, then: done}
 	return resp, nil
+}
+
+// grantClient dials socket and presents, on every request, the token of
+// the turn that admitted the tool call it is made for, and ends the
+// request with that turn. A request made for no turn is not sent.
+func grantClient(socket string) *http.Client {
+	c := socketClient(socket)
+	c.Transport = grantToken{c.Transport}
+	return c
+}
+
+// grantTurnKey keys the turn that admitted a tool call in its context.
+type grantTurnKey struct{}
+
+type grantToken struct{ next http.RoundTripper }
+
+func (t grantToken) RoundTrip(r *http.Request) (*http.Response, error) {
+	turn, _ := r.Context().Value(grantTurnKey{}).(*grantTurn)
+	if turn == nil {
+		return nil, errors.New("a network request made for no turn of the task")
+	}
+	if !time.Now().Before(turn.expires) {
+		return nil, errors.New("the turn the request was made for has ended")
+	}
+	return meshToken{t.next, turn.token, turn.life}.RoundTrip(r)
 }
 
 // bodyThen calls then once the body is closed.
