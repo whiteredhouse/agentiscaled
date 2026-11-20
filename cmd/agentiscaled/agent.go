@@ -675,7 +675,7 @@ func (s *agentService) lapse(task a2a.TaskInfo, reason string) {
 	defer cancel()
 	end := a2a.NewStatusUpdateEvent(task, a2a.TaskStateFailed, agentText(task, reason))
 	end.Metadata = map[string]any{metaTerminal: "timeout", metaExecutionBegun: true}
-	_, err := s.updates.UpdateTask(ctx, task.TaskID, end)
+	_, err := s.updates.UpdateTask(ctx, end)
 	// A late answer which runs now ends the task itself, timed out
 	// (waitingFor).
 	if err != nil && !errors.Is(err, a2asrv.ErrTaskActive) {
