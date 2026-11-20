@@ -405,7 +405,10 @@ func listNetworkAgents(dataDir string, asJSON bool, out io.Writer) error {
 	fmt.Fprintln(tw, "NAME\tSTATE\tNODE")
 	now := time.Now()
 	for _, a := range list.Agents {
-		node := shortPeerID(a.PeerID)
+		node := a.MachineName
+		if node == "" {
+			node = shortPeerID(a.PeerID)
+		}
 		if a.PeerID == list.PeerID {
 			node = "this machine"
 		}

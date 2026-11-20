@@ -23,8 +23,13 @@ import (
 // the node's membership is what lets it read the list.
 
 // networkAgentsTTL is how long one answer from the control service serves
-// local callers, so several tools polling the socket ask the service once.
-const networkAgentsTTL = 5 * time.Second
+// local callers, so several tools reading the socket ask the service once.
+var networkAgentsTTL = 5 * time.Second
+
+// networkWatchInterval is how often a watch (GET /network/agents?watch=1)
+// looks for a change. The control service is asked only while a tool
+// watches or reads, and at most once per networkAgentsTTL.
+var networkWatchInterval = 5 * time.Second
 
 // networkAgents is what GET /network/agents answers: the agents of the
 // node's network as the owner console shows them, and this node's peer ID,
@@ -38,7 +43,9 @@ type networkAgents struct {
 }
 
 type networkAgent struct {
-	PeerID      string    `json:"peer_id"`
+	PeerID string `json:"peer_id"`
+	// MachineName is the name the agent's node gave when it joined.
+	MachineName string    `json:"machine_name,omitempty"`
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
 	ReportedAt  time.Time `json:"reported_at"`
@@ -71,9 +78,10 @@ type networkAgentsSource struct {
 	client  *http.Client
 	now     func() time.Time
 
-	mu     sync.Mutex
-	last   *networkAgents
-	readAt time.Time
+	mu      sync.Mutex
+	last    *networkAgents
+	lastErr error
+	readAt  time.Time
 }
 
 func (s *networkAgentsSource) clock() time.Time {
@@ -88,14 +96,25 @@ func (s *networkAgentsSource) get(ctx context.Context) (networkAgents, error) {
 	// answer, and the service sees one request per interval.
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.last != nil && s.clock().Sub(s.readAt) < networkAgentsTTL {
+	if !s.readAt.IsZero() && s.clock().Sub(s.readAt) < networkAgentsTTL {
+		if s.lastErr != nil {
+			return networkAgents{}, s.lastErr
+		}
 		return *s.last, nil
 	}
 	answer, err := s.ask(ctx)
-	if err != nil {
+	if ctx.Err() != nil {
+		// The caller left; its question says nothing about the network.
 		return networkAgents{}, err
 	}
-	s.last, s.readAt = &answer, s.clock()
+	// A refusal is kept as long as an answer, so watchers of a node the
+	// service refuses ask no more often than readers of one it answers.
+	s.readAt = s.clock()
+	if err != nil {
+		s.last, s.lastErr = nil, err
+		return networkAgents{}, err
+	}
+	s.last, s.lastErr = &answer, nil
 	return answer, nil
 }
 
@@ -167,20 +186,78 @@ func nodeAgentsPayload(network, peerID string, unixMs int64) []byte {
 	return fmt.Appendf(nil, "agentiscale-node-agents\n%s\n%s\n%d", network, peerID, unixMs)
 }
 
-// serveNetworkAgents answers GET /network/agents on the local agent socket.
+// serveNetworkAgents answers GET /network/agents on the local agent socket:
+// the list, or with ?watch=1 a stream of it, one JSON object per line: the
+// list now, then the list again each time it changes, or {"error": "..."}
+// while it can't be read. The stream lasts until the caller leaves.
 func serveNetworkAgents(w http.ResponseWriter, r *http.Request, source *networkAgentsSource) {
-	answer, err := source.get(r.Context())
-	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+	if r.URL.Query().Get("watch") != "" {
+		watchNetworkAgents(w, r, source)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	answer, err := source.get(r.Context())
 	if err != nil {
-		status, message := http.StatusServiceUnavailable, "the network's agents could not be read"
-		var known *errNetworkAgents
-		if errors.As(err, &known) {
-			status, message = known.status, known.message
-		}
+		status, message := networkAgentsFailure(err)
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 		return
 	}
 	_ = json.NewEncoder(w).Encode(answer)
+}
+
+func networkAgentsFailure(err error) (int, string) {
+	var known *errNetworkAgents
+	if errors.As(err, &known) {
+		return known.status, known.message
+	}
+	return http.StatusServiceUnavailable, "the network's agents could not be read"
+}
+
+func watchNetworkAgents(w http.ResponseWriter, r *http.Request, source *networkAgentsSource) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+	ticker := time.NewTicker(networkWatchInterval)
+	defer ticker.Stop()
+	var last []byte
+	for {
+		var line any
+		answer, err := source.get(r.Context())
+		if err != nil {
+			_, message := networkAgentsFailure(err)
+			line = map[string]string{"error": message}
+		} else {
+			line = answer
+		}
+		// observed_at changes with every read; only a change in what the
+		// list says is sent.
+		key, _ := json.Marshal(watchKey(answer, err))
+		if !bytes.Equal(key, last) {
+			last = key
+			b, _ := json.Marshal(line)
+			if _, err := w.Write(append(b, '\n')); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func watchKey(answer networkAgents, err error) any {
+	if err != nil {
+		_, message := networkAgentsFailure(err)
+		return message
+	}
+	return []any{answer.NetworkID, answer.PeerID, answer.Agents}
 }

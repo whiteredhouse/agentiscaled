@@ -241,7 +241,9 @@ shows every agent in your network, on any machine, the same way, with `offline` 
 for an agent whose machine no longer reports; `-json` prints it for scripts. The running node reads that
 list from the control service with its own key, so no sign-in is needed. Tools on the same machine can
 ask the node for it too: `GET /network/agents` on the `agent.sock` socket in the node's data directory
-answers the same JSON. `agent remove <name>` stops offering one, leaving its directory as it
+answers the same JSON, and `GET /network/agents?watch=1` keeps answering, one JSON object per line: the
+list at once, then again whenever it changes, or `{"error": "..."}` while it can't be read. The node asks
+the control service only while someone reads. `agent remove <name>` stops offering one, leaving its directory as it
 is; `agent add` and `agent remove` restart the node's background service. `up` keeps the offered agents as
 they are; it takes no agent flags. `status`, `down`, `reset` and `tasks` address
 this same node, and `task stop` stops the tasks of all its agents, and `status` shows whether tasks are stopped. Reset keeps its

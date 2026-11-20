@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -138,9 +139,9 @@ func TestNetworkAgentsSourceExplainsRefusals(t *testing.T) {
 			if !errors.As(err, &known) || known.status != c.want || !strings.Contains(known.message, c.says) {
 				t.Fatalf("err = %v", err)
 			}
-			// A refusal is not kept: the next get asks again.
-			if source.last != nil {
-				t.Fatal("refusal kept")
+			// A refusal is kept for the interval like an answer.
+			if source.last != nil || source.lastErr == nil {
+				t.Fatal("refusal not kept as a refusal")
 			}
 		})
 	}
@@ -184,7 +185,7 @@ func TestAgentListNetwork(t *testing.T) {
 	since, waitingSince, seen := now.Add(-3*time.Minute), now.Add(-42*time.Second), now.Add(-12*time.Minute)
 	answer := networkAgents{NetworkID: testNetwork, PeerID: "12D3KooWSelf", ObservedAt: now, StaleAfterSeconds: 300, Agents: []networkAgent{
 		{PeerID: "12D3KooWSelf", Name: "codex", ReportedAt: now, ReportStatus: "fresh", Activity: &agentActivity{State: activityBusy, Since: &since}},
-		{PeerID: "12D3KooWAnotherMachine1", Name: "reviewer", ReportedAt: now, ReportStatus: "fresh", Activity: &agentActivity{State: activityIdle, Waiting: 1, WaitingSince: &waitingSince}},
+		{PeerID: "12D3KooWAnotherMachine1", MachineName: "artur-mbp", Name: "reviewer", ReportedAt: now, ReportStatus: "fresh", Activity: &agentActivity{State: activityIdle, Waiting: 1, WaitingSince: &waitingSince}},
 		{PeerID: "12D3KooWAnotherMachine2", Name: "writer", ReportedAt: now, ReportStatus: "fresh"},
 		{PeerID: "12D3KooWAnotherMachine2", Name: "gone", ReportedAt: seen, ReportStatus: "stale"},
 	}}
@@ -214,7 +215,7 @@ func TestAgentListNetwork(t *testing.T) {
 		"codex     busy (3m)",
 		"this machine",
 		"reviewer  waiting for an answer (42s)",
-		"…Machine1",
+		"artur-mbp",
 		"writer    idle",
 		"gone      offline (last seen 12m ago)",
 	} {
@@ -239,5 +240,75 @@ func TestAgentListNetwork(t *testing.T) {
 	failure.Store("")
 	if out, err := list(); err != nil || !strings.Contains(out, "No machine offers an agent") {
 		t.Fatalf("empty: %q %v", out, err)
+	}
+}
+
+// A watch sends the list at once, then again only when it changes, and
+// says why while it can't be read.
+func TestNetworkAgentsWatchStreamsChanges(t *testing.T) {
+	ttl, interval := networkAgentsTTL, networkWatchInterval
+	networkAgentsTTL, networkWatchInterval = 10*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { networkAgentsTTL, networkWatchInterval = ttl, interval })
+	priv, self := testNodeKey(t)
+	var version atomic.Int32
+	control, _ := fakeNodeAgentsControl(t, self, func(w http.ResponseWriter) {
+		switch version.Load() {
+		case 2:
+			w.WriteHeader(http.StatusGone)
+			return
+		}
+		state := "idle"
+		if version.Load() == 1 {
+			state = "busy"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"network_id": testNetwork, "observed_at": time.Now(), "stale_after_seconds": 300,
+			"agents": []map[string]any{{"peer_id": self, "name": "codex", "reported_at": "2026-11-20T13:00:00Z", "report_status": "fresh", "activity": map[string]any{"state": state}}},
+		})
+	})
+	source := &networkAgentsSource{control: control.URL, network: testNetwork, priv: priv}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serveNetworkAgents(w, r, source)
+	}))
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/network/agents?watch=1", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.Header.Get("Content-Type") != "application/x-ndjson" {
+		t.Fatalf("content type %q", resp.Header.Get("Content-Type"))
+	}
+	lines := bufio.NewScanner(resp.Body)
+	next := func() map[string]any {
+		t.Helper()
+		if !lines.Scan() {
+			t.Fatalf("stream ended: %v", lines.Err())
+		}
+		var line map[string]any
+		if err := json.Unmarshal(lines.Bytes(), &line); err != nil {
+			t.Fatalf("line %q: %v", lines.Text(), err)
+		}
+		return line
+	}
+	stateOf := func(line map[string]any) string {
+		agents := line["agents"].([]any)
+		return agents[0].(map[string]any)["activity"].(map[string]any)["state"].(string)
+	}
+	if first := next(); stateOf(first) != "idle" || first["peer_id"] != self {
+		t.Fatalf("first: %v", first)
+	}
+	// Unchanged reads (only observed_at moves) send nothing.
+	time.Sleep(60 * time.Millisecond)
+	version.Store(1)
+	if second := next(); stateOf(second) != "busy" {
+		t.Fatalf("second: %v", second)
+	}
+	version.Store(2)
+	if third := next(); third["error"] != "this node was removed from the network" {
+		t.Fatalf("third: %v", third)
 	}
 }
