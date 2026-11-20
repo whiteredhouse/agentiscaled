@@ -23,6 +23,7 @@ const agentUsage = `usage: agentiscaled agent add|remove|list
                                               (-definition FILE gives it a subagent's role)
   remove [NAME]                               stop offering an agent
   list                                        show the agents this machine offers
+  list -network [-json]                       show every agent in your network and what it is doing
 
 Run 'agentiscaled agent add -h' for its flags.`
 
@@ -267,11 +268,19 @@ func restartNode(dir string, s settings, svc service, out io.Writer) error {
 func runAgentList(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("agent list", flag.ContinueOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node")
+	network := fs.Bool("network", false, "Show every agent in your network, on any machine, and what it is doing")
+	asJSON := fs.Bool("json", false, "With -network: print the list as JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if *asJSON && !*network {
+		return errors.New("-json needs -network")
+	}
+	if *network {
+		return listNetworkAgents(*dataDir, *asJSON, out)
 	}
 	s, err := loadSettings(*dataDir)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -337,6 +346,95 @@ func nodeActivity(dataDir string) (activity map[string]agentActivity, running bo
 		activity[a.Name] = a
 	}
 	return activity, true
+}
+
+// networkAgentsTimeout bounds `agent list -network`'s question to the
+// running node, which may ask the control service first.
+var networkAgentsTimeout = 20 * time.Second
+
+// listNetworkAgents is `agent list -network`: the running node lists its
+// network's agents, read from the control service with the node's key.
+func listNetworkAgents(dataDir string, asJSON bool, out io.Writer) error {
+	s, err := loadSettings(dataDir)
+	if errors.Is(err, os.ErrNotExist) || (err == nil && s.PeerID == "") {
+		return notJoinedError(dataDir)
+	} else if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), networkAgentsTimeout)
+	defer cancel()
+	client := socketClient(filepath.Join(dataDir, localAgentSocketName))
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://agentiscaled/network/agents", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return errors.New("the node is not running: start it with 'agentiscaled up'")
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		var failure struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(body, &failure) != nil || failure.Error == "" {
+			// A node started before this version has no such route.
+			return errors.New("the running node can't list network agents: restart it with 'agentiscaled up'")
+		}
+		return errors.New(failure.Error)
+	}
+	var list networkAgents
+	if err := json.Unmarshal(body, &list); err != nil {
+		return fmt.Errorf("read the node's answer: %w", err)
+	}
+	if asJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(list)
+	}
+	if len(list.Agents) == 0 {
+		fmt.Fprintln(out, "No machine offers an agent in your network yet. Offer one with 'agentiscaled agent add'.")
+		return nil
+	}
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tSTATE\tNODE")
+	now := time.Now()
+	for _, a := range list.Agents {
+		node := shortPeerID(a.PeerID)
+		if a.PeerID == list.PeerID {
+			node = "this machine"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", a.Name, networkAgentState(a, now), node)
+	}
+	return tw.Flush()
+}
+
+// networkAgentState is what `agent list -network` shows in an agent's
+// STATE column.
+func networkAgentState(a networkAgent, now time.Time) string {
+	if !a.available() {
+		reported := a.ReportedAt
+		ago := strings.TrimSuffix(strings.TrimPrefix(sinceText(&reported, now), " ("), ")")
+		return "offline (last seen " + ago + " ago)"
+	}
+	if a.Activity == nil {
+		return activityIdle
+	}
+	return activityText(map[string]agentActivity{a.Name: *a.Activity}, true, a.Name, now)
+}
+
+// shortPeerID keeps the end of a peer ID, which tells nodes apart at a
+// glance; -json gives the whole ID.
+func shortPeerID(id string) string {
+	if len(id) <= 12 {
+		return id
+	}
+	return "…" + id[len(id)-8:]
 }
 
 // activityText is what `agent list` shows in an agent's STATE column.

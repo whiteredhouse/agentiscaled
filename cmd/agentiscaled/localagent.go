@@ -46,8 +46,10 @@ type agentSocketContextKey struct{}
 // serveLocalAgent is agentiscaled's owner API, separate from Agent Mesh's
 // network routes. Both paths proxy to the same agent handler and task store.
 // targets maps each agent's name to where serveAgent serves it, and
-// activity, when set, says what each agent is doing now (GET /agents).
-func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, targets map[string]string, dataDir string, activity func() []agentActivity) (*http.Server, error) {
+// activity, when set, says what each agent is doing now (GET /agents), and
+// network, when set, lists the agents of the node's network (GET
+// /network/agents).
+func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, targets map[string]string, dataDir string, activity func() []agentActivity, network *networkAgentsSource) (*http.Server, error) {
 	proxies := map[string]*httputil.ReverseProxy{}
 	for name, target := range targets {
 		backend, err := url.Parse(target)
@@ -83,6 +85,10 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 		if r.Method == http.MethodGet && r.URL.Path == "/agents" && activity != nil {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(localAgentsActivity{Agents: activity()})
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/network/agents" && network != nil {
+			serveNetworkAgents(w, r, network)
 			return
 		}
 		// /a2a/<peer>/<name>[/.well-known/agent-card.json]
