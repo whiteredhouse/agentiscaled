@@ -162,4 +162,4 @@ require (
 // package. See AGENTISCALE.md on the fork's agentiscale branch.
 replace github.com/google/agentmesh => github.com/whiteredhouse/agentmesh v0.0.0-20261119122308-80f35885f93c
 
-replace github.com/a2aproject/a2a-go/v2 => github.com/whiteredhouse/a2a-go/v2 v2.0.0-20261119234737-74d44bd1fdd6
+replace github.com/a2aproject/a2a-go/v2 => github.com/whiteredhouse/a2a-go/v2 v2.0.0-20261120005532-2a2b3ab12a95
