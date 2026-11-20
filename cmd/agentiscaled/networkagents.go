@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -11,25 +12,37 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// The node reads its network's agents from the control service, signed
-// with its own key, and serves them to tools on this machine on the local
-// agent socket (GET /network/agents). Tools never hold an owner credential:
-// the node's membership is what lets it read the list.
+// The node watches its network's agents on one stream from the control
+// service, signed with its own key, the way a Tailscale node holds its map
+// poll, and serves them to tools on this machine on the local agent socket
+// (GET /network/agents). Tools never hold an owner credential: the node's
+// membership is what lets it read the list. The stream is held only while
+// a local tool reads, and a little after, so tools asking one after
+// another share it.
 
-// networkAgentsTTL is how long one answer from the control service serves
-// local callers, so several tools reading the socket ask the service once.
-var networkAgentsTTL = 5 * time.Second
+// Stream timings: how long the stream stays open after the last local
+// reader leaves, and how long the node waits before opening it again after
+// it could not, or after the control service refused this node.
+const (
+	networkStreamLinger       = 30 * time.Second
+	networkStreamRetry        = 5 * time.Second
+	networkStreamRefusedRetry = time.Minute
+)
 
-// networkWatchInterval is how often a watch (GET /network/agents?watch=1)
-// looks for a change. The control service is asked only while a tool
-// watches or reads, and at most once per networkAgentsTTL.
-var networkWatchInterval = 5 * time.Second
+// networkStreamSilence is how long the stream may go without a line, the
+// control service's keepalives included, before the node takes it as lost.
+const networkStreamSilence = 90 * time.Second
+
+// networkFirstAnswerTimeout bounds how long a one-off read waits for the
+// stream's first answer.
+const networkFirstAnswerTimeout = 15 * time.Second
 
 // networkAgents is what GET /network/agents answers: the agents of the
 // node's network as the owner console shows them, and this node's peer ID,
@@ -69,116 +82,287 @@ type errNetworkAgents struct {
 
 func (e *errNetworkAgents) Error() string { return e.message }
 
-// networkAgentsSource asks the control service for the node's network's
-// agents and keeps the last answer for networkAgentsTTL.
+// networkState is what the node knows of its network's agents: the latest
+// list, or why it has none. version counts changes; zero is nothing yet.
+type networkState struct {
+	answer  *networkAgents
+	err     error
+	version uint64
+}
+
+// networkAgentsSource holds the node's stream of its network's agents
+// while local tools read it.
 type networkAgentsSource struct {
 	control string
 	network string
 	priv    crypto.PrivKey
-	client  *http.Client
-	now     func() time.Time
+	client  *http.Client // nil: networkStreamClient
+	// timings overrides the stream timings; tests shorten them.
+	timings *streamTimings
 
 	mu      sync.Mutex
-	last    *networkAgents
-	lastErr error
-	readAt  time.Time
+	state   networkState
+	changed chan struct{} // closed and replaced on each change
+	readers int
+	stop    context.CancelFunc // ends the stream; nil when none is held
+	linger  *time.Timer
 }
 
-func (s *networkAgentsSource) clock() time.Time {
-	if s.now != nil {
-		return s.now()
+type streamTimings struct{ linger, retry, refusedRetry time.Duration }
+
+func (s *networkAgentsSource) timing() streamTimings {
+	if s.timings != nil {
+		return *s.timings
 	}
-	return time.Now()
+	return streamTimings{networkStreamLinger, networkStreamRetry, networkStreamRefusedRetry}
 }
 
-func (s *networkAgentsSource) get(ctx context.Context) (networkAgents, error) {
-	// One question at a time: callers that arrive while it is asked get its
-	// answer, and the service sees one request per interval.
+// networkStreamClient has no overall timeout, since the stream lasts while
+// tools read, but bounds the wait for the control service's first answer.
+var networkStreamClient = func() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 15 * time.Second
+	return &http.Client{Transport: transport}
+}()
+
+// subscribe registers a local reader, opening the stream if none is held,
+// and returns the function that unregisters it.
+func (s *networkAgentsSource) subscribe() func() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.readAt.IsZero() && s.clock().Sub(s.readAt) < networkAgentsTTL {
-		if s.lastErr != nil {
-			return networkAgents{}, s.lastErr
-		}
-		return *s.last, nil
+	s.readers++
+	if s.linger != nil {
+		s.linger.Stop()
+		s.linger = nil
 	}
-	answer, err := s.ask(ctx)
-	if ctx.Err() != nil {
-		// The caller left; its question says nothing about the network.
-		return networkAgents{}, err
+	if s.stop == nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		s.stop = cancel
+		go s.follow(ctx)
 	}
-	// A refusal is kept as long as an answer, so watchers of a node the
-	// service refuses ask no more often than readers of one it answers.
-	s.readAt = s.clock()
-	if err != nil {
-		s.last, s.lastErr = nil, err
-		return networkAgents{}, err
-	}
-	s.last, s.lastErr = &answer, nil
-	return answer, nil
+	var once sync.Once
+	return func() { once.Do(s.unsubscribe) }
 }
 
-func (s *networkAgentsSource) ask(ctx context.Context) (networkAgents, error) {
+func (s *networkAgentsSource) unsubscribe() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readers--
+	if s.readers > 0 || s.stop == nil {
+		return
+	}
+	s.linger = time.AfterFunc(s.timing().linger, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.readers > 0 || s.stop == nil {
+			return
+		}
+		s.stop()
+		s.stop, s.linger = nil, nil
+		// A later reader waits for a fresh answer, never this stale one.
+		s.state = networkState{}
+		s.notifyLocked()
+	})
+}
+
+// current is the state now, and a channel closed when it changes.
+func (s *networkAgentsSource) current() (networkState, <-chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.changed == nil {
+		s.changed = make(chan struct{})
+	}
+	return s.state, s.changed
+}
+
+func (s *networkAgentsSource) set(answer *networkAgents, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state = networkState{answer: answer, err: err, version: s.state.version + 1}
+	s.notifyLocked()
+}
+
+func (s *networkAgentsSource) notifyLocked() {
+	if s.changed != nil {
+		close(s.changed)
+	}
+	s.changed = make(chan struct{})
+}
+
+// get is the list for a one-off read: the stream's latest answer, waiting
+// for its first one if the stream just opened.
+func (s *networkAgentsSource) get(ctx context.Context) (networkAgents, error) {
+	done := s.subscribe()
+	defer done()
+	ctx, cancel := context.WithTimeout(ctx, networkFirstAnswerTimeout)
+	defer cancel()
+	for {
+		state, changed := s.current()
+		if state.version > 0 {
+			if state.err != nil {
+				return networkAgents{}, state.err
+			}
+			return *state.answer, nil
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return networkAgents{}, &errNetworkAgents{http.StatusServiceUnavailable, "the control service did not answer in time"}
+		}
+	}
+}
+
+// follow holds the stream until ctx ends, opening it again when it ends.
+func (s *networkAgentsSource) follow(ctx context.Context) {
+	for ctx.Err() == nil {
+		delivered, err := s.stream(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		var known *errNetworkAgents
+		refused := errors.As(err, &known) && (known.status == http.StatusGone || known.status == http.StatusNotFound)
+		wait := s.timing().retry
+		switch {
+		case refused:
+			wait = s.timing().refusedRetry
+			s.set(nil, err)
+		case delivered:
+			// A stream that worked and ended, as when the control service
+			// restarts, is opened again soon; the list stays meanwhile.
+			wait = time.Second
+		default:
+			s.set(nil, err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+	}
+}
+
+// stream opens one stream and publishes each line until it ends. It says
+// whether it delivered a list, and why it ended.
+func (s *networkAgentsSource) stream(ctx context.Context) (bool, error) {
 	if s.control == "" || s.network == "" {
-		return networkAgents{}, &errNetworkAgents{http.StatusServiceUnavailable, "this node does not know its control service or network; run 'agentiscaled up' again"}
+		return false, &errNetworkAgents{http.StatusServiceUnavailable, "this node does not know its control service or network; run 'agentiscaled up' again"}
 	}
 	pid, err := peer.IDFromPrivateKey(s.priv)
 	if err != nil {
-		return networkAgents{}, err
+		return false, err
 	}
 	ts := time.Now().UnixMilli()
 	sig, err := s.priv.Sign(nodeAgentsPayload(s.network, pid.String(), ts))
 	if err != nil {
-		return networkAgents{}, err
+		return false, err
 	}
 	body, _ := json.Marshal(map[string]any{"network_id": s.network, "peer_id": pid.String(), "timestamp_ms": ts, "signature": base64.RawURLEncoding.EncodeToString(sig)})
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(s.control, "/")+"/v1/node-agents", bytes.NewReader(body))
 	if err != nil {
-		return networkAgents{}, err
+		return false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	client := s.client
 	if client == nil {
-		client = httpClient
+		client = networkStreamClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return networkAgents{}, &errNetworkAgents{http.StatusServiceUnavailable, "the control service could not be reached"}
+		return false, &errNetworkAgents{http.StatusServiceUnavailable, "the control service could not be reached"}
 	}
 	defer resp.Body.Close()
-	limited := io.LimitReader(resp.Body, 4<<20)
+	if resp.StatusCode != http.StatusOK {
+		return false, streamRefusal(resp)
+	}
+	// The control service sends a line, a keepalive at least, every thirty
+	// seconds; a stream silent for longer is lost.
+	var silent atomic.Bool
+	silence := time.AfterFunc(networkStreamSilence, func() {
+		silent.Store(true)
+		cancel()
+	})
+	defer silence.Stop()
+	lines := bufio.NewReaderSize(resp.Body, 64<<10)
+	delivered := false
+	for {
+		line, err := readLine(lines, 4<<20)
+		if err != nil {
+			if silent.Load() {
+				return delivered, &errNetworkAgents{http.StatusServiceUnavailable, "the control service stopped answering"}
+			}
+			return delivered, &errNetworkAgents{http.StatusServiceUnavailable, "the control service could not be reached"}
+		}
+		silence.Reset(networkStreamSilence)
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var failure struct {
+			Error string `json:"error"`
+			Code  string `json:"code"`
+		}
+		if json.Unmarshal(line, &failure) == nil && failure.Error != "" {
+			if failure.Code == "node_removed" {
+				return delivered, &errNetworkAgents{http.StatusGone, "this node was removed from the network"}
+			}
+			s.set(nil, &errNetworkAgents{http.StatusBadGateway, failure.Error})
+			continue
+		}
+		var answer networkAgents
+		if err := json.Unmarshal(line, &answer); err != nil {
+			return delivered, &errNetworkAgents{http.StatusBadGateway, "the control service answered with an unreadable agent list"}
+		}
+		if answer.NetworkID != s.network {
+			return delivered, &errNetworkAgents{http.StatusBadGateway, "the control service answered for another network"}
+		}
+		if answer.Agents == nil {
+			answer.Agents = []networkAgent{}
+		}
+		answer.PeerID = pid.String()
+		delivered = true
+		s.set(&answer, nil)
+	}
+}
+
+// streamRefusal is why the control service did not open the stream.
+func streamRefusal(resp *http.Response) error {
 	switch resp.StatusCode {
-	case http.StatusOK:
 	case http.StatusGone:
-		return networkAgents{}, &errNetworkAgents{http.StatusGone, "this node was removed from the network"}
+		return &errNetworkAgents{http.StatusGone, "this node was removed from the network"}
 	case http.StatusNotFound:
 		// An older control service without the route also answers 404, so
 		// only its own code says the network does not know the node.
 		var answer struct {
 			Code string `json:"code"`
 		}
-		_ = json.NewDecoder(limited).Decode(&answer)
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&answer)
 		if answer.Code == "unknown_network" {
-			return networkAgents{}, &errNetworkAgents{http.StatusNotFound, "the network does not know this node"}
+			return &errNetworkAgents{http.StatusNotFound, "the network does not know this node"}
 		}
-		return networkAgents{}, &errNetworkAgents{http.StatusBadGateway, "the control service does not list network agents yet"}
-	default:
-		return networkAgents{}, &errNetworkAgents{http.StatusBadGateway, fmt.Sprintf("the control service could not list the network's agents (%s)", http.StatusText(resp.StatusCode))}
+		return &errNetworkAgents{http.StatusBadGateway, "the control service does not list network agents yet"}
+	case http.StatusServiceUnavailable:
+		return &errNetworkAgents{http.StatusServiceUnavailable, "the control service is busy; trying again"}
 	}
-	var answer networkAgents
-	if err := json.NewDecoder(limited).Decode(&answer); err != nil {
-		return networkAgents{}, &errNetworkAgents{http.StatusBadGateway, "the control service answered with an unreadable agent list"}
+	return &errNetworkAgents{http.StatusBadGateway, fmt.Sprintf("the control service could not list the network's agents (%s)", http.StatusText(resp.StatusCode))}
+}
+
+// readLine reads one line of at most max bytes.
+func readLine(r *bufio.Reader, max int) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, isPrefix, err := r.ReadLine()
+		if err != nil {
+			return nil, err
+		}
+		line = append(line, chunk...)
+		if len(line) > max {
+			return nil, errors.New("line too long")
+		}
+		if !isPrefix {
+			return line, nil
+		}
 	}
-	if answer.NetworkID != s.network {
-		return networkAgents{}, &errNetworkAgents{http.StatusBadGateway, "the control service answered for another network"}
-	}
-	if answer.Agents == nil {
-		answer.Agents = []networkAgent{}
-	}
-	answer.PeerID = pid.String()
-	return answer, nil
 }
 
 // nodeAgentsPayload is what the node signs to read its network's agents.
@@ -221,35 +405,40 @@ func watchNetworkAgents(w http.ResponseWriter, r *http.Request, source *networkA
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
+	done := source.subscribe()
+	defer done()
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
-	ticker := time.NewTicker(networkWatchInterval)
-	defer ticker.Stop()
+	flusher.Flush()
 	var last []byte
 	for {
-		var line any
-		answer, err := source.get(r.Context())
-		if err != nil {
-			_, message := networkAgentsFailure(err)
-			line = map[string]string{"error": message}
-		} else {
-			line = answer
-		}
-		// observed_at changes with every read; only a change in what the
-		// list says is sent.
-		key, _ := json.Marshal(watchKey(answer, err))
-		if !bytes.Equal(key, last) {
-			last = key
-			b, _ := json.Marshal(line)
-			if _, err := w.Write(append(b, '\n')); err != nil {
-				return
+		state, changed := source.current()
+		if state.version > 0 {
+			var line any = map[string]string{"error": ""}
+			var answer networkAgents
+			if state.err != nil {
+				_, message := networkAgentsFailure(state.err)
+				line = map[string]string{"error": message}
+			} else {
+				answer = *state.answer
+				line = answer
 			}
-			flusher.Flush()
+			// observed_at changes with every list; only a change in what the
+			// list says is sent.
+			key, _ := json.Marshal(watchKey(answer, state.err))
+			if !bytes.Equal(key, last) {
+				last = key
+				b, _ := json.Marshal(line)
+				if _, err := w.Write(append(b, '\n')); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
 		}
 		select {
 		case <-r.Context().Done():
 			return
-		case <-ticker.C:
+		case <-changed:
 		}
 	}
 }
