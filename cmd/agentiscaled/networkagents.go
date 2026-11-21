@@ -40,6 +40,11 @@ const (
 // control service's keepalives included, before the node takes it as lost.
 const networkStreamSilence = 90 * time.Second
 
+// networkStreamMaxLine is the longest line the node reads from the stream.
+// The control service sends a list too long to send as an error line
+// instead, and its limit is half of this, so every list it sends fits.
+const networkStreamMaxLine = 16 << 20
+
 // networkFirstAnswerTimeout bounds how long a one-off read waits for the
 // stream's first answer.
 const networkFirstAnswerTimeout = 15 * time.Second
@@ -287,7 +292,7 @@ func (s *networkAgentsSource) stream(ctx context.Context) (bool, error) {
 	lines := bufio.NewReaderSize(resp.Body, 64<<10)
 	delivered := false
 	for {
-		line, err := readLine(lines, 4<<20)
+		line, err := readLine(lines, networkStreamMaxLine)
 		if err != nil {
 			if silent.Load() {
 				return delivered, &errNetworkAgents{http.StatusServiceUnavailable, "the control service stopped answering"}

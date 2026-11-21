@@ -149,6 +149,32 @@ func TestNetworkAgentsSourceHoldsOneSignedStreamWhileRead(t *testing.T) {
 	}
 }
 
+// A list of several megabytes, as large as the control service sends, is
+// read whole.
+func TestNetworkAgentsSourceReadsALargeList(t *testing.T) {
+	priv, self := testNodeKey(t)
+	lines := make(chan string, 1)
+	control, _ := fakeNodeAgentsControl(t, self, func(w http.ResponseWriter, r *http.Request) {
+		streamLines(w, r, lines)
+	})
+	source := &networkAgentsSource{control: control.URL, network: testNetwork, priv: priv, timings: shortTimings}
+	b, err := json.Marshal(map[string]any{
+		"network_id": testNetwork, "observed_at": time.Now(), "stale_after_seconds": 300,
+		"agents": []map[string]any{{"peer_id": self, "name": "codex", "machine_name": "mbp", "description": strings.Repeat("x", 6<<20)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines <- string(b)
+	got, err := source.get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Agents) != 1 || got.Agents[0].Name != "codex" {
+		t.Fatalf("answer: %+v", got)
+	}
+}
+
 // The node says why it has no list: the control service refused the
 // stream, removed the node while it watched, or could not be reached.
 func TestNetworkAgentsSourceExplainsRefusals(t *testing.T) {
