@@ -105,6 +105,11 @@ about a minute. `up` waits for it, joins this machine, and starts the node as a
 background service of your user account, so it runs again after a restart or when you
 log in. Your sign-in is used once and not stored on the machine.
 
+If your account has more than one network, signing in joins your first one. To join
+another, name it: `agentiscaled up -network <id>`, with the ID the console shows for
+that network. A node stays in the network it joined; to move it, run
+`agentiscaled reset`, then `up -network <id>`.
+
 `agentiscaled status` shows the node, its network and whether it is connected.
 `agentiscaled down` stops it; `agentiscaled up` starts it again without signing in.
 

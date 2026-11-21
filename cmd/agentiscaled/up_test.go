@@ -196,16 +196,27 @@ func TestEnrollSignedInWaitsForTheNetwork(t *testing.T) {
 	}))
 	defer control.Close()
 
-	answer, err := enrollSignedIn(context.Background(), control.URL+"/", "ACCESS", "12D3KooWPeer", "mac")
+	answer, err := enrollSignedIn(context.Background(), control.URL+"/", "ACCESS", "", "12D3KooWPeer", "mac")
 	if err != nil || answer.BootstrapToken != "bt" {
 		t.Fatalf("enrollSignedIn = %+v, %v", answer, err)
 	}
 	if calls != 3 || got[0]["peer_id"] != "12D3KooWPeer" || got[0]["machine_name"] != "mac" {
 		t.Fatalf("calls %d, bodies %v", calls, got)
 	}
+	if _, named := got[0]["network_id"]; named {
+		t.Fatalf("enroll without -network named one: %v", got[0])
+	}
+	// -network names one of the owner's networks.
+	calls = 2
+	if _, err := enrollSignedIn(context.Background(), control.URL, "ACCESS", "net-2", "12D3KooWPeer", ""); err != nil {
+		t.Fatal(err)
+	}
+	if last := got[len(got)-1]; last["network_id"] != "net-2" {
+		t.Fatalf("enroll body %v", last)
+	}
 
 	// A refusal is final.
-	if _, err := enrollSignedIn(context.Background(), control.URL, "WRONG", "p", ""); err == nil || !strings.Contains(err.Error(), "sign in required") {
+	if _, err := enrollSignedIn(context.Background(), control.URL, "WRONG", "", "p", ""); err == nil || !strings.Contains(err.Error(), "sign in required") {
 		t.Fatalf("refused enroll: %v", err)
 	}
 }
@@ -415,7 +426,7 @@ func TestEnrollPointsToConsoleWhenDeletionIsScheduled(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":"network's account is scheduled for deletion; restore the account to add nodes"}`))
 	}))
 	defer control.Close()
-	_, err := enrollSignedIn(context.Background(), control.URL, "T", "peer", "")
+	_, err := enrollSignedIn(context.Background(), control.URL, "T", "", "peer", "")
 	if err == nil || !strings.Contains(err.Error(), consoleURL) || !strings.Contains(err.Error(), "scheduled for deletion") {
 		t.Fatalf("enroll: %v", err)
 	}
