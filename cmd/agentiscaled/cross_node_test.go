@@ -64,9 +64,6 @@ func TestTaskTokensAcrossNodes(t *testing.T) {
 		writeSettings(t, dir, settings{Listen: c.listen, LogLevel: "info", Clients: "none", Foreground: true, Agents: agents, MeshURL: mesh.PublicURL()})
 		p := startNode(t, dir)
 		p.waitLog(t, "agentiscaled running", 30*time.Second)
-		if len(agents) == 0 {
-			return dir, ""
-		}
 		var info localAgentInfo
 		for {
 			resp, err := socketClient(filepath.Join(dir, localAgentSocketName)).Get("http://agentiscaled/info")
@@ -87,21 +84,22 @@ func TestTaskTokensAcrossNodes(t *testing.T) {
 	// delivered by its daemon. Keep the turn open until its tool call ends.
 	callerDir := t.TempDir()
 	callerCommand := filepath.Join(callerDir, "codex")
-	callerScript := fmt.Sprintf(`#!/bin/sh
+	callerScript := `#!/bin/sh
 case "$1" in --version) echo 'codex-cli 0.169.0'; exit 0;; login) exit 0;; esac
+cd "$(dirname "$0")" || exit 1
 umask 077
 for arg do
   case "$arg" in mcp_servers.agentiscale-network.url=*)
-    printf '%%s\n%%s\n' "${arg#*=}" "$AGENTISCALE_NETWORK_TOKEN" > %[1]q/grant.tmp
-    mv %[1]q/grant.tmp %[1]q/grant;;
+    printf '%s\n%s\n' "${arg#*=}" "$AGENTISCALE_NETWORK_TOKEN" > grant.tmp
+    mv grant.tmp grant;;
   esac
 done
-while [ ! -f %[1]q/done ]; do sleep 0.1; done
+while [ ! -f done ]; do sleep 0.1; done
 while [ "$#" -gt 0 ]; do
   if [ "$1" = --output-last-message ]; then echo '{"status":"done","text":"done"}' > "$2"; fi
   shift
 done
-`, callerDir)
+`
 	if err := os.WriteFile(callerCommand, []byte(callerScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
