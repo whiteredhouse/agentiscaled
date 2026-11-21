@@ -181,13 +181,21 @@ func TestHostedClientColdTaskAndDiscovery(t *testing.T) {
 	if err := run.wait(t); err != nil || run.out.String() != "review result\n" || submits.Load() != 2 || reads.Load() != 2 {
 		t.Fatalf("CLI cold submission: %v %q submits=%d reads=%d", err, run.out.String(), submits.Load(), reads.Load())
 	}
-	target := taskTarget{Service: "helper", PeerID: hostedPrefix + agent}
+	target := taskTarget{Service: "helper", PeerID: cloudTargetPrefix + agent}
 	tasks := &a2aTasks{local: socketClient(socket), http: socketClient(filepath.Join(netw.dir, meshnode.DefaultSocketName)), base: "http://agentiscaled"}
-	var listing bytes.Buffer
-	if err := runAgent(ctx, []string{"list", "-data-dir", netw.dir, "-hosted"}, &listing); err != nil || !strings.Contains(listing.String(), target.PeerID) {
-		t.Fatalf("CLI hosted discovery: %v %s", err, listing.String())
+	if target.PeerID != "cloud:"+agent {
+		t.Fatalf("unexpected cloud target %q", target.PeerID)
 	}
-	_, list, err := tasks.listHostedAgents(ctx, nil, struct{}{})
+	legacy := taskTarget{Service: target.Service, PeerID: "hosted:" + agent}
+	if _, _, err := tasks.card(ctx, nil, legacy); err == nil {
+		t.Fatal("accepted the removed hosted target spelling")
+	}
+
+	var listing bytes.Buffer
+	if err := runAgent(ctx, []string{"list", "-data-dir", netw.dir, "-location", "cloud"}, &listing); err != nil || !strings.Contains(listing.String(), target.PeerID) {
+		t.Fatalf("CLI cloud discovery: %v %s", err, listing.String())
+	}
+	_, list, err := tasks.listAgents(ctx, nil, listAgentsIn{Location: "cloud"})
 	if err != nil || len(list.Agents) != 1 || list.Agents[0].PeerID != target.PeerID {
 		t.Fatalf("catalog %+v %v", list, err)
 	}
@@ -213,6 +221,25 @@ func TestHostedClientColdTaskAndDiscovery(t *testing.T) {
 	alsoLocal.Store(true)
 	if _, _, err := findAgent(ctx, tasks, "helper", "", 0); err == nil || !strings.Contains(err.Error(), localPeer) || !strings.Contains(err.Error(), target.PeerID) {
 		t.Fatalf("local/hosted collision: %v", err)
+	}
+	// All three locations offer the same service name. Its target selects
+	// a single agent and an explicit filter only includes that location.
+	for _, location := range []string{"", "local", "mesh", "cloud"} {
+		args := []string{"list", "-data-dir", netw.dir}
+		if location != "" {
+			args = append(args, "-location", location)
+		}
+		listing.Reset()
+		if err := runAgent(ctx, args, &listing); err != nil {
+			t.Fatalf("list %q: %v", location, err)
+		}
+		got := listing.String()
+		for where, peer := range map[string]string{"local": localPeer, "mesh": remote, "cloud": target.PeerID} {
+			want := location == "" || where == location
+			if strings.Contains(got, peer) != want {
+				t.Errorf("list %q: want %s target present=%t, got %s", location, where, want, got)
+			}
+		}
 	}
 	alsoLocal.Store(false)
 	for _, status := range []int32{404, 503} {

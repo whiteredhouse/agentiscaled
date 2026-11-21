@@ -154,7 +154,7 @@ func TestTaskSendCancelsOnTimeout(t *testing.T) {
 func TestTaskSendFailsForAnUnknownAgent(t *testing.T) {
 	net := newFakeNetwork(t)
 	err := startTaskSend("", "-data-dir", net.dir, "nobody", "hi").wait(t)
-	if err == nil || !strings.Contains(err.Error(), "no node of your network offers an agent named nobody") {
+	if err == nil || !strings.Contains(err.Error(), "no agent named nobody is available to this node") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -257,7 +257,8 @@ func newFakeNetwork(t *testing.T) *fakeNetwork {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /mesh/service/discover", func(w http.ResponseWriter, r *http.Request) {
 		n.lookups.Add(1)
-		if r.URL.Query().Get("type") != "a2a" || r.URL.Query().Get("name") != "helper" {
+		name := r.URL.Query().Get("name")
+		if r.URL.Query().Get("type") != "a2a" || (name != "" && name != "helper") {
 			json.NewEncoder(w).Encode([]any{})
 			return
 		}
@@ -395,7 +396,7 @@ func TestTaskSendWaitsForTheAgentOnlyAsLongAsAsked(t *testing.T) {
 	net := newFakeNetwork(t)
 	start := time.Now()
 	err := startTaskSend("", "-data-dir", net.dir, "-wait-agent", "1s", "helper", "hi").wait(t)
-	if took := time.Since(start); err == nil || !strings.Contains(err.Error(), "no node of your network offers an agent named helper") || took > 1500*time.Millisecond {
+	if took := time.Since(start); err == nil || !strings.Contains(err.Error(), "no agent named helper is available to this node") || took > 1500*time.Millisecond {
 		t.Fatalf("after %s: %v", took, err)
 	}
 	if n := net.lookups.Load(); n < 3 {

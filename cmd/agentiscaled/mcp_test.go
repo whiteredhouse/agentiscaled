@@ -70,7 +70,7 @@ func TestMCPBridgeReachesTheNodeOverItsSocket(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	// The node's tools, plus the A2A task tools the bridge adds.
-	if want := []string{"cancel_task", "echo", "get_agent_card", "get_task", "list_hosted_agents", "send_task"}; !slices.Equal(names, want) {
+	if want := []string{"cancel_task", "echo", "get_agent_card", "get_task", "list_agents", "send_task"}; !slices.Equal(names, want) {
 		t.Fatalf("tools: %v, want %v", names, want)
 	}
 	for _, text := range []string{"one", "two"} {

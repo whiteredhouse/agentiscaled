@@ -14,12 +14,13 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
+	"github.com/google/agentmesh/api"
 	"github.com/google/uuid"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const a2aInstructions = `agentiscale: use list_local_services (type "a2a") to find agents hosted on this node; read their card with get_agent_card and call send_task with their name as service, omitting peer_id in both calls. Use discover_remote_services (type "a2a") to find agents on other nodes; inspect their current card with get_agent_card using peer_id and srv_name as service, then call send_task with the same target. Follow tasks with get_task until terminal (completed, rejected, cancelled, timeout or failed); while a task is working, its message is the agent's latest step. cancel_task stops them. A task in state input_required waits for your answer to the agent's question (its message): answer with send_task, giving the task's task_id and your answer as text, then follow the task again. Use list_hosted_agents for cloud agents and use the returned hosted peer_id and service with the same card and task tools. The shared service accepts hosted tasks while compute sleeps. Use the same target for send/get/cancel. Do not use the a2a CLI or hand-written requests. Direct calls to offline mesh peers cannot be queued.`
+const a2aInstructions = `Use list_agents to discover agents in your network, optionally filtering by location (local, mesh, or cloud). Use the returned service and peer_id for get_agent_card, send_task, get_task, and cancel_task. Omit peer_id for a local agent. Cloud agents can accept tasks while their workers sleep. Follow a submitted task with get_task until it finishes or asks for input. If its state is input_required, send_task with the same target, task_id, and your answer as text.`
 
 // maxWait bounds how long get_task holds one tool call, below the timeouts
 // MCP clients put on a call.
@@ -37,6 +38,9 @@ type a2aTasks struct {
 	http  *http.Client
 	base  string       // the node's local API
 	local *http.Client // owner-only agent socket; nil for older nodes
+	// Granted tasks may enumerate A2A service metadata through the node.
+	// Their A2A-only credential cannot invoke the mesh's system catalog.
+	meshCatalog func(context.Context) ([]*api.DiscoveredProvider, error)
 	// self is the hosted agent these tools serve, which may not send tasks
 	// to itself; empty for a person's client.
 	self string
@@ -54,14 +58,14 @@ func (t *a2aTasks) mayUse(target taskTarget, id string) error {
 }
 
 type taskTarget struct {
-	PeerID  string `json:"peer_id,omitempty" jsonschema:"Peer ID from discovery, including a hosted:UUID from list_hosted_agents; omit for an agent from list_local_services on this node."`
-	Service string `json:"service" jsonschema:"The agent's name from list_local_services, or srv_name from discover_remote_services"`
+	PeerID  string `json:"peer_id,omitempty" jsonschema:"Target from list_agents. Use the mesh peer ID or cloud:UUID returned for the agent. Omit for a local agent."`
+	Service string `json:"service" jsonschema:"The service name from list_agents"`
 }
 
 type sendTaskIn struct {
 	taskTarget
 	Text      string `json:"text" jsonschema:"the request for the agent: what you want it to do; or, with task_id, your answer to its question"`
-	RequestID string `json:"request_id,omitempty" jsonschema:"Stable UUID for retrying a hosted submission or follow-up after an uncertain response. Omit to generate one."`
+	RequestID string `json:"request_id,omitempty" jsonschema:"Stable UUID for retrying a cloud submission or follow-up after an uncertain response. Omit to generate one."`
 	// TaskID answers the question of a task in state input_required.
 	TaskID string `json:"task_id,omitempty" jsonschema:"only to answer the question of a task in state input_required: that task's ID. Omit to send a new task."`
 }
@@ -90,13 +94,18 @@ type taskOut struct {
 
 func addA2ATools(server *mcp.Server, t *a2aTasks) {
 	mcp.AddTool(server, &mcp.Tool{
+		Name:        "list_agents",
+		Description: "List agents visible to this caller. Filter by location to list agents on this node (local), on other nodes (mesh), or in the cloud (cloud). Use the service and peer_id from a result with the card and task tools.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, t.listAgents)
+	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_agent_card",
-		Description: "Read the current card of an A2A agent. For a local agent use its service name and omit peer_id; for a remote agent use its discovered peer_id and service name (srv_name). Hosted cards come from the authorized cloud catalog. Mesh peer reads use the encrypted mesh connection. An unavailable or refused service returns an error; this does not send a task.",
+		Description: "Read the current card of an A2A agent. Use the service and peer_id from list_agents. Omit peer_id for a local agent. A remote card comes from the mesh peer or the authorized cloud catalog.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, t.card)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "send_task",
-		Description: "Send one task to an A2A agent on this node or another node of your agentiscale network, or with task_id answer the question of a task in state input_required. Peer calls use the encrypted mesh. Hosted tasks are durably accepted by the control service over HTTPS. Returns at once with the task ID and state; follow it with get_task.",
+		Description: "Send one task to an A2A agent in your network, or with task_id answer the question of a task in state input_required. Peer calls use the encrypted mesh. Cloud tasks are durably accepted by the control service over HTTPS. Returns at once with the task ID and state; follow it with get_task.",
 	}, t.send)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_task",
@@ -193,7 +202,7 @@ func (t *a2aTasks) localInfo(ctx context.Context) (localAgentInfo, error) {
 }
 
 func (t *a2aTasks) card(ctx context.Context, _ *mcp.CallToolRequest, target taskTarget) (*mcp.CallToolResult, any, error) {
-	if strings.HasPrefix(target.PeerID, hostedPrefix) {
+	if strings.HasPrefix(target.PeerID, cloudTargetPrefix) {
 		return t.hostedCard(ctx, target)
 	}
 	ctx, cancel := context.WithTimeout(ctx, agentCardTimeout)
@@ -252,7 +261,7 @@ func (t *a2aTasks) send(ctx context.Context, _ *mcp.CallToolRequest, in sendTask
 		}
 	}
 	defer drop()
-	if strings.HasPrefix(in.PeerID, hostedPrefix) {
+	if strings.HasPrefix(in.PeerID, cloudTargetPrefix) {
 		if in.TaskID == "" {
 			if _, err := t.hostedAgent(ctx, in.taskTarget); err != nil {
 				return nil, taskOut{}, err
@@ -323,7 +332,7 @@ func (t *a2aTasks) get(ctx context.Context, req *mcp.CallToolRequest, in getTask
 // its work to notify when set, and returns the task. When ctx ends first,
 // it returns the task as last read, if it read it, with ctx's error.
 func (t *a2aTasks) watch(ctx context.Context, target taskTarget, id a2a.TaskID, wait time.Duration, notify func(string)) (taskOut, error) {
-	if strings.HasPrefix(target.PeerID, hostedPrefix) {
+	if strings.HasPrefix(target.PeerID, cloudTargetPrefix) {
 		return t.watchHosted(ctx, target, string(id), wait, notify)
 	}
 	c, err := t.client(ctx, target)
@@ -434,7 +443,7 @@ func (t *a2aTasks) cancel(ctx context.Context, _ *mcp.CallToolRequest, in taskIn
 	if err := t.mayUse(in.taskTarget, in.TaskID); err != nil {
 		return nil, taskOut{}, err
 	}
-	if strings.HasPrefix(in.PeerID, hostedPrefix) {
+	if strings.HasPrefix(in.PeerID, cloudTargetPrefix) {
 		out, err := t.hostedTask(ctx, in.taskTarget, in.TaskID, http.MethodPost, true, nil)
 		if err != nil {
 			return nil, taskOut{}, err

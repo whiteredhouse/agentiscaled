@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -29,8 +28,8 @@ answer on standard output. Without MESSAGE, or with -, the message is read
 from standard input. With -no-wait it prints the task's ID and returns at
 once; agentiscaled task wait follows the task from there.
 
-AGENT can be local, on a mesh peer, or hosted in your network. If names
-collide, select the peer ID or hosted:UUID with -peer.
+AGENT can be local, on a mesh peer, or in the cloud. If names
+collide, select the peer ID or cloud:UUID with -peer.
 ` + taskExitCodes + `
 Flags:
 `
@@ -74,9 +73,9 @@ func runTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 		fs.PrintDefaults()
 	}
 	fs.StringVar(&o.dataDir, "data-dir", defaultDataDir(), "Data directory of the running node that sends the task")
-	fs.StringVar(&o.peer, "peer", "", "Target from discovery, either a mesh peer ID or hosted:<agent UUID>")
+	fs.StringVar(&o.peer, "peer", "", "Target from discovery, either a mesh peer ID or cloud:<agent UUID>")
 	fs.StringVar(&o.taskID, "task", "", "ID of a task waiting for your answer (input required): MESSAGE answers its question")
-	fs.StringVar(&o.requestID, "request-id", "", "Stable UUID for retrying the same hosted submission or follow-up")
+	fs.StringVar(&o.requestID, "request-id", "", "Stable UUID for retrying the same cloud submission or follow-up")
 	fs.DurationVar(&o.timeout, "timeout", taskDeadline, "Give up and cancel the task after this long")
 	fs.DurationVar(&o.waitAgent, "wait-agent", 0, "Keep looking this long for a remote AGENT that is not on the network yet, such as one that is joining")
 	fs.BoolVar(&o.json, "json", false, "Print the task's ID, state and result as JSON instead of the answer alone")
@@ -401,7 +400,7 @@ func findAgent(ctx context.Context, tasks *a2aTasks, agent, peer string, wait ti
 		case len(peers) > 1:
 			return taskTarget{}, "", fmt.Errorf("%d nodes offer %s: pick one with -peer (%s)", len(peers), agent, strings.Join(peers, ", "))
 		default:
-			err = fmt.Errorf("no node of your network offers an agent named %s: it is not online or not shared (see agentiscaled agent list on its machine)", agent)
+			err = fmt.Errorf("no agent named %s is available to this node (run agentiscaled agent list)", agent)
 			missing = err
 		}
 		if wait <= 0 || ctx.Err() != nil {
@@ -416,7 +415,7 @@ func findAgent(ctx context.Context, tasks *a2aTasks, agent, peer string, wait ti
 }
 
 func targetLocation(peer string) string {
-	if strings.HasPrefix(peer, hostedPrefix) {
+	if strings.HasPrefix(peer, cloudTargetPrefix) {
 		return "in the cloud (" + peer + ")"
 	}
 	return "on node " + peer
@@ -425,31 +424,14 @@ func targetLocation(peer string) string {
 // discoverAgent lists the other nodes that offer A2A agent name, through
 // the node's discovery API.
 func discoverAgent(ctx context.Context, client *http.Client, base, name, self string) ([]string, error) {
-	q := url.Values{"type": {"a2a"}, "name": {name}, "limit": {"100"}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/mesh/service/discover?"+q.Encode(), nil)
+	found, err := meshAgents(ctx, client, base, name)
 	if err != nil {
-		return nil, err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("look for %s on the network: %w", name, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("look for %s on the network: %s: %s", name, resp.Status, strings.TrimSpace(string(b)))
-	}
-	var found []struct {
-		PeerID  string `json:"peer_id"`
-		SrvName string `json:"srv_name"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&found); err != nil {
 		return nil, fmt.Errorf("look for %s on the network: %w", name, err)
 	}
 	var peers []string
-	for _, p := range found {
-		if p.SrvName == name && p.PeerID != "" && p.PeerID != self && !slices.Contains(peers, p.PeerID) {
-			peers = append(peers, p.PeerID)
+	for _, row := range found {
+		if row.PeerID != self && !slices.Contains(peers, row.PeerID) {
+			peers = append(peers, row.PeerID)
 		}
 	}
 	slices.Sort(peers)

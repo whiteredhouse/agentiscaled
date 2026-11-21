@@ -35,8 +35,9 @@ Open Settings, Developer, Edit Config, which opens
 
 Quit and reopen Claude Desktop. The `agentiscale` server's tools
 (`get_mesh_info`, `discover_remote_services`, `find_remote_tools`,
-`describe_remote_tool`, `call_remote_tool`, `list_local_services`, `list_hosted_agents`, and the
-agent tools `get_agent_card`, `send_task`, `get_task` and `cancel_task`) then appear in a new chat. Ask it to "show my agentiscale mesh info" to check the connection.
+`describe_remote_tool`, `call_remote_tool`, `list_local_services`, and the
+agent tools `list_agents`, `get_agent_card`, `send_task`, `get_task` and
+`cancel_task`) then appear in a new chat. Ask it to "show my agentiscale mesh info" to check the connection.
 
 ## Codex CLI
 
@@ -73,24 +74,27 @@ agentiscaled task send codex "Review the uncommitted changes in ~/src/app"
 git diff | agentiscaled task send reviewer -   # the message from standard input
 ```
 
-You can call an agent on this node, on a remote peer, or in the cloud. Create
-hosted agents in the console and finish their runtime and repository setup
-there. Find ready agents with `agentiscaled agent list -hosted` or the MCP tool
-`list_hosted_agents`, even while their compute sleeps. The shared service records an accepted task before starting
-compute. You can disconnect after submission and follow it later from the same
-node. When names overlap, pass the returned mesh peer ID or `hosted:<agent UUID>`
-in `-peer`. Keep the target for later calls. Nodes configured to require remote
+Run `agentiscaled agent list` to find agents across your network. The
+`-location` flag accepts `local` for this node, `mesh` for another node, and
+`cloud` for a cloud agent. MCP clients use `list_agents` with the same optional
+`location` filter. If names overlap, pass the target from the list to
+`task send -peer`. A cloud target has the form `cloud:<agent UUID>`.
+
+Create a cloud agent and finish its runtime and repository setup in the console.
+It stays discoverable while its worker sleeps. The shared service records an
+accepted task before starting compute. You can disconnect after submission and
+follow it later from the same node. Keep the target for later calls. Nodes configured to require remote
 provider labels can call mesh peers that attest those labels. Cloud agents do not
 advertise a mesh provider identity and are unavailable on those nodes.
 
 ```sh
-TASK_ID=$(agentiscaled task send -peer "hosted:$AGENT_ID" -no-wait release-reviewer "Review the latest release")
-agentiscaled task wait -peer "hosted:$AGENT_ID" release-reviewer "$TASK_ID"
+TASK_ID=$(agentiscaled task send -peer "cloud:$AGENT_ID" -no-wait release-reviewer "Review the latest release")
+agentiscaled task wait -peer "cloud:$AGENT_ID" release-reviewer "$TASK_ID"
 ```
 
 Pass the node's `-data-dir` if it is not the default one. Other flags include
 
-- `-request-id <UUID>` identifies a hosted submission. If the response is lost,
+- `-request-id <UUID>` identifies a cloud submission. If the response is lost,
   repeat the same text, target and request ID. Use a new UUID for each follow-up.
 - `-timeout` (default 15m): give up after this long. The command then cancels the
   task, so the agent stops too, as it does when you press Ctrl-C.
@@ -162,7 +166,7 @@ and exits 0 when each task is cancelled or had already ended, else 1. It takes
 The agentiscale skill tells an agent when to hand work to another agent of your
 network and how: which tools to use, what to put in the request, how to follow
 the task and answer its questions, and what to do when it fails. It covers the
-`agentiscale` MCP server, the `agentiscale-network` server of a hosted agent and
+`agentiscale` MCP server, the `agentiscale-network` server of an agent running on a node and
 `agentiscaled task send` in a shell. Install it where Claude Code and the Codex
 CLI load your skills:
 
@@ -184,7 +188,7 @@ under `skills/`, for skill installers that read a repository:
 npx skills add whiteredhouse/agentiscaled
 ```
 
-A hosted agent that runs with your configuration (the default) loads the skill
+An agent running on your node with your configuration (the default) loads the skill
 from your user skills like your own runs do.
 
 ## If it does not connect
@@ -195,11 +199,12 @@ from your user skills like your own runs do.
 
 ## Send a task from Claude Desktop to Codex
 
-With the default setup, Claude Desktop and the hosted Codex agent use the same
+With the default setup, Claude Desktop and your local Codex agent use the same
 node. Offer the agent with `agentiscaled agent add codex -dir /absolute/path/to/workspace`,
 then quit and reopen Claude Desktop to load the current MCP bridge. Use
-`list_local_services` with type `a2a`, read the agent's card with `get_agent_card`,
-and call `send_task` with its name as `service`; omit `peer_id` for local calls.
+`list_agents` with `{"location":"local"}`, read the agent's card with
+`get_agent_card`, and call `send_task` with the row's `service`. Omit
+`peer_id` for local calls.
 Use the same target for `get_task` and `cancel_task`.
 
 An explicit self peer ID also selects this local path. Card reads and task calls
@@ -329,7 +334,7 @@ the project the file is in (`~/work/my-project`); `-name`, `-description` and
 directory (`<data-dir>/agents/<name>/definition.md` or `.toml`), which the
 agent's directory may not overlap, so no task can change the agent's role and
 no edit, branch switch or delete in the project changes it unseen. The node
-runs the agent with that copy, and `agent list` shows its path. To take a
+runs the agent with that copy, and `agent list -location local` shows its path. To take a
 changed file, run the same `agent add` again. `agent remove`, or `agent add`
 of the same name without `-definition`, deletes the copy.
 
@@ -360,7 +365,7 @@ arguments, a path, a URL, a search or what the agent says. When the agent cannot
 without something only the caller knows, it asks one question: the task waits
 in state `input_required` with the question as its message, and the caller
 answers with `send_task` giving the task's `task_id`. The agent then carries on
-in the same session. On the agent's machine, `agentiscaled agent list` shows
+in the same session. On the agent's machine, `agentiscaled agent list -location local` shows
 the agent as `waiting for an answer` until the answer comes (or `busy` while a
 task runs). The session is kept in the runtime's configuration like
 any other Claude Code or Codex session (yours with your configuration, so it
@@ -368,8 +373,8 @@ shows in your session history). Offer the few roles you call from other
 machines or clients rather than every definition in a project: each one is
 another entry in your agents' service list.
 
-Each task belongs to the node that sent it, or to the task of a hosted agent
-that sent it (see below): no other node or task can read its result,
+Each task belongs to the node or agent task that sent it (see below). Only
+that sender can read its result,
 follow its steps, answer its question or cancel it. Limits: one task at a time (others are
 refused, not queued; a task waiting for an answer does not count, and an
 answer that comes while another task runs is refused with the question
@@ -389,15 +394,15 @@ history before restarting; deleting it removes duplicate protection.
 
 **In Claude Desktop**, ask for example "Use agentiscale to ask codex to
 review the last commit", or "… to explain how requests are authenticated".
-The `agentiscale` server also has `get_agent_card`, `send_task`, `get_task` and `cancel_task`: Claude finds the agent with
-`discover_remote_services` (type `a2a`), reads its current card with `get_agent_card`
-(using the discovered `peer_id` and `srv_name` as `service`), sends the task and follows it to one
+Claude finds the agent with `list_agents`, reads its current card with
+`get_agent_card` using the row's `service` and `peer_id`, sends the task with
+`send_task` and follows it with `get_task` to one
 of `completed`, `rejected`, `cancelled`, `timeout` or `failed`. A review of one
 commit takes about a minute. The agent always works in node B's `-dir`,
 never on files on the sender's machine; with both nodes on one Mac, that is
-your checkout as it is on disk. Direct mesh calls need node B to be online. For a console-provisioned agent,
-use `list_hosted_agents` and the returned `service` and `peer_id`. Its shared task
-service accepts work while the runtime is stopped. A stopped, refused or offline service also makes
+your checkout as it is on disk. Direct mesh calls need node B to be online.
+For a cloud agent, the shared task service accepts work while the runtime
+sleeps. A stopped, refused or offline service also makes
 `get_agent_card` return a visible error; an earlier card is never reused as a
 current availability result.
 
@@ -468,8 +473,7 @@ node: only that task can follow, answer or cancel it, not the node's owner or th
 node's other tasks, and the agent's task cannot reach the owner's tasks either.
 The node also keeps that record itself, and refuses more than 64 tasks sent by one
 task. A node's owner can narrow its own credential and send without the name;
-the delegation bound holds hosted agents, not the owners of the nodes they call
-from.
+the delegation limit applies to agents running on that node.
 
 A node running v0.9.0 or older takes a task from another agent as one from its
 node: its agents have no network, so delegation still stops there, but the task

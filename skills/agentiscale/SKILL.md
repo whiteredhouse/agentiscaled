@@ -18,7 +18,7 @@ Use the first that you have:
    `send_task`, `get_task`, `cancel_task`). You have it when you are an agent of
    the network working on a task. It works only while that task runs.
 2. **MCP server `agentiscale`** (tools `list_local_services`,
-   `discover_remote_services`, `list_hosted_agents`, `get_agent_card`, `send_task`, `get_task`,
+   `discover_remote_services`, `list_agents`, `get_agent_card`, `send_task`, `get_task`,
    `cancel_task`, and others). You have it when the person connected you to their
    node with `agentiscaled client connect` or `agentiscaled up`.
 3. **A shell with `agentiscaled`** on a machine whose node is running:
@@ -47,17 +47,14 @@ your files, and it works in its own directory on its own machine. So:
 
 **Find the agent.**
 
-- `agentiscale-network`: call `list_agents`. Each row has `service`, a
-  `peer_id` for an agent on another node (none for one on this node) and its
-  `description`. Cloud agents have a `hosted:<agent UUID>` in `peer_id`.
-- `agentiscale`: call `list_local_services` with type `a2a` for agents on this
-  node (use the name as `service`, no `peer_id`), and
-  `discover_remote_services` with type `a2a` for agents on other nodes (use its
-  `peer_id`, and `srv_name` as `service`). Use `list_hosted_agents` for cloud
-  agents and pass its `service` and `peer_id` to the card and task tools.
+On either MCP server, call `list_agents` to discover agents visible to the
+caller. To narrow the list, pass a `location` of `local` (this node), `mesh`
+(another node), or `cloud` (a console-provisioned cloud agent). Pass the row's
+`service` and, when present, `peer_id` to the card and task tools. A cloud
+target has a `peer_id` of `cloud:<agent UUID>`.
 
-If several nodes offer an agent of the same name, pick by `peer_id` and its
-card, or ask the person which one they mean.
+If several agents have the same name, use their location, target and card to
+choose one, or ask the person which one they mean.
 
 **Send and follow.**
 
@@ -94,8 +91,9 @@ agentiscaled task send -json AGENT "request"     # task_id, state, message, resu
 - The command exits 0 only when the task completes; 2 means the task failed,
   was rejected or cancelled, 3 that the agent asks a question, 4 that
   `-timeout` passed.
-- Run `agentiscaled agent list -hosted` to find cloud targets. If names overlap,
-  select the mesh peer ID or cloud target with `-peer`.
+- Run `agentiscaled agent list` to discover agents, or use
+  `agentiscaled agent list -location cloud` to see just the cloud targets.
+  If names overlap, select a target with `-peer`.
 - `-timeout 5m` gives up and cancels the task after that long (the default is
   longer than most tool-call limits, so set it when your shell call has one).
 - `-wait-agent 2m` waits for a remote agent that is not online yet.
@@ -112,7 +110,7 @@ agentiscaled task send -json AGENT "request"     # task_id, state, message, resu
 
 - An agent runs one task at a time; a second one is rejected, not queued.
 - An agent on a node has 15 minutes of running time over all its turns, and up to five
-  questions, each answered within an hour. Hosted tasks have a 15-minute deadline
+  questions, each answered within an hour. Cloud tasks have a 15-minute deadline
   from acceptance, including time waiting for answers.
 - An offline node cannot be reached and nothing is queued for it: the call
   fails at once. For cloud agents the shared task service accepts work while

@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -41,7 +40,7 @@ type networkAccess struct {
 	Token string
 }
 
-const networkInstructions = `agentiscale-network: the other agents of the network this agent serves in. Use list_agents to find them, get_agent_card to read what one does, send_task to give it a task, get_task (with wait_seconds) to follow the task until it ends (completed, rejected, cancelled, timeout or failed), and cancel_task to stop it. Use the same service and peer_id for every call about a task. Omit peer_id for an agent on this node. Hosted agents have a hosted:UUID peer_id and can accept a task while their compute sleeps. A task in state input_required waits for your answer to the agent's question (its message): answer with send_task, giving the task's task_id. These tools work only while your own task runs, and an agent you call cannot call further agents.`
+const networkInstructions = `agentiscale-network: the other agents of the network this agent serves in. Use list_agents to find them, get_agent_card to read what one does, send_task to give it a task, get_task (with wait_seconds) to follow the task until it ends (completed, rejected, cancelled, timeout or failed), and cancel_task to stop it. Use the same service and peer_id for every call about a task. Omit peer_id for an agent on this node. Each result includes its location (local, mesh, or cloud). Cloud agents have a cloud:UUID peer_id and can accept a task while their compute sleeps. A task in state input_required waits for your answer to the agent's question (its message): answer with send_task, giving the task's task_id. These tools work only while your own task runs, and an agent you call cannot call further agents.`
 
 // taskNetwork gives each turn of a hosted agent's task its own way to the
 // network: the node mints a sealed token that allows only A2A calls and
@@ -56,10 +55,9 @@ type taskNetwork struct {
 	// socket is the node API's Unix socket, agentSocket the local agent
 	// API's.
 	socket, agentSocket string
+	discover            func(context.Context) ([]*api.DiscoveredProvider, error)
 	url                 string
-	// discover lists the A2A agents of other nodes.
-	discover func(context.Context) ([]*api.DiscoveredProvider, error)
-	node     *http.Client
+	node                *http.Client
 
 	// calls are the tool calls being served, of every grant.
 	calls sync.WaitGroup
@@ -245,18 +243,11 @@ func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Ti
 	life, endLife := context.WithCancel(context.Background())
 	tasks := &a2aTasks{
 		http: meshTokenClient(life, n.socket, token), base: "http://agentiscaled",
-		local: meshTokenClient(life, n.agentSocket, token),
-		self:  agent, sent: sent,
+		local:       meshTokenClient(life, n.agentSocket, token),
+		meshCatalog: n.discover, self: agent, sent: sent,
 	}
 	server := mcp.NewServer(&mcp.Implementation{Name: networkServerName, Version: "0.1.0"},
 		&mcp.ServerOptions{Instructions: networkInstructions})
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "list_agents",
-		Description: "List the agents of your network that you can send tasks to: those on this node, those on live peers, and authorized hosted agents with on-demand workers.",
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listAgentsOut, error) {
-		return n.listAgents(ctx, tasks)
-	})
 	addA2ATools(server, tasks)
 	// A call ends with the grant, also one waiting for a task to settle.
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
@@ -349,55 +340,6 @@ func postTokenForm(ctx context.Context, client *http.Client, path string, form u
 		return nil, fmt.Errorf("%s: HTTP %d %s %s", path, resp.StatusCode, oauthErr.Error, oauthErr.Description)
 	}
 	return body, nil
-}
-
-// agentRow is one agent list_agents found.
-type agentRow struct {
-	Service     string `json:"service"`
-	PeerID      string `json:"peer_id,omitempty"`
-	Description string `json:"description,omitempty"`
-}
-
-type listAgentsOut struct {
-	Agents []agentRow `json:"agents"`
-}
-
-func (n *taskNetwork) listAgents(ctx context.Context, tasks *a2aTasks) (*mcp.CallToolResult, listAgentsOut, error) {
-	var out listAgentsOut
-	info, err := tasks.localInfo(ctx)
-	if err != nil {
-		return nil, out, fmt.Errorf("list this node's agents: %w", err)
-	}
-	for _, name := range info.Services {
-		if name != tasks.self {
-			out.Agents = append(out.Agents, agentRow{Service: name})
-		}
-	}
-	var hostedAvailable bool
-	if info.Hosted {
-		rows, err := tasks.optionalHostedCatalog(ctx)
-		if err == nil {
-			hostedAvailable = len(rows) > 0
-			out.Agents = append(out.Agents, rows...)
-		}
-	}
-	if n.discover != nil {
-		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		providers, err := n.discover(ctx)
-		if err != nil && !hostedAvailable {
-			return nil, out, fmt.Errorf("discover the network's agents: %w", err)
-		}
-		for _, p := range providers {
-			row := agentRow{Service: p.GetSrvName(), PeerID: p.GetPeerId(), Description: p.GetSrvDescription()}
-			if p.GetPeerId() == info.PeerID || !serviceName.MatchString(row.Service) || slices.Contains(out.Agents, row) {
-				continue
-			}
-			out.Agents = append(out.Agents, row)
-		}
-	}
-	b, _ := json.MarshalIndent(out, "", "  ")
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, out, nil
 }
 
 // meshTokenClient dials socket and presents token on every request as the

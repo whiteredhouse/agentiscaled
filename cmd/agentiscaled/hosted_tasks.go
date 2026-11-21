@@ -15,7 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const hostedPrefix = "hosted:"
+const cloudTargetPrefix = "cloud:"
 const maxHostedResponse = 2 << 20
 
 func canonicalID(s string) bool {
@@ -25,7 +25,7 @@ func canonicalID(s string) bool {
 
 func hostedRequest(ctx context.Context, client *http.Client, method, path string, body []byte, dst any) (int, error) {
 	if client == nil {
-		return 0, errors.New("the running node has no hosted agent API")
+		return 0, errors.New("the running node has no cloud agent API")
 	}
 	req, err := http.NewRequestWithContext(ctx, method, "http://agentiscaled"+path, bytes.NewReader(body))
 	if err != nil {
@@ -42,14 +42,14 @@ func hostedRequest(ctx context.Context, client *http.Client, method, path string
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return resp.StatusCode, fmt.Errorf("hosted agent service: HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+		return resp.StatusCode, fmt.Errorf("cloud agent service: HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxHostedResponse+1))
 	if err != nil {
 		return resp.StatusCode, err
 	}
 	if len(raw) > maxHostedResponse || json.Unmarshal(raw, dst) != nil {
-		return resp.StatusCode, errors.New("invalid hosted service response")
+		return resp.StatusCode, errors.New("invalid cloud service response")
 	}
 	return resp.StatusCode, nil
 }
@@ -71,9 +71,9 @@ func (t *a2aTasks) hostedCatalog(ctx context.Context) ([]agentRow, error) {
 	rows := make([]agentRow, 0, len(catalog.Agents))
 	for _, a := range catalog.Agents {
 		if !canonicalID(a.ID) || !serviceName.MatchString(a.Name) {
-			return nil, errors.New("invalid hosted catalog entry")
+			return nil, errors.New("invalid cloud catalog entry")
 		}
-		rows = append(rows, agentRow{Service: a.Name, PeerID: hostedPrefix + a.ID})
+		rows = append(rows, agentRow{Service: a.Name, Location: "cloud", PeerID: cloudTargetPrefix + a.ID})
 	}
 	return rows, nil
 }
@@ -89,19 +89,9 @@ func (t *a2aTasks) optionalHostedCatalog(ctx context.Context) ([]agentRow, error
 	return t.hostedCatalog(lookup)
 }
 
-func (t *a2aTasks) listHostedAgents(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listAgentsOut, error) {
-	rows, err := t.hostedCatalog(ctx)
-	if err != nil {
-		return nil, listAgentsOut{}, err
-	}
-	out := listAgentsOut{Agents: rows}
-	b, _ := json.Marshal(out)
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, out, nil
-}
-
 func (t *a2aTasks) hostedAgent(ctx context.Context, target taskTarget) (agentRow, error) {
-	if !serviceName.MatchString(target.Service) || !canonicalID(strings.TrimPrefix(target.PeerID, hostedPrefix)) {
-		return agentRow{}, errors.New("invalid hosted agent target")
+	if !serviceName.MatchString(target.Service) || !canonicalID(strings.TrimPrefix(target.PeerID, cloudTargetPrefix)) {
+		return agentRow{}, errors.New("invalid cloud agent target")
 	}
 	rows, err := t.hostedCatalog(ctx)
 	if err != nil {
@@ -112,7 +102,7 @@ func (t *a2aTasks) hostedAgent(ctx context.Context, target taskTarget) (agentRow
 			return row, nil
 		}
 	}
-	return agentRow{}, fmt.Errorf("hosted agent %s is unavailable or not accessible as %s", target.PeerID, target.Service)
+	return agentRow{}, fmt.Errorf("cloud agent %s is unavailable or not accessible as %s", target.PeerID, target.Service)
 }
 
 func (t *a2aTasks) hostedCard(ctx context.Context, target taskTarget) (*mcp.CallToolResult, any, error) {
@@ -120,7 +110,7 @@ func (t *a2aTasks) hostedCard(ctx context.Context, target taskTarget) (*mcp.Call
 	if err != nil {
 		return nil, nil, err
 	}
-	card := map[string]any{"name": row.Service, "peer_id": row.PeerID, "transport": "agentiscale-hosted", "description": "Review the latest release, commits, and changed paths in the connected repository.", "skills": []string{"release-review"}}
+	card := map[string]any{"name": row.Service, "peer_id": row.PeerID, "transport": "agentiscale-cloud", "description": "Review the latest release, commits, and changed paths in the connected repository.", "skills": []string{"release-review"}}
 	b, _ := json.Marshal(card)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, nil, nil
 }
@@ -132,20 +122,20 @@ type hostedSubmission struct {
 }
 
 func (t *a2aTasks) hostedTask(ctx context.Context, target taskTarget, id string, method string, cancel bool, input *hostedSubmission) (taskOut, error) {
-	agentID := strings.TrimPrefix(target.PeerID, hostedPrefix)
+	agentID := strings.TrimPrefix(target.PeerID, cloudTargetPrefix)
 	if !canonicalID(agentID) || !serviceName.MatchString(target.Service) {
-		return taskOut{}, errors.New("invalid hosted agent target")
+		return taskOut{}, errors.New("invalid cloud agent target")
 	}
 	path := hostedPath + "/" + agentID + "/tasks"
 	var body []byte
 	if input != nil {
 		if !canonicalID(input.RequestID) || (input.TaskID != "" && !canonicalID(input.TaskID)) {
-			return taskOut{}, errors.New("invalid hosted request or task ID")
+			return taskOut{}, errors.New("invalid cloud request or task ID")
 		}
 		body, _ = json.Marshal(input)
 	} else {
 		if !canonicalID(id) {
-			return taskOut{}, errors.New("invalid hosted task ID")
+			return taskOut{}, errors.New("invalid cloud task ID")
 		}
 		path += "/" + id
 		if cancel {
@@ -168,12 +158,12 @@ func (t *a2aTasks) hostedTask(ctx context.Context, target taskTarget, id string,
 			return taskOut{}, taskNotFound(target, id)
 		}
 		if input != nil && uncertainSubmission(status) {
-			return taskOut{}, fmt.Errorf("hosted submission %s could not be confirmed: %w", input.RequestID, err)
+			return taskOut{}, fmt.Errorf("cloud submission %s could not be confirmed: %w", input.RequestID, err)
 		}
 		return taskOut{}, err
 	}
 	if !canonicalID(wire.TaskID) || (id != "" && wire.TaskID != id) || (input != nil && input.TaskID != "" && input.TaskID != wire.TaskID) {
-		return taskOut{}, errors.New("invalid hosted task response")
+		return taskOut{}, errors.New("invalid cloud task response")
 	}
 	out := taskOut{TaskID: wire.TaskID, State: wire.State, Message: wire.Message}
 	switch wire.State {
@@ -184,7 +174,7 @@ func (t *a2aTasks) hostedTask(ctx context.Context, target taskTarget, id string,
 	case "cancelled", "failed", "timeout", "rejected":
 		out.Terminal = wire.State
 	default:
-		return taskOut{}, errors.New("unknown hosted task state")
+		return taskOut{}, errors.New("unknown cloud task state")
 	}
 	return out, nil
 }

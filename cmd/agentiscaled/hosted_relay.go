@@ -82,14 +82,14 @@ func (h *hostedRelay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxMessageBytes+4096))
 	if err != nil || ((method == http.MethodGet || strings.HasSuffix(path, "/cancel")) && len(body) != 0) {
-		http.Error(w, "invalid hosted request", http.StatusBadRequest)
+		http.Error(w, "invalid cloud request", http.StatusBadRequest)
 		return
 	}
 	creds := r.Header.Values(api.HeaderMeshAuthentication)
 	raw, parent, err := h.credential(r.Context(), creds)
 	if err != nil {
 		if len(creds) == 0 {
-			http.Error(w, "hosted credential unavailable", http.StatusServiceUnavailable)
+			http.Error(w, "cloud credential unavailable", http.StatusServiceUnavailable)
 		} else {
 			http.Error(w, "invalid delegated credential", http.StatusForbidden)
 		}
@@ -101,7 +101,7 @@ func (h *hostedRelay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.sign(up, parent, raw, body); err != nil {
-		http.Error(w, "cannot sign hosted request", http.StatusInternalServerError)
+		http.Error(w, "cannot sign cloud request", http.StatusInternalServerError)
 		return
 	}
 	if len(body) > 0 {
@@ -109,7 +109,7 @@ func (h *hostedRelay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.control.Do(up)
 	if err != nil {
-		http.Error(w, "hosted control unavailable", http.StatusBadGateway)
+		http.Error(w, "cloud control unavailable", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
@@ -120,7 +120,7 @@ func (h *hostedRelay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxHostedResponse+1))
 	if err != nil || len(data) > maxHostedResponse {
-		http.Error(w, "invalid hosted response", http.StatusBadGateway)
+		http.Error(w, "invalid cloud response", http.StatusBadGateway)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

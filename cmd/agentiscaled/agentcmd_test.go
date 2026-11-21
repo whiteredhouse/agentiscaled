@@ -25,7 +25,7 @@ func TestSingularCommandGroups(t *testing.T) {
 		args             []string
 		want             string
 	}{
-		{"agent", "agents", []string{"list", "-data-dir", dataDir}, "agentiscaled agent add"},
+		{"agent", "agents", []string{"list", "-location", "local", "-data-dir", dataDir}, "agentiscaled agent add"},
 		{"client", "clients", []string{"list", "-data-dir", dataDir}, "codex"},
 		{"runtime", "runtimes", []string{"list"}, "RUNTIME"},
 		{"task", "tasks", []string{"status", "-data-dir", dataDir}, "running"},
@@ -40,6 +40,37 @@ func TestSingularCommandGroups(t *testing.T) {
 				t.Errorf("expected %s to be rejected as an unknown command, got %v\n%s", tc.plural, err, out)
 			}
 		})
+	}
+}
+
+func TestAgentListRejectsUnknownLocationAndRemovedFlag(t *testing.T) {
+	for _, args := range [][]string{{"-location", "hosted"}, {"-hosted"}} {
+		if err := runAgentList(context.Background(), args, io.Discard); err == nil {
+			t.Errorf("accepted unsupported discovery arguments %v", args)
+		}
+	}
+}
+
+func TestAgentListReportsDiscoveryFailure(t *testing.T) {
+	dir := shortTempDir(t)
+	ln, err := listenAgentSocket(filepath.Join(dir, localAgentSocketName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+
+	var out bytes.Buffer
+	args := []string{"list", "-data-dir", dir}
+	if err := runAgent(context.Background(), args, &out); err == nil || !strings.Contains(err.Error(), "503") || out.Len() != 0 {
+		t.Fatalf("empty result with failed discovery: %v, %q", err, out.String())
+	}
+	writeSettings(t, dir, settings{Agents: []agentConfig{{Name: "reviewer", Runtime: "claude", Dir: t.TempDir()}}})
+	if err := runAgent(context.Background(), args, &out); err != nil || !strings.Contains(out.String(), "reviewer") || !strings.Contains(out.String(), "503") {
+		t.Fatalf("partial result with failed discovery: %v, %q", err, out.String())
 	}
 }
 
@@ -194,7 +225,7 @@ func TestAgentAddListRemove(t *testing.T) {
 		t.Fatalf("after remove: %+v", s)
 	}
 	out.Reset()
-	if err := runAgent(ctx, []string{"list"}, &out); err != nil || !strings.Contains(out.String(), "offers no agent") {
+	if err := runAgent(ctx, []string{"list", "-location", "local"}, &out); err != nil || !strings.Contains(out.String(), "offers no agent") {
 		t.Fatalf("list after remove: %v\n%s", err, &out)
 	}
 }
