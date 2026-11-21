@@ -23,8 +23,8 @@ it works and its answer on standard output. A task that has already ended or
 asks a question returns at once. Waiting never stops the task: when -timeout
 passes or you press Ctrl-C, the task goes on and you can wait for it again.
 
-AGENT is an agent this node hosts, or one another node of your network
-offers; give -peer when several nodes offer an agent of that name. Only the
+AGENT can be local, on another mesh peer, or in the cloud. Keep
+the -peer target of the original submission when names overlap. Only the
 node that sent a task can follow it.
 ` + taskExitCodes + `
 Flags:
@@ -107,7 +107,7 @@ func runTaskWait(ctx context.Context, args []string, out, errOut io.Writer) erro
 		fs.PrintDefaults()
 	}
 	fs.StringVar(&o.dataDir, "data-dir", defaultDataDir(), "Data directory of the running node that sent the task")
-	fs.StringVar(&o.peer, "peer", "", "Peer ID of the node that offers AGENT, when several do")
+	fs.StringVar(&o.peer, "peer", "", "Target from discovery, either a mesh peer ID or cloud:<agent UUID>")
 	fs.DurationVar(&o.timeout, "timeout", taskDeadline, "Stop waiting after this long; the task goes on")
 	fs.BoolVar(&o.json, "json", false, "Print the task's ID, state and result as JSON instead of the answer alone")
 	pos, err := parseInterleaved(fs, args)

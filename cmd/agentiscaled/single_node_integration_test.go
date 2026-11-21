@@ -144,7 +144,7 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 		if len(services) != 1 || services[0].Name != "helper" {
 			t.Fatalf("local services: %+v", services)
 		}
-		localAPI, err := serveLocalAgent(ctx, node, &meshnode.NodeConfigComplete{}, map[string]string{a.Name: targetURL}, dir, nil)
+		localAPI, err := serveLocalAgent(ctx, node, &meshnode.NodeConfigComplete{}, map[string]string{a.Name: targetURL}, dir, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -198,7 +198,7 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 		}
 		// Local task controls and delegation limits use the ordinary agent
 		// handler: a token whose task is too deep is refused.
-		deepToken, err := (&taskNetwork{node: client}).mint(ctx, fmt.Sprintf("%s%d/t-1", taskClaimPrefix, maxDelegationDepth+1), time.Now().Add(time.Minute))
+		deepToken, err := mintTaskToken(ctx, client, fmt.Sprintf("%s%d/t-1", taskClaimPrefix, maxDelegationDepth+1), time.Now().Add(time.Minute))
 		if err != nil {
 			t.Fatal(err)
 		}

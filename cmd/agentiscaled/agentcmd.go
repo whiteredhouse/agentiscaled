@@ -13,8 +13,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
+
+	meshnode "github.com/google/agentmesh/export/node"
 )
 
 const agentUsage = `usage: agentiscaled agent add|remove|list
@@ -22,12 +25,12 @@ const agentUsage = `usage: agentiscaled agent add|remove|list
   add [RUNTIME] [-dir DIR] [-name NAME] ...  offer an agent from this machine to your network
                                               (-definition FILE gives it a subagent's role)
   remove [NAME]                               stop offering an agent
-  list                                        show the agents this machine offers
+  list                                        show agents on this machine, on mesh peers and in the cloud
+  list -location local|mesh|cloud             show agents in one location
 
 Run 'agentiscaled agent add -h' for its flags.`
 
-// runAgent is `agentiscaled agent`: it offers agents from this machine to
-// the owner's network, apart from bringing the node up.
+// runAgent manages agents offered from this machine and discovers agents across the network.
 func runAgent(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "help" {
 		return errors.New(agentUsage)
@@ -38,7 +41,7 @@ func runAgent(ctx context.Context, args []string, out io.Writer) error {
 	case "remove":
 		return runAgentRemove(args[1:], out)
 	case "list":
-		return runAgentList(args[1:], out)
+		return runAgentList(ctx, args[1:], out)
 	}
 	return fmt.Errorf("unknown agent command %q\n%s", args[0], agentUsage)
 }
@@ -188,7 +191,7 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 	if replaced {
 		verb = "has the changed"
 	}
-	fmt.Fprintf(out, "\nYour network %s agent %q from this machine. 'agentiscaled agent list' shows this machine's agents; 'agentiscaled agent remove %s' stops offering it.\n", verb, offer.name, offer.name)
+	fmt.Fprintf(out, "\nYour network %s agent %q from this machine. 'agentiscaled agent list -location local' shows this machine's agents; 'agentiscaled agent remove %s' stops offering it.\n", verb, offer.name, offer.name)
 	return nil
 }
 
@@ -224,7 +227,7 @@ func runAgentRemove(args []string, out io.Writer) error {
 	var name string
 	switch {
 	case len(rest) == 1 && !slices.Contains(names, rest[0]):
-		return fmt.Errorf("this machine offers no agent named %q; see 'agentiscaled agent list'", rest[0])
+		return fmt.Errorf("this machine offers no agent named %q; see 'agentiscaled agent list -location local'", rest[0])
 	case len(rest) == 1:
 		name = rest[0]
 	case len(names) == 0:
@@ -264,43 +267,130 @@ func restartNode(dir string, s settings, svc service, out io.Writer) error {
 	return nil
 }
 
-func runAgentList(args []string, out io.Writer) error {
+func runAgentList(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("agent list", flag.ContinueOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node")
+	location := fs.String("location", "", "Filter agents by location: local, mesh, or cloud (default: all)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	s, err := loadSettings(*dataDir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("load settings: %w", err)
+	if err := validateAgentLocation(*location); err != nil {
+		return err
 	}
-	if len(s.Agents) == 0 {
-		fmt.Fprintln(out, "This machine offers no agent. Offer one with 'agentiscaled agent add'.")
-		return nil
+
+	includeLocal := *location == "" || *location == "local"
+	var s settings
+	if includeLocal {
+		var err error
+		s, err = loadSettings(*dataDir)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("load settings: %w", err)
+		}
 	}
-	activity, running := nodeActivity(*dataDir)
-	defined := slices.ContainsFunc(s.Agents, func(a agentConfig) bool { return a.Definition != "" })
-	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	if defined {
-		fmt.Fprintln(tw, "NAME\tSTATE\tRUNTIME\tDIRECTORY\tDEFINITION")
-	} else {
-		fmt.Fprintln(tw, "NAME\tSTATE\tRUNTIME\tDIRECTORY")
+	mesh := socketClient(filepath.Join(*dataDir, meshnode.DefaultSocketName))
+	local := socketClient(filepath.Join(*dataDir, localAgentSocketName))
+	defer mesh.CloseIdleConnections()
+	defer local.CloseIdleConnections()
+	tasks := &a2aTasks{http: mesh, base: "http://agentiscaled", local: local}
+	rows, discoveryErr := tasks.discoverAgents(ctx, *location)
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	now := time.Now()
+	if *location == "local" && errors.Is(discoveryErr, syscall.ECONNREFUSED) {
+		// A stopped daemon may leave its Unix socket behind. Its configured
+		// local inventory is still available on disk.
+		discoveryErr = nil
+	}
+
+	// Settings also describe agents added since the node started and those
+	// on a stopped node. Keep them visible and label their actual state.
+	liveLocal := map[string]bool{}
+	for _, row := range rows {
+		if row.Location == "local" {
+			liveLocal[row.Service] = true
+		}
+	}
+	configured := map[string]agentConfig{}
 	for _, a := range s.Agents {
-		state := activityText(activity, running, a.Name, now)
-		if !defined {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Name, state, a.Runtime, homeRelative(a.Dir))
-			continue
+		configured[a.Name] = a
+		if !liveLocal[a.Name] {
+			rows = append(rows, agentRow{Service: a.Name, PeerID: s.PeerID, Location: "local"})
 		}
-		def := "-"
+	}
+	if len(rows) == 0 {
+		if discoveryErr != nil {
+			return discoveryErr
+		}
+		switch *location {
+		case "local":
+			fmt.Fprintln(out, "This machine offers no agent. Offer one with 'agentiscaled agent add'.")
+		case "":
+			fmt.Fprintln(out, "No agents are visible to this node. Offer one with 'agentiscaled agent add'.")
+		default:
+			fmt.Fprintf(out, "No %s agents are visible to this node.\n", *location)
+		}
+	} else if err := printAgentList(out, *dataDir, rows, configured); err != nil {
+		return err
+	}
+	if discoveryErr != nil {
+		fmt.Fprintf(out, "Discovery incomplete: %s\n", terminalSafe(discoveryErr.Error()))
+	}
+	return nil
+}
+
+func printAgentList(out io.Writer, dir string, rows []agentRow, configured map[string]agentConfig) error {
+	slices.SortFunc(rows, compareAgentRows)
+	var activity map[string]agentActivity
+	var running bool
+	if slices.ContainsFunc(rows, func(r agentRow) bool { return r.Location == "local" }) {
+		activity, running = nodeActivity(dir)
+	}
+	header := []string{"NAME", "LOCATION", "STATE", "TARGET"}
+	if len(configured) > 0 {
+		header = append(header, "RUNTIME", "DIRECTORY")
+	}
+	withDefinition := false
+	for _, a := range configured {
 		if a.Definition != "" {
-			def = homeRelative(definitionCopy(*dataDir, a.Name, a.Definition))
+			withDefinition = true
+			header = append(header, "DEFINITION")
+			break
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", a.Name, state, a.Runtime, homeRelative(a.Dir), def)
+	}
+
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, strings.Join(header, "\t"))
+	now := time.Now()
+	for _, row := range rows {
+		target := row.PeerID
+		if target == "" {
+			target = "-"
+		}
+		state := "-"
+		switch row.Location {
+		case "local":
+			state = activityText(activity, running, row.Service, now)
+		case "cloud":
+			state = "ready"
+		}
+		fields := []string{row.Service, row.Location, state, target}
+		runtime, directory, definition := "-", "-", "-"
+		if a, ok := configured[row.Service]; row.Location == "local" && ok {
+			runtime, directory = a.Runtime, homeRelative(a.Dir)
+			if a.Definition != "" {
+				definition = homeRelative(definitionCopy(dir, a.Name, a.Definition))
+			}
+		}
+		if len(configured) > 0 {
+			fields = append(fields, runtime, directory)
+		}
+		if withDefinition {
+			fields = append(fields, definition)
+		}
+		fmt.Fprintln(tw, strings.Join(fields, "\t"))
 	}
 	return tw.Flush()
 }

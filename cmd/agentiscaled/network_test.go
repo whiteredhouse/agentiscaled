@@ -147,7 +147,7 @@ func (c *caller) Run(ctx context.Context, _ string, req taskRequest) (turnResult
 	if err := call("list_agents", nil, &agents); err != nil {
 		return turnResult{}, err
 	}
-	if len(agents.Agents) != 1 || agents.Agents[0] != (agentRow{Service: "helper"}) {
+	if len(agents.Agents) != 1 || agents.Agents[0] != (agentRow{Service: "helper", Location: "local"}) {
 		return turnResult{}, errors.New("list_agents: " + jsonString(agents))
 	}
 	var self taskOut
@@ -249,7 +249,7 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sidecar.Shutdown(context.Background())
-	localAPI, err := serveLocalAgent(ctx, node, &meshnode.NodeConfigComplete{}, targets, dir, nil)
+	localAPI, err := serveLocalAgent(ctx, node, &meshnode.NodeConfigComplete{}, targets, dir, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 	expectRefused("remote agent", meshTokenClient(ctx, socket, taskToken), http.MethodGet, "http://agentiscaled/mesh/"+pid+"/a2a/helper/.well-known/agent-card.json")
 
 	// A running task's token allows only A2A calls, and is sealed.
-	live, err := network.mint(ctx, "agentiscale-task/1/live", time.Now().Add(time.Minute))
+	live, err := mintTaskToken(ctx, network.node, "agentiscale-task/1/live", time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 		}
 	}
 	form := url.Values{"grant_type": {api.GrantTypeTokenExchange}, "subject_token": {live}, "scope": {"a2a://helper"}}
-	if _, err := network.post(ctx, "/oauth/token", form); err == nil {
+	if _, err := postTokenForm(ctx, network.node, "/oauth/token", form); err == nil {
 		t.Error("a sealed task token was narrowed further")
 	}
 
@@ -351,7 +351,7 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		token, err := network.mint(ctx, claim, time.Now().Add(time.Minute))
+		token, err := mintTaskToken(ctx, network.node, claim, time.Now().Add(time.Minute))
 		if err != nil {
 			t.Fatal(err)
 		}

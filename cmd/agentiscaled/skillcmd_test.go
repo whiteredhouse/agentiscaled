@@ -81,15 +81,10 @@ func TestSkillNamesRealTools(t *testing.T) {
 			t.Errorf("SKILL.md does not name %s", name)
 		}
 	}
-	// The servers' own instructions name the discovery tools the skill
-	// names.
-	for _, name := range []string{"list_local_services", "discover_remote_services"} {
-		if !strings.Contains(a2aInstructions, name) {
-			t.Errorf("the agentiscale server no longer names %s: update SKILL.md", name)
+	for _, instructions := range []string{a2aInstructions, networkInstructions} {
+		if !strings.Contains(instructions, "list_agents") {
+			t.Error("MCP instructions must name the skill's agent discovery tool")
 		}
-	}
-	if !strings.Contains(networkInstructions, "list_agents") {
-		t.Error("agentiscale-network no longer names list_agents: update SKILL.md")
 	}
 
 	// The flags of task send, as its -h prints them.

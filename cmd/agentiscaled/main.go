@@ -444,8 +444,12 @@ func run(ctx context.Context, c config) error {
 
 	identity, _ := store.LoadIdentity()
 	if len(identity) == 0 {
-		if _, err := enroll(ctx, c, store, priv, options); err != nil {
+		joinedNetwork, err := enroll(ctx, c, store, priv, options)
+		if err != nil {
 			return err
+		}
+		if joinedNetwork != "" {
+			c.networkID = joinedNetwork
 		}
 	} else if stored, _ := store.LoadControlPlaneURL(); stored == "" && c.controlPlane != "" {
 		// An earlier enrollment may have stored its credential and then
@@ -547,7 +551,8 @@ func run(ctx context.Context, c config) error {
 		return fmt.Errorf("start node API: %w", err)
 	}
 	defer srv.Close()
-	if len(agents) > 0 {
+	hosted := newHostedRelay(diag, node, nodeConfig)
+	if len(agents) > 0 || hosted != nil {
 		targets := map[string]string{}
 		for _, a := range agents {
 			targets[a.Name] = a.target
@@ -558,7 +563,7 @@ func run(ctx context.Context, c config) error {
 				out = append(out, a.svc.activity())
 			}
 			return out
-		})
+		}, hosted)
 		if err != nil {
 			return fmt.Errorf("start local agent API: %w", err)
 		}

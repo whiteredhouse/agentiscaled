@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/export/standalone"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // A task's token works across nodes as on one: two nodes of a mesh, each its
@@ -63,9 +64,6 @@ func TestTaskTokensAcrossNodes(t *testing.T) {
 		writeSettings(t, dir, settings{Listen: c.listen, LogLevel: "info", Clients: "none", Foreground: true, Agents: agents, MeshURL: mesh.PublicURL()})
 		p := startNode(t, dir)
 		p.waitLog(t, "agentiscaled running", 30*time.Second)
-		if len(agents) == 0 {
-			return dir, ""
-		}
 		var info localAgentInfo
 		for {
 			resp, err := socketClient(filepath.Join(dir, localAgentSocketName)).Get("http://agentiscaled/info")
@@ -82,14 +80,37 @@ func TestTaskTokensAcrossNodes(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
-	a, _ := node("node-a", nil)
+	// The caller stands in for Codex while this test uses the MCP grant
+	// delivered by its daemon. Keep the turn open until its tool call ends.
+	callerDir := t.TempDir()
+	callerCommand := filepath.Join(callerDir, "codex")
+	callerScript := `#!/bin/sh
+case "$1" in --version) echo 'codex-cli 0.169.0'; exit 0;; login) exit 0;; esac
+cd "$(dirname "$0")" || exit 1
+umask 077
+for arg do
+  case "$arg" in mcp_servers.agentiscale-network.url=*)
+    printf '%s\n%s\n' "${arg#*=}" "$AGENTISCALE_NETWORK_TOKEN" > grant.tmp
+    mv grant.tmp grant;;
+  esac
+done
+while [ ! -f done ]; do sleep 0.1; done
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --output-last-message ]; then echo '{"status":"done","text":"done"}' > "$2"; fi
+  shift
+done
+`
+	if err := os.WriteFile(callerCommand, []byte(callerScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := node("node-a", []agentConfig{{Runtime: "codex", Name: "caller", Dir: t.TempDir(), Command: callerCommand, Env: []string{"CODEX_HOME=" + codexHome}}})
 	_, peerB := node("node-b", []agentConfig{{Runtime: "codex", Name: "helper", Dir: t.TempDir(), Command: helper, Env: []string{"CODEX_HOME=" + codexHome}}})
 
 	socketA, agentSocketA := filepath.Join(a, "agentmesh.sock"), filepath.Join(a, localAgentSocketName)
 	minter := &taskNetwork{node: socketClient(socketA)}
 	mint := func(claim string, ttl time.Duration) string {
 		t.Helper()
-		token, err := minter.mint(ctx, claim, time.Now().Add(ttl))
+		token, err := mintTaskToken(ctx, minter.node, claim, time.Now().Add(ttl))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -122,6 +143,55 @@ func TestTaskTokensAcrossNodes(t *testing.T) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	t.Run("delegated mesh discovery", func(t *testing.T) {
+		// Wait for the DHT announcement independently of the task's grant.
+		for {
+			rows, err := owner.discoverAgents(ctx, "mesh")
+			if err == nil && len(rows) == 1 && rows[0].PeerID == peerB && rows[0].Service == "helper" {
+				break
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("owner never found B's helper: %+v, %v", rows, err)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		_, _, err := owner.send(ctx, nil, sendTaskIn{taskTarget: taskTarget{Service: "caller"}, Text: "list other mesh agents"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.WriteFile(filepath.Join(callerDir, "done"), nil, 0o600) })
+		var grant []byte
+		for {
+			grant, err = os.ReadFile(filepath.Join(callerDir, "grant"))
+			if err == nil {
+				break
+			}
+			if !os.IsNotExist(err) || ctx.Err() != nil {
+				t.Fatalf("waiting for the caller's runtime grant: %v", err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		url, token, ok := strings.Cut(strings.TrimSpace(string(grant)), "\n")
+		if !ok || token == "" {
+			t.Fatal("incomplete runtime grant")
+		}
+		session, err := networkSession(ctx, &networkAccess{URL: strings.Trim(url, `"`), Token: token})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer session.Close()
+		list, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_agents", Arguments: map[string]any{"location": "mesh"}})
+		if err != nil || list.IsError {
+			t.Fatalf("delegated list_agents: %+v, %v", list, err)
+		}
+		var out listAgentsOut
+		if err := json.Unmarshal([]byte(list.Content[0].(*mcp.TextContent).Text), &out); err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Agents) != 1 || out.Agents[0].Location != "mesh" || out.Agents[0].Service != "helper" || out.Agents[0].PeerID != peerB || out.Warning != "" {
+			t.Fatalf("delegated list_agents got %+v, want B's helper", out)
+		}
+	})
 	_, sent, err := as(parent).send(ctx, nil, sendTaskIn{taskTarget: helperTarget, Text: "help with x"})
 	if err != nil {
 		t.Fatal(err)

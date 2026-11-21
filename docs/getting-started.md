@@ -234,7 +234,7 @@ gives the agent the role of a project's subagent definition (`.claude/agents/<na
 or `.codex/agents/<name>.toml`); see [Give an agent a subagent's role](connect-agents.md#give-an-agent-a-subagents-role). Running
 `agent add` again with the same name changes that agent, and `agent add` with
 another name offers one more agent from the same node, next to the first: there
-is no second sign-in, node or service. `agent list` shows the agents this machine
+is no second sign-in, node or service. `agent list -location local` shows the agents this machine
 offers and, while the node runs, what each is doing: `idle`, `busy` with a task, or
 `waiting for an answer` to a question it asked its caller (see [Connect agents](connect-agents.md)), with how long. `agent remove <name>` stops offering one, leaving its directory as it
 is; `agent add` and `agent remove` restart the node's background service. `up` keeps the offered agents as
@@ -246,15 +246,15 @@ Agent questions, runtime login and validation finish before `up` or `agent add` 
 service. If a later enrollment, save or startup step fails, agentiscaled attempts to restore
 the old settings and restart a previously running service; recovery errors are
 reported. A service that was already stopped is not restarted as recovery.
-Client setup uses your invoking shell's Codex configuration, even when the hosted
-agent uses a different saved `CODEX_HOME`.
+Client setup uses your invoking shell's Codex configuration, even when the agent on this node
+uses a different saved `CODEX_HOME`.
 
-The MCP tools preserve Agent Mesh's discovery distinction: `list_local_services`
-with type `a2a` lists this node's hosted agents; `discover_remote_services` lists
-agents on other nodes. For a local agent, read its card with `get_agent_card`,
-then call `send_task`, using its `name` as `service` and omitting `peer_id` for both. For a remote agent, pass its `srv_name` as `service`
-and its `peer_id`. Use the same target with `get_task` and `cancel_task`. While a
-task works, its message is the agent's latest step. A task in
+Use `agentiscaled agent list` or the MCP tool `list_agents` to find agents
+across your network. Each row identifies the location as `local`, `mesh` (another
+node), or `cloud`. In MCP, pass the row's `service` and any `peer_id` to
+`get_agent_card`, then to `send_task`. Use the same target with `get_task`
+and `cancel_task`. While a task works, its message is the agent's latest
+step. A task in
 state `input_required` waits for your answer to the agent's question: answer
 with `send_task` and the task's `task_id`.
 
@@ -286,9 +286,9 @@ once the new setup works. An isolated runtime (`-owner-config=false`) needs its 
 login in the default node's data directory. Do not copy node keys or enrollment files
 between directories.
 
-Confirm that `status` names the intended network and agents, then use
-`list_local_services`, `get_agent_card`, and a harmless task to verify the same-node
-path. Existing client entries stay unchanged; if a client is configured for the old
+Confirm that `status` names the intended network and agents, then call
+`list_agents` with `{"location":"local"}`, read the agent's card, and send a
+harmless task to verify the same-node path. Existing client entries stay unchanged; if a client is configured for the old
 agent node, reconnect it deliberately to the selected node.
 
 ## Machines that cannot sign in

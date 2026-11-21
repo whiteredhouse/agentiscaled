@@ -36,6 +36,13 @@ agent, accessible to local clients and other machines. See
 Linux packages, the container image (`ghcr.io/whiteredhouse/agentiscaled`),
 connecting your agent apps, and machines without a browser.
 
+Find agents on this node, on other mesh nodes, and in the cloud with
+`agentiscaled agent list` or the MCP tool `list_agents`. Use
+`agentiscaled agent list -location cloud` to see just the cloud agents. If you
+know the name, you can call `agentiscaled task send` directly. A cloud agent can
+accept a task while its worker sleeps, and you can disconnect and retrieve the
+answer later. [Call an agent](docs/connect-agents.md#call-an-agent-from-the-command-line).
+
 ## In GitHub Actions
 
 A job joins your network with
@@ -60,7 +67,8 @@ token](docs/getting-started.md#nodes-that-join-with-a-workload-token).
 | --- | --- |
 | `agentiscaled up` | Sign in if needed, join, and start the node as a background service; in a terminal it first asks which agent apps to connect and whether to offer an agent |
 | `agentiscaled client list\|connect\|disconnect` | Connect your agent apps (Claude Desktop, Codex CLI) to the node, or disconnect them |
-| `agentiscaled agent add\|remove\|list` | Offer an agent (Codex, Claude Code) from this machine to your network, or stop offering it |
+| `agentiscaled agent list` | List agents by name and location across your network |
+| `agentiscaled agent add\|remove` | Offer an agent (Codex, Claude Code) from this machine to your network, or stop offering it |
 | `agentiscaled runtime list` | List supported agent runtimes, their executables on `PATH`, and their config directories for the current shell |
 | `agentiscaled status` | Show the node, its network and its mesh connection |
 | `agentiscaled down` | Stop and remove the background service; the node keeps its identity |

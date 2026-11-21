@@ -33,6 +33,7 @@ const localAgentSocketName = "agent.sock"
 type localAgentInfo struct {
 	PeerID   string   `json:"peer_id"`
 	Services []string `json:"services"`
+	Hosted   bool     `json:"hosted,omitempty"`
 }
 
 // localAgentsActivity is what the local agent API says the node's agents
@@ -47,7 +48,7 @@ type agentSocketContextKey struct{}
 // network routes. Both paths proxy to the same agent handler and task store.
 // targets maps each agent's name to where serveAgent serves it, and
 // activity, when set, says what each agent is doing now (GET /agents).
-func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, targets map[string]string, dataDir string, activity func() []agentActivity) (*http.Server, error) {
+func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, targets map[string]string, dataDir string, activity func() []agentActivity, hosted http.Handler) (*http.Server, error) {
 	proxies := map[string]*httputil.ReverseProxy{}
 	for name, target := range targets {
 		backend, err := url.Parse(target)
@@ -74,7 +75,11 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 			http.Error(w, "Unix socket required", http.StatusForbidden)
 			return
 		}
-		info := localAgentInfo{PeerID: node.Host.ID().String(), Services: names}
+		if hosted != nil && (r.URL.Path == hostedPath || strings.HasPrefix(r.URL.Path, hostedPath+"/")) {
+			hosted.ServeHTTP(w, r)
+			return
+		}
+		info := localAgentInfo{PeerID: node.Host.ID().String(), Services: names, Hosted: hosted != nil}
 		if r.Method == http.MethodGet && r.URL.Path == "/info" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(info)

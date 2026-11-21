@@ -131,7 +131,8 @@ func bridgeMCP(ctx context.Context, client mcp.Transport, socket string) error {
 			break
 		}
 	}
-	addA2ATools(server, &a2aTasks{http: httpClient, base: "http://agentiscaled", local: socketClient(filepath.Join(filepath.Dir(socket), localAgentSocketName))})
+	tasks := &a2aTasks{http: httpClient, base: "http://agentiscaled", local: socketClient(filepath.Join(filepath.Dir(socket), localAgentSocketName))}
+	addA2ATools(server, tasks)
 
 	// The client closing its end is the normal way to stop.
 	if err := server.Run(ctx, client); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, mcp.ErrConnectionClosed) && ctx.Err() == nil {

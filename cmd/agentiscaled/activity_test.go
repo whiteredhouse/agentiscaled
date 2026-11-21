@@ -184,12 +184,12 @@ func TestAgentListShowsActivity(t *testing.T) {
 	list := func() string {
 		t.Helper()
 		var out bytes.Buffer
-		if err := runAgent(context.Background(), []string{"list", "-data-dir", dir}, &out); err != nil {
+		if err := runAgent(context.Background(), []string{"list", "-location", "local", "-data-dir", dir}, &out); err != nil {
 			t.Fatal(err)
 		}
 		return out.String()
 	}
-	if out := list(); !strings.HasPrefix(out, "NAME      STATE ") || strings.Count(out, "node not running") != 2 {
+	if out := list(); !strings.HasPrefix(out, "NAME      LOCATION ") || strings.Count(out, "node not running") != 2 {
 		t.Fatalf("no node running:\n%s", out)
 	}
 
@@ -201,6 +201,10 @@ func TestAgentListShowsActivity(t *testing.T) {
 	agents := []agentActivity{{Name: "helper", State: activityBusy, Since: &since, Waiting: 1, WaitingSince: &since}}
 	var old atomic.Bool
 	mux := http.NewServeMux()
+	pid := randomPeer(t)
+	mux.HandleFunc("GET /info", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(localAgentInfo{PeerID: pid, Services: []string{"helper"}})
+	})
 	mux.HandleFunc("GET /agents", func(w http.ResponseWriter, r *http.Request) {
 		if old.Load() {
 			http.NotFound(w, r)
@@ -218,7 +222,7 @@ func TestAgentListShowsActivity(t *testing.T) {
 
 	old.Store(true)
 	for _, line := range strings.Split(strings.TrimSpace(list()), "\n")[1:] {
-		if fields := strings.Fields(line); fields[1] != "-" {
+		if fields := strings.Fields(line); fields[2] != "-" {
 			t.Fatalf("node without the activity API: %q", line)
 		}
 	}

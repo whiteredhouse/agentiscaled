@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -41,7 +40,7 @@ type networkAccess struct {
 	Token string
 }
 
-const networkInstructions = `agentiscale-network: the other agents of the network this agent serves in. Use list_agents to find them, get_agent_card to read what one does, send_task to give it a task, get_task (with wait_seconds) to follow the task until it ends (completed, rejected, cancelled, timeout or failed), and cancel_task to stop it. Use the same service and peer_id (omitted for an agent on this node) for every call about a task. A task in state input_required waits for your answer to the agent's question (its message): answer with send_task, giving the task's task_id. These tools work only while your own task runs, and an agent you call cannot call further agents.`
+const networkInstructions = `agentiscale-network: the other agents of the network this agent serves in. Use list_agents to find them, get_agent_card to read what one does, send_task to give it a task, get_task (with wait_seconds) to follow the task until it ends (completed, rejected, cancelled, timeout or failed), and cancel_task to stop it. Use the same service and peer_id for every call about a task. Omit peer_id for an agent on this node. Each result includes its location (local, mesh, or cloud). Cloud agents have a cloud:UUID peer_id and can accept a task while their compute sleeps. A task in state input_required waits for your answer to the agent's question (its message): answer with send_task, giving the task's task_id. These tools work only while your own task runs, and an agent you call cannot call further agents.`
 
 // taskNetwork gives each turn of a hosted agent's task its own way to the
 // network: the node mints a sealed token that allows only A2A calls and
@@ -56,10 +55,9 @@ type taskNetwork struct {
 	// socket is the node API's Unix socket, agentSocket the local agent
 	// API's.
 	socket, agentSocket string
+	discover            func(context.Context) ([]*api.DiscoveredProvider, error)
 	url                 string
-	// discover lists the A2A agents of other nodes.
-	discover func(context.Context) ([]*api.DiscoveredProvider, error)
-	node     *http.Client
+	node                *http.Client
 
 	// calls are the tool calls being served, of every grant.
 	calls sync.WaitGroup
@@ -196,7 +194,7 @@ func (n *taskNetwork) grant(ctx context.Context, agent string, task a2a.TaskID, 
 		return nil, nil, err
 	}
 	expires := time.Now().Add(ttl)
-	token, err := n.mint(ctx, claim, expires)
+	token, err := mintTaskToken(ctx, n.node, claim, expires)
 	if err != nil {
 		return nil, nil, fmt.Errorf("mint the task's network token: %w", err)
 	}
@@ -245,18 +243,11 @@ func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Ti
 	life, endLife := context.WithCancel(context.Background())
 	tasks := &a2aTasks{
 		http: meshTokenClient(life, n.socket, token), base: "http://agentiscaled",
-		local: meshTokenClient(life, n.agentSocket, token),
-		self:  agent, sent: sent,
+		local:       meshTokenClient(life, n.agentSocket, token),
+		meshCatalog: n.discover, self: agent, sent: sent,
 	}
 	server := mcp.NewServer(&mcp.Implementation{Name: networkServerName, Version: "0.1.0"},
 		&mcp.ServerOptions{Instructions: networkInstructions})
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "list_agents",
-		Description: "List the agents of your network that you can send tasks to: those on this node (no peer_id) and those on other nodes that are online now (with their peer_id).",
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listAgentsOut, error) {
-		return n.listAgents(ctx, tasks)
-	})
 	addA2ATools(server, tasks)
 	// A call ends with the grant, also one waiting for a task to settle.
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
@@ -296,7 +287,7 @@ func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Ti
 // expires, for the task claim names, and sealed, so that the run cannot
 // narrow it into anything else or rename its task (RFC 8693 token exchange
 // at the node's /oauth/token, which needs no control plane).
-func (n *taskNetwork) mint(ctx context.Context, claim string, expires time.Time) (string, error) {
+func mintTaskToken(ctx context.Context, client *http.Client, claim string, expires time.Time) (string, error) {
 	rule, err := protojson.Marshal(&api.TaskAuthorizationRule{
 		Name:       claim,
 		ExpireTime: timestamppb.New(expires),
@@ -306,7 +297,7 @@ func (n *taskNetwork) mint(ctx context.Context, claim string, expires time.Time)
 		return "", err
 	}
 	form := url.Values{"grant_type": {api.GrantTypeTokenExchange}, "options": {string(rule)}, "seal": {"true"}}
-	body, err := n.post(ctx, "/oauth/token", form)
+	body, err := postTokenForm(ctx, client, "/oauth/token", form)
 	if err != nil {
 		return "", err
 	}
@@ -321,17 +312,17 @@ func (n *taskNetwork) mint(ctx context.Context, claim string, expires time.Time)
 
 // revoke makes the node refuse the token from now on (RFC 7009).
 func (n *taskNetwork) revoke(ctx context.Context, token string) error {
-	_, err := n.post(ctx, "/oauth/revoke", url.Values{"token": {token}})
+	_, err := postTokenForm(ctx, n.node, "/oauth/revoke", url.Values{"token": {token}})
 	return err
 }
 
-func (n *taskNetwork) post(ctx context.Context, path string, form url.Values) ([]byte, error) {
+func postTokenForm(ctx context.Context, client *http.Client, path string, form url.Values) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agentiscaled"+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := n.node.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -349,47 +340,6 @@ func (n *taskNetwork) post(ctx context.Context, path string, form url.Values) ([
 		return nil, fmt.Errorf("%s: HTTP %d %s %s", path, resp.StatusCode, oauthErr.Error, oauthErr.Description)
 	}
 	return body, nil
-}
-
-// agentRow is one agent list_agents found.
-type agentRow struct {
-	Service     string `json:"service"`
-	PeerID      string `json:"peer_id,omitempty"`
-	Description string `json:"description,omitempty"`
-}
-
-type listAgentsOut struct {
-	Agents []agentRow `json:"agents"`
-}
-
-func (n *taskNetwork) listAgents(ctx context.Context, tasks *a2aTasks) (*mcp.CallToolResult, listAgentsOut, error) {
-	var out listAgentsOut
-	info, err := tasks.localInfo(ctx)
-	if err != nil {
-		return nil, out, fmt.Errorf("list this node's agents: %w", err)
-	}
-	for _, name := range info.Services {
-		if name != tasks.self {
-			out.Agents = append(out.Agents, agentRow{Service: name})
-		}
-	}
-	if n.discover != nil {
-		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		providers, err := n.discover(ctx)
-		if err != nil {
-			return nil, out, fmt.Errorf("discover the network's agents: %w", err)
-		}
-		for _, p := range providers {
-			row := agentRow{Service: p.GetSrvName(), PeerID: p.GetPeerId(), Description: p.GetSrvDescription()}
-			if p.GetPeerId() == info.PeerID || !serviceName.MatchString(row.Service) || slices.Contains(out.Agents, row) {
-				continue
-			}
-			out.Agents = append(out.Agents, row)
-		}
-	}
-	b, _ := json.MarshalIndent(out, "", "  ")
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, out, nil
 }
 
 // meshTokenClient dials socket and presents token on every request as the
