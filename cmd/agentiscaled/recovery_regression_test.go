@@ -274,3 +274,23 @@ func TestRejoinSteps(t *testing.T) {
 		}
 	}
 }
+
+// A joined node stays in its network: `up -network` naming another one
+// says how to move it instead of quietly keeping the old network.
+func TestJoinedNodeRefusesAnotherNetwork(t *testing.T) {
+	dir := shortTempDir(t)
+	network := uuid.NewString()
+	writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", NetworkID: network})
+	_, key, _ := ed25519.GenerateKey(rand.Reader)
+	seedNode(t, dir, "https://"+network+".mesh.test", key)
+	c := settings{Control: "https://control.test"}.config(dir)
+	c.networkID = uuid.NewString()
+	_, err := ensureJoined(context.Background(), &c, authConfig{issuer: "http://127.0.0.1:1"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "agentiscaled reset") || !strings.Contains(err.Error(), network) {
+		t.Fatalf("up -network for another network: %v", err)
+	}
+	c.networkID = network
+	if joined, err := ensureJoined(context.Background(), &c, authConfig{issuer: "http://127.0.0.1:1"}, io.Discard); err != nil || joined.networkID != network {
+		t.Fatalf("up -network for its own network: %+v, %v", joined, err)
+	}
+}
