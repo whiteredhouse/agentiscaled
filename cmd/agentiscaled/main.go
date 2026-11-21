@@ -547,28 +547,29 @@ func run(ctx context.Context, c config) error {
 		return fmt.Errorf("start node API: %w", err)
 	}
 	defer srv.Close()
-	if len(agents) > 0 {
-		targets := map[string]string{}
+	// The local agent socket also serves a node that offers no agent, so
+	// tools on this machine can list the network's agents.
+	targets := map[string]string{}
+	for _, a := range agents {
+		targets[a.Name] = a.target
+	}
+	networkSource := &networkAgentsSource{control: diag.control, network: diag.network, priv: priv}
+	localAPI, err := serveLocalAgent(nodeCtx, node, nodeConfig, targets, c.dataDir, func() []agentActivity {
+		out := make([]agentActivity, 0, len(agents))
 		for _, a := range agents {
-			targets[a.Name] = a.target
+			out = append(out, a.svc.activity())
 		}
-		localAPI, err := serveLocalAgent(nodeCtx, node, nodeConfig, targets, c.dataDir, func() []agentActivity {
-			out := make([]agentActivity, 0, len(agents))
-			for _, a := range agents {
-				out = append(out, a.svc.activity())
-			}
-			return out
+		return out
+	}, networkSource)
+	if err != nil {
+		return fmt.Errorf("start local agent API: %w", err)
+	}
+	defer localAPI.Close()
+	for _, a := range agents {
+		log.Printf("serving a2a://%s: %s agent in %s", a.Name, a.Runtime, a.Dir)
+		go warnDuplicateAgent(nodeCtx, node.Host.ID().String(), a.Name, func(ctx context.Context) ([]*api.DiscoveredProvider, error) {
+			return node.DiscoverRemoteServices(ctx, api.ServiceType_SERVICE_TYPE_A2A, a.Name)
 		})
-		if err != nil {
-			return fmt.Errorf("start local agent API: %w", err)
-		}
-		defer localAPI.Close()
-		for _, a := range agents {
-			log.Printf("serving a2a://%s: %s agent in %s", a.Name, a.Runtime, a.Dir)
-			go warnDuplicateAgent(nodeCtx, node.Host.ID().String(), a.Name, func(ctx context.Context) ([]*api.DiscoveredProvider, error) {
-				return node.DiscoverRemoteServices(ctx, api.ServiceType_SERVICE_TYPE_A2A, a.Name)
-			})
-		}
 	}
 	log.Printf("agentiscaled running")
 

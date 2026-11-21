@@ -86,7 +86,7 @@ func localAgentsFixture(t *testing.T, role *api.PolicyRole, expiry time.Time, cf
 			out = append(out, a.activity())
 		}
 		return out
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestLocalAgentTransportStreamsAndRejectsTCP(t *testing.T) {
 	if err := os.Symlink(filepath.Join(authDir, meshnode.DefaultSocketName), filepath.Join(dir, meshnode.DefaultSocketName)); err != nil {
 		t.Fatal(err)
 	}
-	server, err := serveLocalAgent(ctx, n, &meshnode.NodeConfigComplete{}, map[string]string{"helper": target}, dir, nil)
+	server, err := serveLocalAgent(ctx, n, &meshnode.NodeConfigComplete{}, map[string]string{"helper": target}, dir, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
