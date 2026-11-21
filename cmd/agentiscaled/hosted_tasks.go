@@ -158,7 +158,7 @@ func (t *a2aTasks) hostedTask(ctx context.Context, target taskTarget, id string,
 		Message string `json:"message"`
 	}
 	status, err := hostedRequest(ctx, t.local, method, path, body, &wire)
-	if input != nil && err != nil && (status == 0 || status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout) && ctx.Err() == nil {
+	if input != nil && err != nil && uncertainSubmission(status) && ctx.Err() == nil {
 		// A lost response can mean the task was accepted. Reuse the exact
 		// request ID so the durable service can return that acceptance.
 		status, err = hostedRequest(ctx, t.local, method, path, body, &wire)
@@ -167,7 +167,7 @@ func (t *a2aTasks) hostedTask(ctx context.Context, target taskTarget, id string,
 		if status == 404 && id != "" {
 			return taskOut{}, taskNotFound(target, id)
 		}
-		if input != nil && (status == 0 || status >= 500) {
+		if input != nil && uncertainSubmission(status) {
 			return taskOut{}, fmt.Errorf("hosted submission %s could not be confirmed: %w", input.RequestID, err)
 		}
 		return taskOut{}, err
@@ -187,6 +187,12 @@ func (t *a2aTasks) hostedTask(ctx context.Context, target taskTarget, id string,
 		return taskOut{}, errors.New("unknown hosted task state")
 	}
 	return out, nil
+}
+
+// A failed transport, unreadable success response, or server error may have
+// happened after the service committed the submission.
+func uncertainSubmission(status int) bool {
+	return status == 0 || (status >= 200 && status < 300) || status >= 500
 }
 
 func (t *a2aTasks) watchHosted(ctx context.Context, target taskTarget, id string, wait time.Duration, notify func(string)) (taskOut, error) {

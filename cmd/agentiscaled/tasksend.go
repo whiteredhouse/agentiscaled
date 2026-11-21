@@ -374,15 +374,18 @@ func findAgent(ctx context.Context, tasks *a2aTasks, agent, peer string, wait ti
 				}
 			}
 		}
-		if localMatch {
-			if len(hosted) == 0 {
-				return taskTarget{Service: agent}, "on this node", nil
-			}
-			return taskTarget{}, "", fmt.Errorf("multiple agents named %s: pick one with -peer (%s, %s)", agent, info.PeerID, strings.Join(hosted, ", "))
+		if localMatch && len(hosted) == 0 {
+			return taskTarget{Service: agent}, "on this node", nil
 		}
 		peers, err := discoverAgent(find, tasks.http, tasks.base, agent, info.PeerID)
 		if len(hosted) > 0 {
+			if localMatch {
+				peers = append(peers, info.PeerID)
+			}
 			peers = append(peers, hosted...)
+			if len(peers) > 1 {
+				return taskTarget{}, "", fmt.Errorf("multiple agents named %s: pick one with -peer (%s)", agent, strings.Join(peers, ", "))
+			}
 			err = nil
 		}
 		if len(peers) == 0 && err == nil && hostedErr != nil {

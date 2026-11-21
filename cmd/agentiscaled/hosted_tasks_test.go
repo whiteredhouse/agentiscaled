@@ -157,7 +157,8 @@ func TestHostedClientColdTaskAndDiscovery(t *testing.T) {
 			t.Errorf("incorrect submission %+v", in)
 		}
 		if submits.Add(1) == 1 {
-			w.WriteHeader(502)
+			w.WriteHeader(http.StatusAccepted)
+			io.WriteString(w, `{"task_id":`)
 			return
 		}
 		fmt.Fprintf(w, `{"task_id":%q,"state":"submitted"}`, task)

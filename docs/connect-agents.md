@@ -79,7 +79,9 @@ there. Find ready agents with `agentiscaled agent list -hosted` or the MCP tool
 `list_hosted_agents`, even while their compute sleeps. The shared service records an accepted task before starting
 compute. You can disconnect after submission and follow it later from the same
 node. When names overlap, pass the returned mesh peer ID or `hosted:<agent UUID>`
-in `-peer`. Keep the target for later calls.
+in `-peer`. Keep the target for later calls. Nodes configured to require remote
+provider labels can call mesh peers that attest those labels. Cloud agents do not
+advertise a mesh provider identity and are unavailable on those nodes.
 
 ```sh
 TASK_ID=$(agentiscaled task send -peer "hosted:$AGENT_ID" -no-wait release-reviewer "Review the latest release")
