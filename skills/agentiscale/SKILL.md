@@ -1,6 +1,6 @@
 ---
 name: agentiscale
-description: Find and call the other AI agents of the user's agentiscale network (Codex, Claude Code and others on their machines) through the agentiscale or agentiscale-network MCP tools, or `agentiscaled task send` in a shell. Use when the user asks to have another agent, machine or "my network" do something, to ask, delegate to or get a review from a named agent, or when part of a task fits an agent that works in another directory or on another machine.
+description: Find and call the other AI agents of the user's agentiscale network (Codex, Claude Code and others on their machines or in the cloud) through the agentiscale or agentiscale-network MCP tools, or `agentiscaled task send` in a shell. Use when the user asks to have another agent, machine or "my network" do something, to ask, delegate to or get a review from a named agent, or when part of a task fits an agent that works in another directory or on another machine.
 ---
 
 # Call agents on an agentiscale network
@@ -8,7 +8,7 @@ description: Find and call the other AI agents of the user's agentiscale network
 agentiscale joins a person's machines into a private network. Each machine runs
 a node (`agentiscaled`), and a node can offer agents: a Codex CLI or Claude Code
 working in a fixed directory on that machine, under a name such as `codex` or
-`reviewer`. You can give such an agent a task and get its answer.
+`reviewer`. A network can also have cloud agents provisioned in its console. You can give either kind of agent a task and get its answer.
 
 ## Pick the way in
 
@@ -18,7 +18,7 @@ Use the first that you have:
    `send_task`, `get_task`, `cancel_task`). You have it when you are an agent of
    the network working on a task. It works only while that task runs.
 2. **MCP server `agentiscale`** (tools `list_local_services`,
-   `discover_remote_services`, `get_agent_card`, `send_task`, `get_task`,
+   `discover_remote_services`, `list_hosted_agents`, `get_agent_card`, `send_task`, `get_task`,
    `cancel_task`, and others). You have it when the person connected you to their
    node with `agentiscaled client connect` or `agentiscaled up`.
 3. **A shell with `agentiscaled`** on a machine whose node is running:
@@ -49,11 +49,12 @@ your files, and it works in its own directory on its own machine. So:
 
 - `agentiscale-network`: call `list_agents`. Each row has `service`, a
   `peer_id` for an agent on another node (none for one on this node) and its
-  `description`.
+  `description`. Cloud agents have a `hosted:<agent UUID>` in `peer_id`.
 - `agentiscale`: call `list_local_services` with type `a2a` for agents on this
   node (use the name as `service`, no `peer_id`), and
   `discover_remote_services` with type `a2a` for agents on other nodes (use its
-  `peer_id`, and `srv_name` as `service`).
+  `peer_id`, and `srv_name` as `service`). Use `list_hosted_agents` for cloud
+  agents and pass its `service` and `peer_id` to the card and task tools.
 
 If several nodes offer an agent of the same name, pick by `peer_id` and its
 card, or ask the person which one they mean.
@@ -93,7 +94,8 @@ agentiscaled task send -json AGENT "request"     # task_id, state, message, resu
 - The command exits 0 only when the task completes; 2 means the task failed,
   was rejected or cancelled, 3 that the agent asks a question, 4 that
   `-timeout` passed.
-- If several nodes offer `AGENT`, it lists their peer IDs: add `-peer <peer ID>`.
+- Run `agentiscaled agent list -hosted` to find cloud targets. If names overlap,
+  select the mesh peer ID or cloud target with `-peer`.
 - `-timeout 5m` gives up and cancels the task after that long (the default is
   longer than most tool-call limits, so set it when your shell call has one).
 - `-wait-agent 2m` waits for a remote agent that is not online yet.
@@ -109,10 +111,12 @@ agentiscaled task send -json AGENT "request"     # task_id, state, message, resu
 ## Limits to expect
 
 - An agent runs one task at a time; a second one is rejected, not queued.
-- A task has 15 minutes of running time over all its turns, and up to five
-  questions, each answered within an hour.
+- An agent on a node has 15 minutes of running time over all its turns, and up to five
+  questions, each answered within an hour. Hosted tasks have a 15-minute deadline
+  from acceptance, including time waiting for answers.
 - An offline node cannot be reached and nothing is queued for it: the call
-  fails at once.
+  fails at once. For cloud agents the shared task service accepts work while
+  compute sleeps and keeps the task ID available across worker restarts.
 - An agent that got its task from another agent cannot call further agents, and
   no agent can send a task to itself.
 - You can follow, answer or cancel only the tasks you sent.

@@ -36,6 +36,11 @@ agent, accessible to local clients and other machines. See
 Linux packages, the container image (`ghcr.io/whiteredhouse/agentiscaled`),
 connecting your agent apps, and machines without a browser.
 
+Console-provisioned cloud agents belong to the same network. A joined node can
+send a hosted agent a task while its compute sleeps, disconnect, and retrieve
+the answer later. Find cloud targets with `agentiscaled agent list -hosted` or the MCP tool
+`list_hosted_agents`, then send by name with `agentiscaled task send`. [Call an agent](docs/connect-agents.md#call-an-agent-from-the-command-line).
+
 ## In GitHub Actions
 
 A job joins your network with

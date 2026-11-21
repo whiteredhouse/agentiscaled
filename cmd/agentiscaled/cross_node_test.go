@@ -89,7 +89,7 @@ func TestTaskTokensAcrossNodes(t *testing.T) {
 	minter := &taskNetwork{node: socketClient(socketA)}
 	mint := func(claim string, ttl time.Duration) string {
 		t.Helper()
-		token, err := minter.mint(ctx, claim, time.Now().Add(ttl))
+		token, err := mintTaskToken(ctx, minter.node, claim, time.Now().Add(ttl))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -44,7 +44,7 @@ func runTaskCancel(ctx context.Context, args []string, out, errOut io.Writer) er
 		fs.PrintDefaults()
 	}
 	fs.StringVar(&o.dataDir, "data-dir", defaultDataDir(), "Data directory of the running node that sent the tasks")
-	fs.StringVar(&o.peer, "peer", "", "Peer ID of the node that offers AGENT, when several do")
+	fs.StringVar(&o.peer, "peer", "", "Target from discovery, either a mesh peer ID or hosted:<agent UUID>")
 	fs.DurationVar(&o.timeout, "timeout", cancelWait, "Give up after this long")
 	fs.BoolVar(&o.json, "json", false, "Print each task's ID, state and result as a JSON array")
 	pos, err := parseInterleaved(fs, args)

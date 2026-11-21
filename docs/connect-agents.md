@@ -35,7 +35,7 @@ Open Settings, Developer, Edit Config, which opens
 
 Quit and reopen Claude Desktop. The `agentiscale` server's tools
 (`get_mesh_info`, `discover_remote_services`, `find_remote_tools`,
-`describe_remote_tool`, `call_remote_tool`, `list_local_services`, and the A2A
+`describe_remote_tool`, `call_remote_tool`, `list_local_services`, `list_hosted_agents`, and the
 agent tools `get_agent_card`, `send_task`, `get_task` and `cancel_task`) then appear in a new chat. Ask it to "show my agentiscale mesh info" to check the connection.
 
 ## Codex CLI
@@ -73,11 +73,23 @@ agentiscaled task send codex "Review the uncommitted changes in ~/src/app"
 git diff | agentiscaled task send reviewer -   # the message from standard input
 ```
 
-The agent is one this node offers, or one another node of your network offers; if
-several nodes offer an agent of that name, the command lists their peer IDs and you
-choose one with `-peer <peer ID>`. Pass the
-node's `-data-dir` if it is not the default one. The other flags:
+You can call an agent on this node, on a remote peer, or in the cloud. Create
+hosted agents in the console and finish their runtime and repository setup
+there. Find ready agents with `agentiscaled agent list -hosted` or the MCP tool
+`list_hosted_agents`, even while their compute sleeps. The shared service records an accepted task before starting
+compute. You can disconnect after submission and follow it later from the same
+node. When names overlap, pass the returned mesh peer ID or `hosted:<agent UUID>`
+in `-peer`. Keep the target for later calls.
 
+```sh
+TASK_ID=$(agentiscaled task send -peer "hosted:$AGENT_ID" -no-wait release-reviewer "Review the latest release")
+agentiscaled task wait -peer "hosted:$AGENT_ID" release-reviewer "$TASK_ID"
+```
+
+Pass the node's `-data-dir` if it is not the default one. Other flags include
+
+- `-request-id <UUID>` identifies a hosted submission. If the response is lost,
+  repeat the same text, target and request ID. Use a new UUID for each follow-up.
 - `-timeout` (default 15m): give up after this long. The command then cancels the
   task, so the agent stops too, as it does when you press Ctrl-C.
 - `-wait-agent`: keep looking this long for a remote agent that is not on the
@@ -381,8 +393,9 @@ The `agentiscale` server also has `get_agent_card`, `send_task`, `get_task` and 
 of `completed`, `rejected`, `cancelled`, `timeout` or `failed`. A review of one
 commit takes about a minute. The agent always works in node B's `-dir`,
 never on files on the sender's machine; with both nodes on one Mac, that is
-your checkout as it is on disk. If node B is offline the call fails at once;
-the mesh keeps no mailbox. A stopped, refused or offline service also makes
+your checkout as it is on disk. Direct mesh calls need node B to be online. For a console-provisioned agent,
+use `list_hosted_agents` and the returned `service` and `peer_id`. Its shared task
+service accepts work while the runtime is stopped. A stopped, refused or offline service also makes
 `get_agent_card` return a visible error; an earlier card is never reused as a
 current availability result.
 

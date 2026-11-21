@@ -23,6 +23,7 @@ const agentUsage = `usage: agentiscaled agent add|remove|list
                                               (-definition FILE gives it a subagent's role)
   remove [NAME]                               stop offering an agent
   list                                        show the agents this machine offers
+  list -hosted                                list ready cloud agents and their target IDs
 
 Run 'agentiscaled agent add -h' for its flags.`
 
@@ -38,7 +39,7 @@ func runAgent(ctx context.Context, args []string, out io.Writer) error {
 	case "remove":
 		return runAgentRemove(args[1:], out)
 	case "list":
-		return runAgentList(args[1:], out)
+		return runAgentList(ctx, args[1:], out)
 	}
 	return fmt.Errorf("unknown agent command %q\n%s", args[0], agentUsage)
 }
@@ -264,14 +265,32 @@ func restartNode(dir string, s settings, svc service, out io.Writer) error {
 	return nil
 }
 
-func runAgentList(args []string, out io.Writer) error {
+func runAgentList(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("agent list", flag.ContinueOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node")
+	hosted := fs.Bool("hosted", false, "Show cloud agents available to this node and their target IDs")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if *hosted {
+		tasks := &a2aTasks{local: socketClient(filepath.Join(*dataDir, localAgentSocketName))}
+		rows, err := tasks.hostedCatalog(ctx)
+		if err != nil {
+			return fmt.Errorf("list cloud agents through the running node: %w", err)
+		}
+		if len(rows) == 0 {
+			_, err = fmt.Fprintln(out, "No ready cloud agents are visible to this node.")
+			return err
+		}
+		table := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
+		fmt.Fprintln(table, "SERVICE\tTARGET")
+		for _, row := range rows {
+			fmt.Fprintf(table, "%s\t%s\n", row.Service, row.PeerID)
+		}
+		return table.Flush()
 	}
 	s, err := loadSettings(*dataDir)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {

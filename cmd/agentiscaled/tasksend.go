@@ -29,8 +29,8 @@ answer on standard output. Without MESSAGE, or with -, the message is read
 from standard input. With -no-wait it prints the task's ID and returns at
 once; agentiscaled task wait follows the task from there.
 
-AGENT is an agent this node hosts, or one another node of your network
-offers; give -peer when several nodes offer an agent of that name.
+AGENT can be local, on a mesh peer, or hosted in your network. If names
+collide, select the peer ID or hosted:UUID with -peer.
 ` + taskExitCodes + `
 Flags:
 `
@@ -53,6 +53,7 @@ type taskSendOptions struct {
 	dataDir   string
 	peer      string
 	taskID    string
+	requestID string
 	timeout   time.Duration
 	waitAgent time.Duration
 	json      bool
@@ -73,8 +74,9 @@ func runTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 		fs.PrintDefaults()
 	}
 	fs.StringVar(&o.dataDir, "data-dir", defaultDataDir(), "Data directory of the running node that sends the task")
-	fs.StringVar(&o.peer, "peer", "", "Peer ID of the node that offers AGENT, when several do")
+	fs.StringVar(&o.peer, "peer", "", "Target from discovery, either a mesh peer ID or hosted:<agent UUID>")
 	fs.StringVar(&o.taskID, "task", "", "ID of a task waiting for your answer (input required): MESSAGE answers its question")
+	fs.StringVar(&o.requestID, "request-id", "", "Stable UUID for retrying the same hosted submission or follow-up")
 	fs.DurationVar(&o.timeout, "timeout", taskDeadline, "Give up and cancel the task after this long")
 	fs.DurationVar(&o.waitAgent, "wait-agent", 0, "Keep looking this long for a remote AGENT that is not on the network yet, such as one that is joining")
 	fs.BoolVar(&o.json, "json", false, "Print the task's ID, state and result as JSON instead of the answer alone")
@@ -110,6 +112,9 @@ func runTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 	}
 	if o.taskID != "" && !taskID.MatchString(o.taskID) {
 		return fmt.Errorf("-task %q is not a task ID", o.taskID)
+	}
+	if o.requestID != "" && !canonicalID(o.requestID) {
+		return errors.New("-request-id requires a canonical UUID")
 	}
 	if o.timeout <= 0 {
 		return errors.New("-timeout must be positive")
@@ -165,7 +170,7 @@ func sendAndFollow(ctx context.Context, deadline time.Time, tasks *a2aTasks, age
 	if err != nil {
 		return timedOut(err, ctx, o.timeout)
 	}
-	_, sent, err := tasks.send(ctx, nil, sendTaskIn{taskTarget: target, Text: text, TaskID: o.taskID})
+	_, sent, err := tasks.send(ctx, nil, sendTaskIn{taskTarget: target, Text: text, TaskID: o.taskID, RequestID: o.requestID})
 	if err != nil {
 		if ctx.Err() == nil {
 			return err
@@ -340,10 +345,11 @@ func timedOut(err error, ctx context.Context, timeout time.Duration) error {
 // where the agent is, for the caller.
 func findAgent(ctx context.Context, tasks *a2aTasks, agent, peer string, wait time.Duration) (taskTarget, string, error) {
 	if peer != "" {
-		return taskTarget{PeerID: peer, Service: agent}, "on node " + peer, nil
+		return taskTarget{PeerID: peer, Service: agent}, targetLocation(peer), nil
 	}
 	info, err := tasks.localInfo(ctx)
-	if err == nil && slices.Contains(info.Services, agent) {
+	localMatch := err == nil && slices.Contains(info.Services, agent)
+	if localMatch && !info.Hosted {
 		return taskTarget{Service: agent}, "on this node", nil
 	}
 	// -wait-agent bounds the search, lookups included, and leaves room for
@@ -357,14 +363,38 @@ func findAgent(ctx context.Context, tasks *a2aTasks, agent, peer string, wait ti
 	}
 	var missing error
 	for {
+		var hosted []string
+		var hostedErr error
+		if info.Hosted {
+			var rows []agentRow
+			rows, hostedErr = tasks.optionalHostedCatalog(find)
+			for _, row := range rows {
+				if row.Service == agent {
+					hosted = append(hosted, row.PeerID)
+				}
+			}
+		}
+		if localMatch {
+			if len(hosted) == 0 {
+				return taskTarget{Service: agent}, "on this node", nil
+			}
+			return taskTarget{}, "", fmt.Errorf("multiple agents named %s: pick one with -peer (%s, %s)", agent, info.PeerID, strings.Join(hosted, ", "))
+		}
 		peers, err := discoverAgent(find, tasks.http, tasks.base, agent, info.PeerID)
+		if len(hosted) > 0 {
+			peers = append(peers, hosted...)
+			err = nil
+		}
+		if len(peers) == 0 && err == nil && hostedErr != nil {
+			err = hostedErr
+		}
 		switch {
 		case err != nil && find.Err() != nil && ctx.Err() == nil && missing != nil:
 			// The search's own time ran out during a lookup.
 			return taskTarget{}, "", missing
 		case err != nil:
 		case len(peers) == 1:
-			return taskTarget{PeerID: peers[0], Service: agent}, "on node " + peers[0], nil
+			return taskTarget{PeerID: peers[0], Service: agent}, targetLocation(peers[0]), nil
 		case len(peers) > 1:
 			return taskTarget{}, "", fmt.Errorf("%d nodes offer %s: pick one with -peer (%s)", len(peers), agent, strings.Join(peers, ", "))
 		default:
@@ -380,6 +410,13 @@ func findAgent(ctx context.Context, tasks *a2aTasks, agent, peer string, wait ti
 		case <-time.After(every):
 		}
 	}
+}
+
+func targetLocation(peer string) string {
+	if strings.HasPrefix(peer, hostedPrefix) {
+		return "in the cloud (" + peer + ")"
+	}
+	return "on node " + peer
 }
 
 // discoverAgent lists the other nodes that offer A2A agent name, through

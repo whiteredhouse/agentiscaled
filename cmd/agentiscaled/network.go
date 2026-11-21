@@ -41,7 +41,7 @@ type networkAccess struct {
 	Token string
 }
 
-const networkInstructions = `agentiscale-network: the other agents of the network this agent serves in. Use list_agents to find them, get_agent_card to read what one does, send_task to give it a task, get_task (with wait_seconds) to follow the task until it ends (completed, rejected, cancelled, timeout or failed), and cancel_task to stop it. Use the same service and peer_id (omitted for an agent on this node) for every call about a task. A task in state input_required waits for your answer to the agent's question (its message): answer with send_task, giving the task's task_id. These tools work only while your own task runs, and an agent you call cannot call further agents.`
+const networkInstructions = `agentiscale-network: the other agents of the network this agent serves in. Use list_agents to find them, get_agent_card to read what one does, send_task to give it a task, get_task (with wait_seconds) to follow the task until it ends (completed, rejected, cancelled, timeout or failed), and cancel_task to stop it. Use the same service and peer_id for every call about a task. Omit peer_id for an agent on this node. Hosted agents have a hosted:UUID peer_id and can accept a task while their compute sleeps. A task in state input_required waits for your answer to the agent's question (its message): answer with send_task, giving the task's task_id. These tools work only while your own task runs, and an agent you call cannot call further agents.`
 
 // taskNetwork gives each turn of a hosted agent's task its own way to the
 // network: the node mints a sealed token that allows only A2A calls and
@@ -196,7 +196,7 @@ func (n *taskNetwork) grant(ctx context.Context, agent string, task a2a.TaskID, 
 		return nil, nil, err
 	}
 	expires := time.Now().Add(ttl)
-	token, err := n.mint(ctx, claim, expires)
+	token, err := mintTaskToken(ctx, n.node, claim, expires)
 	if err != nil {
 		return nil, nil, fmt.Errorf("mint the task's network token: %w", err)
 	}
@@ -252,7 +252,7 @@ func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Ti
 		&mcp.ServerOptions{Instructions: networkInstructions})
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_agents",
-		Description: "List the agents of your network that you can send tasks to: those on this node (no peer_id) and those on other nodes that are online now (with their peer_id).",
+		Description: "List the agents of your network that you can send tasks to: those on this node, those on live peers, and authorized hosted agents with on-demand workers.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listAgentsOut, error) {
 		return n.listAgents(ctx, tasks)
@@ -296,7 +296,7 @@ func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Ti
 // expires, for the task claim names, and sealed, so that the run cannot
 // narrow it into anything else or rename its task (RFC 8693 token exchange
 // at the node's /oauth/token, which needs no control plane).
-func (n *taskNetwork) mint(ctx context.Context, claim string, expires time.Time) (string, error) {
+func mintTaskToken(ctx context.Context, client *http.Client, claim string, expires time.Time) (string, error) {
 	rule, err := protojson.Marshal(&api.TaskAuthorizationRule{
 		Name:       claim,
 		ExpireTime: timestamppb.New(expires),
@@ -306,7 +306,7 @@ func (n *taskNetwork) mint(ctx context.Context, claim string, expires time.Time)
 		return "", err
 	}
 	form := url.Values{"grant_type": {api.GrantTypeTokenExchange}, "options": {string(rule)}, "seal": {"true"}}
-	body, err := n.post(ctx, "/oauth/token", form)
+	body, err := postTokenForm(ctx, client, "/oauth/token", form)
 	if err != nil {
 		return "", err
 	}
@@ -321,17 +321,17 @@ func (n *taskNetwork) mint(ctx context.Context, claim string, expires time.Time)
 
 // revoke makes the node refuse the token from now on (RFC 7009).
 func (n *taskNetwork) revoke(ctx context.Context, token string) error {
-	_, err := n.post(ctx, "/oauth/revoke", url.Values{"token": {token}})
+	_, err := postTokenForm(ctx, n.node, "/oauth/revoke", url.Values{"token": {token}})
 	return err
 }
 
-func (n *taskNetwork) post(ctx context.Context, path string, form url.Values) ([]byte, error) {
+func postTokenForm(ctx context.Context, client *http.Client, path string, form url.Values) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agentiscaled"+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := n.node.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -373,11 +373,19 @@ func (n *taskNetwork) listAgents(ctx context.Context, tasks *a2aTasks) (*mcp.Cal
 			out.Agents = append(out.Agents, agentRow{Service: name})
 		}
 	}
+	var hostedAvailable bool
+	if info.Hosted {
+		rows, err := tasks.optionalHostedCatalog(ctx)
+		if err == nil {
+			hostedAvailable = len(rows) > 0
+			out.Agents = append(out.Agents, rows...)
+		}
+	}
 	if n.discover != nil {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		providers, err := n.discover(ctx)
-		if err != nil {
+		if err != nil && !hostedAvailable {
 			return nil, out, fmt.Errorf("discover the network's agents: %w", err)
 		}
 		for _, p := range providers {

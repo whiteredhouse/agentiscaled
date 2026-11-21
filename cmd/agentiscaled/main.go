@@ -17,7 +17,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -144,23 +143,12 @@ func main() {
 	fs := flag.CommandLine
 	nodeFlags(fs, &c)
 	agent := agentFlags(fs)
-	runner := fs.String("agent-runner", "", "Private file identifying the loopback turn service for a hosted agent")
-	exitOnStdinClose := fs.Bool("exit-on-stdin-close", false, "Stop this foreground node when its supervisor closes stdin")
 	fs.StringVar(&c.controlPlane, "control-plane", "", "https URL of the network's mesh (agentmesh-one)")
 	fs.StringVar(&c.bootstrapTokenPath, "bootstrap-token-path", "", "File holding the bootstrap token; used only when the node has no identity yet")
 	fs.StringVar(&c.control, "control", "", "URL of the agentiscale control service (default with --join-code-path or --oidc-token-path: "+defaultControl+")")
 	flag.Parse()
 	if a := agent(); a != nil {
-		a.runnerFile = *runner
 		c.agents = []agentConfig{*a}
-	} else if *runner != "" {
-		log.Fatal("-agent-runner requires -agent")
-	}
-	if *exitOnStdinClose {
-		go func() {
-			_, _ = io.Copy(io.Discard, os.Stdin)
-			stop()
-		}()
 	}
 	// A join code is redeemed at a control service, the hosted one unless
 	// told otherwise. Without one, a node given --control-plane and
@@ -190,9 +178,6 @@ func nodeFlags(fs *flag.FlagSet, c *config) {
 
 // agentConfig is an agent the node offers: what `agent add` saves for it.
 type agentConfig struct {
-	// runnerFile selects an already provisioned, supervised cloud worker.
-	// This foreground option never enters the owner's saved settings.
-	runnerFile string
 	// Runtime runs the agent's tasks (codex, claude).
 	Runtime string `json:"runtime"`
 	// Name is the agent's service name in the network, a2a://<name>.
@@ -322,9 +307,6 @@ func newAgents(c *config) ([]*hostedAgent, error) {
 			return nil, fmt.Errorf("two agents are named %q; each agent needs a name of its own", a.Name)
 		}
 		names[a.Name] = true
-		if a.runnerFile != "" {
-			continue
-		}
 		ownerConfig = ownerConfig || a.policy().OwnerConfig
 		for _, kv := range a.Env {
 			name, value, _ := strings.Cut(kv, "=")
@@ -367,20 +349,6 @@ func newAgent(a *agentConfig, dataDir string) (*agentService, error) {
 	}
 	if err := agentNameError(a.Name); err != nil {
 		return nil, err
-	}
-	if a.runnerFile != "" {
-		if a.Runtime != "claude" || a.Command != "" || a.Dir != "" || a.Definition != "" || len(a.Env) != 0 {
-			return nil, errors.New("-agent-runner requires a hosted Claude agent without local runtime configuration")
-		}
-		rt, err := newCloudRuntime(a.runnerFile)
-		if err != nil {
-			return nil, err
-		}
-		s, err := newAgentService("", rt, dataDir, a.Name)
-		if err == nil {
-			s.description = a.Description
-		}
-		return s, err
 	}
 	if a.Dir == "" {
 		return nil, fmt.Errorf("agent %s has no directory to work in", a.Name)
@@ -476,8 +444,12 @@ func run(ctx context.Context, c config) error {
 
 	identity, _ := store.LoadIdentity()
 	if len(identity) == 0 {
-		if _, err := enroll(ctx, c, store, priv, options); err != nil {
+		joinedNetwork, err := enroll(ctx, c, store, priv, options)
+		if err != nil {
 			return err
+		}
+		if joinedNetwork != "" {
+			c.networkID = joinedNetwork
 		}
 	} else if stored, _ := store.LoadControlPlaneURL(); stored == "" && c.controlPlane != "" {
 		// An earlier enrollment may have stored its credential and then
@@ -542,9 +514,7 @@ func run(ctx context.Context, c config) error {
 		}
 		var services []api.ServiceConfig
 		for _, a := range agents {
-			if a.runnerFile == "" {
-				a.svc.network = network
-			}
+			a.svc.network = network
 			target, err := serveAgent(nodeCtx, a.svc, a.Name)
 			if err != nil {
 				return fmt.Errorf("start agent %s: %w", a.Name, err)
@@ -581,7 +551,8 @@ func run(ctx context.Context, c config) error {
 		return fmt.Errorf("start node API: %w", err)
 	}
 	defer srv.Close()
-	if len(agents) > 0 {
+	hosted := newHostedRelay(diag, node, nodeConfig)
+	if len(agents) > 0 || hosted != nil {
 		targets := map[string]string{}
 		for _, a := range agents {
 			targets[a.Name] = a.target
@@ -592,7 +563,7 @@ func run(ctx context.Context, c config) error {
 				out = append(out, a.svc.activity())
 			}
 			return out
-		})
+		}, hosted)
 		if err != nil {
 			return fmt.Errorf("start local agent API: %w", err)
 		}
