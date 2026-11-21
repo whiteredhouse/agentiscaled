@@ -352,6 +352,9 @@ func nodeActivity(dataDir string) (activity map[string]agentActivity, running bo
 // running node, which may ask the control service first.
 var networkAgentsTimeout = 20 * time.Second
 
+// maxLocalNetworkAgentsBody allows a full stream line plus the local node's peer ID.
+const maxLocalNetworkAgentsBody = networkStreamMaxLine + 1<<10
+
 // listNetworkAgents is `agent list -network`: the running node lists its
 // network's agents, read from the control service with the node's key.
 func listNetworkAgents(dataDir string, asJSON bool, out io.Writer) error {
@@ -374,9 +377,12 @@ func listNetworkAgents(dataDir string, asJSON bool, out io.Writer) error {
 		return errors.New("the node is not running: start it with 'agentiscaled up'")
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxLocalNetworkAgentsBody+1))
 	if err != nil {
 		return err
+	}
+	if len(body) > maxLocalNetworkAgentsBody {
+		return errors.New("the node's agents list is too large to read")
 	}
 	if resp.StatusCode != http.StatusOK {
 		var failure struct {

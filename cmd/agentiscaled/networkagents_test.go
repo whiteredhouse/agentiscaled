@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -348,6 +349,56 @@ func TestAgentListNetwork(t *testing.T) {
 	if out, err := list(); err != nil || !strings.Contains(out, "No machine offers an agent") {
 		t.Fatalf("empty: %q %v", out, err)
 	}
+
+	t.Run("large list", func(t *testing.T) {
+		large := answer
+		description := strings.Repeat("d", 20820)
+		for machine := range 4 {
+			_, peerID := testNodeKey(t)
+			for agent := range 50 {
+				large.Agents = append(large.Agents, networkAgent{
+					PeerID:       peerID,
+					MachineName:  fmt.Sprintf("test-machine-%d", machine),
+					Name:         fmt.Sprintf("agent-%d-%02d", machine, agent),
+					Description:  description,
+					ReportedAt:   now,
+					ReportStatus: "fresh",
+				})
+			}
+		}
+		if body, err := json.Marshal(large); err != nil || len(body) <= 4<<20 {
+			t.Fatalf("expected a response larger than 4 MiB, got %d bytes: %v", len(body), err)
+		}
+		current.Store(large)
+		const last = "agent-3-49"
+		if out, err := list(); err != nil || !strings.Contains(out, last) {
+			t.Fatalf("large table missing %s: %v", last, err)
+		}
+		out, err := list("-json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded networkAgents
+		if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if len(decoded.Agents) != len(large.Agents) {
+			t.Fatalf("got %d agents, want %d", len(decoded.Agents), len(large.Agents))
+		}
+		agent := decoded.Agents[len(decoded.Agents)-1]
+		if agent.Name != last || agent.Description != description {
+			t.Fatalf("last agent = %q with %d description bytes", agent.Name, len(agent.Description))
+		}
+	})
+
+	t.Run("oversized list", func(t *testing.T) {
+		oversized := answer
+		oversized.Agents = []networkAgent{{Name: "oversized", Description: strings.Repeat("d", maxLocalNetworkAgentsBody)}}
+		current.Store(oversized)
+		if _, err := list(); err == nil || err.Error() != "the node's agents list is too large to read" {
+			t.Fatalf("oversized list: %v", err)
+		}
+	})
 }
 
 // A watch sends the list once known, then again only when it changes, and
