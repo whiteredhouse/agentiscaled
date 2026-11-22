@@ -89,11 +89,14 @@ type taskNetwork struct {
 // next turn's calls carry that turn's token.
 type networkGrant struct {
 	bearer  string
-	handler *mcp.StreamableHTTPHandler
+	handler http.Handler
 	server  *mcp.Server
 
 	mu   sync.Mutex
 	turn *grantTurn // nil between turns
+	// opening holds requests that can create an MCP session. It becomes nil
+	// when the grant closes, so an already admitted HTTP request cannot reopen it.
+	opening map[*http.ResponseController]struct{}
 }
 
 // grantTurn is the turn that holds a grant open.
@@ -143,14 +146,46 @@ func (g *networkGrant) close() {
 		g.turn.end()
 		g.turn = nil
 	}
+	for request := range g.opening {
+		// Interrupt a handshake still reading its body or writing its response.
+		_ = request.SetReadDeadline(time.Now())
+		_ = request.SetWriteDeadline(time.Now())
+	}
+	g.opening = nil
 	g.mu.Unlock()
-	// A session closes once its calls have returned, which their cancelled
-	// requests make them do; nothing waits for that.
-	go func() {
-		for session := range g.server.Sessions() {
-			_ = session.Close()
+	go g.closeSessions()
+}
+
+func (g *networkGrant) closeSessions() {
+	for session := range g.server.Sessions() {
+		_ = session.Close()
+	}
+}
+
+func (g *networkGrant) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	// Only a POST without a session ID can open a persistent session.
+	if r.Method == http.MethodPost && r.Header.Get("Mcp-Session-Id") == "" {
+		request := http.NewResponseController(w)
+		g.mu.Lock()
+		if g.opening == nil {
+			g.mu.Unlock()
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
 		}
-	}()
+		g.opening[request] = struct{}{}
+		g.mu.Unlock()
+		defer func() {
+			g.mu.Lock()
+			delete(g.opening, request)
+			closed := g.opening == nil
+			g.mu.Unlock()
+			if closed {
+				// The SDK may have registered this session after close took its snapshot.
+				go g.closeSessions()
+			}
+		}()
+	}
+	g.handler.ServeHTTP(w, r)
 }
 
 // sentTasks are the tasks one task of a hosted agent has sent, and the sends
@@ -251,7 +286,7 @@ func (n *taskNetwork) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	g.handler.ServeHTTP(w, r)
+	g.serveHTTP(w, r)
 }
 
 // grant mints a token for a turn of agent's task that may run for at most
@@ -376,7 +411,7 @@ func (n *taskNetwork) newGrant(agent string, sent *sentTasks) (*networkGrant, er
 	if _, err := rand.Read(b); err != nil {
 		return nil, err
 	}
-	g := &networkGrant{bearer: hex.EncodeToString(b)}
+	g := &networkGrant{bearer: hex.EncodeToString(b), opening: make(map[*http.ResponseController]struct{})}
 	tasks := &a2aTasks{
 		http: grantClient(n.socket), base: "http://agentiscaled",
 		local: grantClient(n.agentSocket),
@@ -416,9 +451,9 @@ func (n *taskNetwork) newGrant(agent string, sent *sentTasks) (*networkGrant, er
 		}
 	})
 	g.server = server
-	// Sessions a runtime leaves open end with the task, or when idle for
-	// longer than a task may run and wait for an answer.
-	g.handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{SessionTimeout: taskDeadline + defaultAnswerWait})
+	// A task may wait for several answers without making an MCP request.
+	// Its grant closes the sessions when the task ends.
+	g.handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
 	n.mu.Lock()
 	n.grants[sha256.Sum256([]byte(g.bearer))] = g
 	n.mu.Unlock()
