@@ -166,7 +166,7 @@ func main() {
 func nodeFlags(fs *flag.FlagSet, c *config) {
 	fs.StringVar(&c.joinCodePath, "join-code-path", "", "File holding a join code from your network; used only when the node has no identity yet")
 	fs.StringVar(&c.oidcTokenPath, "oidc-token-path", "", "File holding an OIDC token whose audience is the control service URL followed by /networks/ and the --network ID, from a GitHub Actions workflow or AWS IAM role your network trusts; used only when the node has no identity yet")
-	fs.StringVar(&c.networkID, "network", "", "ID of the network to join with --oidc-token-path")
+	fs.StringVar(&c.networkID, "network", "", "ID of the network to join: the one an --oidc-token-path token is for, or, when you sign in, one of your networks other than your first")
 	fs.StringVar(&c.dataDir, "data-dir", defaultDataDir(), "Directory for the node's key, identity and socket")
 	fs.StringVar(&c.configFile, "config", "", "Optional agentmesh-node.yaml (static services, labels)")
 	fs.StringVar(&c.bindAddr, "bind-addr", "127.0.0.1:8080", "Local TCP address of the node API; empty serves only the Unix socket")
@@ -710,7 +710,7 @@ func enroll(ctx context.Context, c config, store *meshnode.Store, priv crypto.Pr
 		if err != nil {
 			return "", err
 		}
-		joined, err := enrollSignedIn(ctx, c.control, c.signInToken, peerID.String(), c.machineName)
+		joined, err := enrollSignedIn(ctx, c.control, c.signInToken, c.networkID, peerID.String(), c.machineName)
 		if err != nil {
 			return "", err
 		}

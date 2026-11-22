@@ -516,11 +516,14 @@ func ensureJoined(ctx context.Context, c *config, auth authConfig, out io.Writer
 		} else if h != nil {
 			return joinedNode{}, errors.New(h.Message)
 		}
-		fmt.Fprintln(out, "This node has already joined; keeping its identity.")
 		network := networkFromMeshURL(meshURL)
 		if s, err := loadSettings(c.dataDir); err == nil && s.NetworkID != "" {
 			network = s.NetworkID
 		}
+		if c.networkID != "" && network != "" && c.networkID != network {
+			return joinedNode{}, fmt.Errorf("this node is in network %s; to move it to network %s, run 'agentiscaled reset', then 'agentiscaled up -network %s'", network, c.networkID, c.networkID)
+		}
+		fmt.Fprintln(out, "This node has already joined; keeping its identity.")
 		return joinedNode{peerID: pid.String(), networkID: network, meshURL: meshURL}, nil
 	}
 	if c.joinCodePath == "" && c.oidcTokenPath == "" {
@@ -551,13 +554,17 @@ func ensureJoined(ctx context.Context, c *config, auth authConfig, out io.Writer
 	return joinedNode{peerID: pid.String(), networkID: network, meshURL: meshURL}, nil
 }
 
-// enrollSignedIn asks the control service to admit this node to the signed-in
-// owner's network. A network whose mesh is still starting, as on
-// a first sign-in, answers 503, so it asks again for up to five minutes.
-func enrollSignedIn(ctx context.Context, control, token, peerID, machineName string) (joinAnswer, error) {
+// enrollSignedIn asks the control service to admit this node to one of the
+// signed-in owner's networks: networkID, or their first when it is empty. A
+// network whose mesh is still starting, as on a first sign-in, answers 503,
+// so it asks again for up to five minutes.
+func enrollSignedIn(ctx context.Context, control, token, networkID, peerID, machineName string) (joinAnswer, error) {
 	body := map[string]string{"peer_id": peerID}
 	if machineName != "" {
 		body["machine_name"] = machineName
+	}
+	if networkID != "" {
+		body["network_id"] = networkID
 	}
 	deadline := time.Now().Add(enrollWait)
 	told := false
