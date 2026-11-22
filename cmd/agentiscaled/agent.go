@@ -530,6 +530,9 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		case errors.Is(cause, errStoppedByOwner):
 			end(a2a.TaskStateCanceled, "cancelled", "cancelled: the owner stopped task execution on this node", map[string]any{metaExecutionBegun: true})
 			return
+		case errors.Is(cause, context.Canceled):
+			end(a2a.TaskStateCanceled, "cancelled", "cancelled: the node is shutting down", map[string]any{metaExecutionBegun: true})
+			return
 		case errors.Is(cause, context.DeadlineExceeded):
 			end(a2a.TaskStateFailed, "timeout", fmt.Sprintf("timed out after %s", s.deadline), nil)
 			return
@@ -573,10 +576,8 @@ type runOutcome struct {
 	err error
 }
 
-// sessionKeeper is a runtime that keeps something for a task that waits
-// for an answer, such as the agent's process (acpRuntime.keep), which it
-// lets go of when the task ends without one. releaseAll lets go of all of
-// it and returns once it has.
+// A sessionKeeper retains a session between turns. At shutdown releaseAll
+// also stops active runs and waits for the runtime's processes to exit.
 type sessionKeeper interface {
 	release(task string)
 	releaseAll()
@@ -589,9 +590,15 @@ func (s *agentService) release(task a2a.TaskID) {
 	}
 }
 
-// releaseAll lets the runtime go of what it keeps for every task, and
-// returns once it has: the node stops.
-func (s *agentService) releaseAll() {
+// shutdown runs after the service context is cancelled.
+func (s *agentService) shutdown() {
+	s.mu.Lock()
+	for id, w := range s.waiting {
+		w.timer.Stop()
+		s.network.forget(id)
+	}
+	clear(s.waiting)
+	s.mu.Unlock()
 	if k, ok := s.rt.(sessionKeeper); ok {
 		k.releaseAll()
 	}
@@ -678,6 +685,9 @@ func (s *agentService) wait(id a2a.TaskID, w waitingTask) (why string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.life.Err() != nil {
+		return "the node is shutting down"
+	}
 	for other, o := range s.waiting {
 		if time.Since(o.since) >= s.answerWait {
 			s.expireLocked(other)
@@ -715,6 +725,8 @@ func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, from taskSender, f
 	}
 	sender := from.String()
 	switch {
+	case s.life.Err() != nil:
+		return nil, prior, "refused: the node is shutting down", nil
 	case fromErr != nil:
 		return nil, prior, "refused: " + fromErr.Error(), nil
 	case prior != nil && prior.sender != sender:
@@ -1001,16 +1013,17 @@ func boundStream(ctx context.Context, stream func(context.Context) iter.Seq2[a2a
 	}
 }
 
-// serveAgent starts the agent service on a loopback port and returns the
-// target URL to register with the node, credential included.
-func serveAgent(ctx context.Context, s *agentService, name string) (string, error) {
+// serveAgent returns the authenticated target URL and a channel that closes
+// once the server and its runtime have stopped.
+func serveAgent(ctx context.Context, s *agentService, name string) (string, <-chan struct{}, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		return "", err
+		ln.Close()
+		return "", nil, err
 	}
 	token := hex.EncodeToString(b)
 	s.life = ctx
@@ -1020,13 +1033,14 @@ func serveAgent(ctx context.Context, s *agentService, name string) (string, erro
 			log.Printf("agent service: %v", err)
 		}
 	}()
+	stopped := make(chan struct{})
 	go func() {
 		<-ctx.Done()
 		_ = srv.Close()
-		// The node also waits for this as it stops (runNode).
-		s.releaseAll()
+		s.shutdown()
+		close(stopped)
 	}()
-	return fmt.Sprintf("http://:%s@%s", token, ln.Addr()), nil
+	return fmt.Sprintf("http://:%s@%s", token, ln.Addr()), stopped, nil
 }
 
 func stopFilePath(dataDir string) string { return filepath.Join(dataDir, "tasks-stopped") }

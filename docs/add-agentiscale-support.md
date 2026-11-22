@@ -177,13 +177,14 @@ it stands. Prefer `status`: it cannot be confused with the agent's own output.
 
 ## Cancellation
 
-When the caller cancels the task, or it runs past its time, the node sends
+When the caller cancels the task, or it runs past its time, the node closes the
+turn's network access and cancels its in-flight network requests. It sends
 `session/cancel`, never before the prompt it cancels. End the turn with
 `stopReason` `cancelled`. A permission request that the node answers after the
-cancel gets the `cancelled` outcome. After 5 seconds, even
-if your agent has stopped reading stdin, and whenever a turn ends and your process
-has not exited within 5 seconds of stdin closing, the node stops your process and
-every process it started.
+cancel gets the `cancelled` outcome. The agent has up to five seconds to end
+a cancelled prompt. At task or node shutdown, flush session data and exit when
+stdin closes. The node waits for active and waiting agents to exit and kills
+process groups that exceed the grace period.
 
 ## Permissions
 

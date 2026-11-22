@@ -82,8 +82,11 @@ func runRuntimeCheck(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	rt, err := newACPRuntime(program, programArgs, *dataDir, policy)
+	rt, err := newACPRuntime(ctx, program, programArgs, *dataDir, policy)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		report("FAIL", "initialize", err.Error())
 		return errors.New("the agent does not keep the runtime contract")
 	}

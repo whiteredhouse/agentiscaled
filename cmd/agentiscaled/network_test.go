@@ -239,7 +239,7 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 			t.Fatal(err)
 		}
 		svc.network = network
-		if targets[name], err = serveAgent(ctx, svc, name); err != nil {
+		if targets[name], _, err = serveAgent(ctx, svc, name); err != nil {
 			t.Fatal(err)
 		}
 		if err := node.RegisterService(ctx, &api.RegisterServiceRequest{Service: &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_A2A, Name: name}, Backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: targets[name]}}); err != nil {
@@ -571,7 +571,7 @@ func TestNetworkGrantSpansTurns(t *testing.T) {
 		t.Fatal("a task's second turn got another grant")
 	}
 	access := &networkAccess{URL: network.url, Token: g.bearer}
-	end := g.begin("turn-one-token", time.Now().Add(time.Minute))
+	end := g.begin(ctx, "turn-one-token", time.Now().Add(time.Minute))
 	session, err := networkSession(ctx, access)
 	if err != nil {
 		t.Fatal(err)
@@ -591,7 +591,7 @@ func TestNetworkGrantSpansTurns(t *testing.T) {
 	if err := list(); err == nil {
 		t.Error("a call between turns was admitted")
 	}
-	end = g.begin("turn-two-token", time.Now().Add(time.Minute))
+	end = g.begin(ctx, "turn-two-token", time.Now().Add(time.Minute))
 	if err := list(); err != nil {
 		t.Fatalf("the next turn on the same session: %v", err)
 	}
@@ -601,7 +601,7 @@ func TestNetworkGrantSpansTurns(t *testing.T) {
 		t.Errorf("the node got %q", got)
 	}
 	network.forget("t-1")
-	g.begin("late-token", time.Now().Add(time.Minute))
+	defer g.begin(ctx, "late-token", time.Now().Add(time.Minute))()
 	if err := list(); err == nil {
 		t.Error("a call after the task ended was admitted")
 	}
@@ -616,7 +616,7 @@ func TestGrantTokenIsTheAdmittingTurns(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(""))}, nil
 	})}
 	g := &networkGrant{}
-	end := g.begin("turn-one", time.Now().Add(time.Minute))
+	end := g.begin(t.Context(), "turn-one", time.Now().Add(time.Minute))
 	first := g.current()
 	req := httptest.NewRequest(http.MethodGet, "http://agentiscaled/info", nil)
 	ofFirst := req.WithContext(context.WithValue(context.Background(), grantTurnKey{}, first))
@@ -631,7 +631,7 @@ func TestGrantTokenIsTheAdmittingTurns(t *testing.T) {
 	if _, err := rt.RoundTrip(ofFirst); err == nil {
 		t.Error("a request of an ended turn was sent")
 	}
-	g.begin("turn-two", time.Now().Add(time.Minute))
+	defer g.begin(t.Context(), "turn-two", time.Now().Add(time.Minute))()
 	if _, err := rt.RoundTrip(ofFirst); err == nil {
 		t.Error("a request of an ended turn was sent during the next turn")
 	}
@@ -646,6 +646,64 @@ func TestGrantTokenIsTheAdmittingTurns(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// The service cancels runCtx before the runtime finishes shutting down and
+// releases the grant. Both new requests and an open response follow runCtx.
+func TestNetworkGrantEndsWithRunContext(t *testing.T) {
+	network, _ := fakeNodeNetworkServer(t)
+	network.node = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := ""
+		if r.URL.Path == "/oauth/token" {
+			body = `{"access_token":"turn-token"}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	runCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	_, release, err := network.grant(runCtx, "caller", "t-1", time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	g, err := network.grantFor("caller", "t-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn := g.current()
+	if turn == nil {
+		t.Fatal("the running turn has no grant")
+	}
+	reqCtx := context.WithValue(t.Context(), grantTurnKey{}, turn)
+	req := httptest.NewRequestWithContext(reqCtx, http.MethodGet, "http://agentiscaled/info", nil)
+	var outbound context.Context
+	transport := grantToken{roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if outbound != nil {
+			t.Fatal("the transport received another request after cancellation")
+		}
+		outbound = r.Context()
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("stream"))}, nil
+	})}
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if err := outbound.Err(); err != nil {
+		t.Fatalf("the outbound request ended while the turn was running: %v", err)
+	}
+	cancel()
+	select {
+	case <-outbound.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("an outbound response remained open after cancellation")
+	}
+	if g.current() != nil {
+		t.Error("a cancelled turn still admits tool calls")
+	}
+	if _, err := transport.RoundTrip(req); err == nil {
+		t.Error("a request from the cancelled turn was sent")
+	}
+}
 
 // A turn that gets no token still gets its task's endpoint, whose tools
 // fail until a later turn of the task gets one.
@@ -672,7 +730,7 @@ func TestGrantGivesTheEndpointWithoutAToken(t *testing.T) {
 	if g.bearer != access.Token {
 		t.Fatal("the task's next turn would get another endpoint")
 	}
-	end := g.begin("later-token", time.Now().Add(time.Minute))
+	end := g.begin(ctx, "later-token", time.Now().Add(time.Minute))
 	defer end()
 	if res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_agents"}); err != nil || res.IsError {
 		t.Fatalf("the later turn's call: %v %v", res, err)

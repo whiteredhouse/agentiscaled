@@ -104,22 +104,20 @@ type grantTurn struct {
 	end     context.CancelFunc
 }
 
-// current is the turn holding g open, nil when none is or its token has
-// expired.
+// current is the turn holding g open, nil when it ended or its token expired.
 func (g *networkGrant) current() *grantTurn {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.turn != nil && !time.Now().Before(g.turn.expires) {
+	if g.turn != nil && (g.turn.life.Err() != nil || !time.Now().Before(g.turn.expires)) {
 		g.turn.end()
 		g.turn = nil
 	}
 	return g.turn
 }
 
-// begin opens g to a turn with token until expires, or until the returned
-// end.
-func (g *networkGrant) begin(token string, expires time.Time) (end func()) {
-	life, cancel := context.WithCancel(context.Background())
+// begin opens g until ctx ends, the token expires, or the run releases it.
+func (g *networkGrant) begin(ctx context.Context, token string, expires time.Time) (end func()) {
+	life, cancel := context.WithDeadline(ctx, expires)
 	t := &grantTurn{token: token, expires: expires, life: life, end: cancel}
 	g.mu.Lock()
 	if g.turn != nil {
@@ -129,12 +127,12 @@ func (g *networkGrant) begin(token string, expires time.Time) (end func()) {
 	g.mu.Unlock()
 	return func() {
 		g.mu.Lock()
+		defer g.mu.Unlock()
+		// Ending does not wait for calls in flight: it cancels them.
+		cancel()
 		if g.turn == t {
 			g.turn = nil
 		}
-		g.mu.Unlock()
-		// Ending does not wait for calls in flight: it cancels them.
-		cancel()
 	}
 }
 
@@ -283,7 +281,7 @@ func (n *taskNetwork) grant(ctx context.Context, agent string, task a2a.TaskID, 
 	if err != nil {
 		return access, func() {}, fmt.Errorf("mint the task's network token: %w", err)
 	}
-	endTurn := g.begin(token, expires)
+	endTurn := g.begin(ctx, token, expires)
 	release = func() {
 		endTurn()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -361,7 +359,7 @@ func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Ti
 		// Only a failing source of randomness gets here.
 		panic(err)
 	}
-	end := g.begin(token, expires)
+	end := g.begin(context.Background(), token, expires)
 	return &networkAccess{URL: n.url, Token: g.bearer}, func() {
 		end()
 		n.mu.Lock()

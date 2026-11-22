@@ -583,7 +583,7 @@ func TestResetKeepsEverythingButTheIdentity(t *testing.T) {
 
 	// The agent, signed in on its own, takes a task with no new sign-in.
 	c := after.config(dir)
-	agent, err := newAgent(&c.agents[0], dir)
+	agent, err := newAgent(t.Context(), &c.agents[0], dir)
 	if err != nil {
 		t.Fatalf("agent after reset: %v", err)
 	}

@@ -208,9 +208,9 @@ type agentConfig struct {
 }
 
 // newRuntime makes the agent's runtime, which checks that it can run.
-func (a agentConfig) newRuntime(dataDir string) (runtime, error) {
+func (a agentConfig) newRuntime(ctx context.Context, dataDir string) (runtime, error) {
 	if a.Runtime == "acp" {
-		return newACPRuntime(a.Command, a.Args, dataDir, a.policy())
+		return newACPRuntime(ctx, a.Command, a.Args, dataDir, a.policy())
 	}
 	return runtimes[a.Runtime].new(a.Command, dataDir, a.policy())
 }
@@ -323,7 +323,7 @@ type hostedAgent struct {
 
 // newAgents checks the agents' configuration before the node starts: each
 // callable service needs a runtime that can run and a name of its own.
-func newAgents(c *config) ([]*hostedAgent, error) {
+func newAgents(ctx context.Context, c *config) ([]*hostedAgent, error) {
 	if len(c.agents) == 0 {
 		return nil, nil
 	}
@@ -352,13 +352,13 @@ func newAgents(c *config) ([]*hostedAgent, error) {
 		}
 	}
 	if ownerConfig {
-		if err := ownerEnv(context.Background(), c.dataDir); err != nil {
+		if err := ownerEnv(ctx, c.dataDir); err != nil {
 			return nil, err
 		}
 	}
 	var agents []*hostedAgent
 	for i := range c.agents {
-		svc, err := newAgent(&c.agents[i], c.dataDir)
+		svc, err := newAgent(ctx, &c.agents[i], c.dataDir)
 		if err != nil {
 			return nil, err
 		}
@@ -369,7 +369,7 @@ func newAgents(c *config) ([]*hostedAgent, error) {
 
 // newAgent makes the service of one agent, whose runtime must be able to
 // run. The node's environment is set up already (newAgents).
-func newAgent(a *agentConfig, dataDir string) (*agentService, error) {
+func newAgent(ctx context.Context, a *agentConfig, dataDir string) (*agentService, error) {
 	if _, ok := runtimes[a.Runtime]; !ok {
 		return nil, fmt.Errorf("agent %s: unknown runtime %q (have %s)", a.Name, a.Runtime, strings.Join(runtimeNames(), ", "))
 	}
@@ -392,7 +392,7 @@ func newAgent(a *agentConfig, dataDir string) (*agentService, error) {
 	if err := agentDirApart(dir, dataDir); err != nil {
 		return nil, err
 	}
-	rt, err := a.newRuntime(dataDir)
+	rt, err := a.newRuntime(ctx, dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("agent %s: %w", a.Name, err)
 	}
@@ -448,7 +448,7 @@ func run(ctx context.Context, c config) error {
 	}
 	defer store.Close()
 
-	agents, err := newAgents(&c)
+	agents, err := newAgents(ctx, &c)
 	if err != nil {
 		return err
 	}
@@ -537,16 +537,23 @@ func run(ctx context.Context, c config) error {
 		if err != nil {
 			return fmt.Errorf("start the agents' network API: %w", err)
 		}
+		var stopped []<-chan struct{}
+		defer func() {
+			// Cancel every service before joining any of them, including
+			// when startup fails after a service has begun accepting tasks.
+			stopNode()
+			for _, done := range stopped {
+				<-done
+			}
+		}()
 		var services []api.ServiceConfig
 		for _, a := range agents {
 			a.svc.network = network
-			target, err := serveAgent(nodeCtx, a.svc, a.Name)
+			target, done, err := serveAgent(nodeCtx, a.svc, a.Name)
 			if err != nil {
 				return fmt.Errorf("start agent %s: %w", a.Name, err)
 			}
-			// The agent's processes kept for answers stop before the node
-			// exits, also one that does not exit when its stdin closes.
-			defer a.svc.releaseAll()
+			stopped = append(stopped, done)
 			a.target = target
 			services = append(services, api.ServiceConfig{
 				Type:        api.ServiceTypeStringA2A,

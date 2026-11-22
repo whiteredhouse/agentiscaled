@@ -64,7 +64,7 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 		}
 		c := saved.config(dir)
 		a := &c.agents[0]
-		agent, err := newAgent(a, dir)
+		agent, err := newAgent(ctx, a, dir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -81,7 +81,7 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 		if err := node.Start(ctx); err != nil {
 			t.Fatal(err)
 		}
-		targetURL, err := serveAgent(ctx, agent, a.Name)
+		targetURL, _, err := serveAgent(ctx, agent, a.Name)
 		if err != nil {
 			t.Fatal(err)
 		}

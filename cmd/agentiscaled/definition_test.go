@@ -273,7 +273,7 @@ func TestAgentAddDefinition(t *testing.T) {
 	if b, err := os.ReadFile(copyPath); err != nil || string(b) != codexAgentFile {
 		t.Fatalf("copy: %q, %v", b, err)
 	}
-	svc, err := newAgent(&a, def)
+	svc, err := newAgent(t.Context(), &a, def)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,14 +297,14 @@ func TestAgentAddDefinition(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newAgent(&a, def); err != nil {
+	if _, err := newAgent(t.Context(), &a, def); err != nil {
 		t.Fatalf("agent without its source: %v", err)
 	}
 	// The node reads only the copy in the agent's state, whatever the
 	// settings name.
 	moved := a
 	moved.Definition = filepath.Join(project, "elsewhere", "definition.toml")
-	if _, err := newAgent(&moved, def); err != nil {
+	if _, err := newAgent(t.Context(), &moved, def); err != nil {
 		t.Fatalf("agent with another directory in its definition: %v", err)
 	}
 	write(t, path, codexAgentFile)

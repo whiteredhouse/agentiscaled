@@ -287,17 +287,17 @@ func fakeACPCommand(t *testing.T, flags ...string) string {
 }
 
 // newACPFromLine makes the acp runtime from a -command line.
-func newACPFromLine(line, dataDir string, policy agentPolicy) (runtime, error) {
+func newACPFromLine(ctx context.Context, line, dataDir string, policy agentPolicy) (runtime, error) {
 	program, args, err := splitACPCommand(line)
 	if err != nil {
 		return nil, err
 	}
-	return newACPRuntime(program, args, dataDir, policy)
+	return newACPRuntime(ctx, program, args, dataDir, policy)
 }
 
 func newFakeACP(t *testing.T, policy agentPolicy, flags ...string) *acpRuntime {
 	t.Helper()
-	rt, err := newACPFromLine(fakeACPCommand(t, flags...), t.TempDir(), policy)
+	rt, err := newACPFromLine(t.Context(), fakeACPCommand(t, flags...), t.TempDir(), policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,9 +518,9 @@ func TestACPRuntimeReleaseAllJoins(t *testing.T) {
 	r2.keep("t", "s", alone)
 	go r2.release("t")
 	for deadline := time.Now().Add(10 * time.Second); ; {
-		r2.keptMu.Lock()
+		r2.sessionsMu.Lock()
 		n := len(r2.kept)
-		r2.keptMu.Unlock()
+		r2.sessionsMu.Unlock()
 		if n == 0 {
 			break
 		}
@@ -533,10 +533,9 @@ func TestACPRuntimeReleaseAllJoins(t *testing.T) {
 	if alone.cmd.ProcessState == nil {
 		t.Error("releaseAll returned while a process released on its own ran")
 	}
-	extra := startFake(t, r)
-	defer extra.close()
-	if r.keep("t2", "s", extra) {
-		t.Error("kept a process while the node stops")
+	if extra, err := r.start(t.Context(), t.TempDir(), nil); err == nil {
+		extra.close()
+		t.Fatal("started an agent after shutdown")
 	}
 }
 
@@ -582,13 +581,13 @@ func startFake(t *testing.T, r *acpRuntime) *acpSession {
 func TestACPRuntimePolicies(t *testing.T) {
 	data := t.TempDir()
 	restricted := agentPolicy{}
-	if _, err := newACPFromLine(fakeACPCommand(t, "-policies", "config-dir,dir-instructions"), data, restricted); err == nil || !strings.Contains(err.Error(), "-dir-skills=false") || strings.Contains(err.Error(), "-owner-config") {
+	if _, err := newACPFromLine(t.Context(), fakeACPCommand(t, "-policies", "config-dir,dir-instructions"), data, restricted); err == nil || !strings.Contains(err.Error(), "-dir-skills=false") || strings.Contains(err.Error(), "-owner-config") {
 		t.Errorf("an undeclared policy: %v", err)
 	}
-	if _, err := newACPFromLine(fakeACPCommand(t, "-no-meta"), data, agentPolicy{DirSkills: true, OwnerConfig: true}); err == nil || !strings.Contains(err.Error(), "-dir-instructions=false") {
+	if _, err := newACPFromLine(t.Context(), fakeACPCommand(t, "-no-meta"), data, agentPolicy{DirSkills: true, OwnerConfig: true}); err == nil || !strings.Contains(err.Error(), "-dir-instructions=false") {
 		t.Errorf("a plain ACP agent with a policy: %v", err)
 	}
-	rt, err := newACPFromLine(fakeACPCommand(t, "-policies", "config-dir,dir-instructions,dir-skills", "-status"), data, restricted)
+	rt, err := newACPFromLine(t.Context(), fakeACPCommand(t, "-policies", "config-dir,dir-instructions,dir-skills", "-status"), data, restricted)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -607,8 +606,52 @@ func TestACPRuntimePolicies(t *testing.T) {
 	}
 }
 
+func TestACPProbeFollowsCaller(t *testing.T) {
+	for _, entry := range []string{"node startup", "agent add", "runtime check"} {
+		t.Run(entry, func(t *testing.T) {
+			program := filepath.Join(t.TempDir(), "agent")
+			script := "#!/bin/sh\nread -r request\nprintf '%s' \"$request\" > \"$0.started\"\ncat >/dev/null\n: > \"$0.closed\"\n"
+			if err := os.WriteFile(program, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			a := agentConfig{Runtime: "acp", Name: "agent", Command: program, Dir: t.TempDir(), OwnConfig: true}
+			c := config{dataDir: t.TempDir(), agents: []agentConfig{a}}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				switch entry {
+				case "node startup":
+					_, err := newAgents(ctx, &c)
+					done <- err
+				case "agent add":
+					done <- addAgent(ctx, &c, a, false)
+				case "runtime check":
+					done <- runRuntimeCheck(ctx, []string{"-command", program, "-dir", a.Dir, "-data-dir", c.dataDir}, io.Discard)
+				}
+			}()
+			waitFor(t, func() bool {
+				b, _ := os.ReadFile(program + ".started")
+				return strings.Contains(string(b), `"method":"initialize"`)
+			})
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("probe returned %v", err)
+				}
+			case <-time.After(acpCancelGrace + 2*time.Second):
+				t.Fatal("shutdown did not interrupt the initialization probe")
+			}
+			if _, err := os.Stat(program + ".closed"); err != nil {
+				t.Fatalf("probe returned before its process shut down: %v", err)
+			}
+		})
+	}
+}
+
 func TestACPRuntimeRefusesNewerContract(t *testing.T) {
-	if _, err := newACPFromLine(fakeACPCommand(t, "-contract", "2"), t.TempDir(), ownerPolicy); err == nil || !strings.Contains(err.Error(), "update agentiscaled") {
+	if _, err := newACPFromLine(t.Context(), fakeACPCommand(t, "-contract", "2"), t.TempDir(), ownerPolicy); err == nil || !strings.Contains(err.Error(), "update agentiscaled") {
 		t.Errorf("newer contract: %v", err)
 	}
 }
@@ -709,17 +752,17 @@ func TestACPCommandLine(t *testing.T) {
 	if err := a.splitCommand(); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkAgent(&a, t.TempDir(), false); err == nil {
+	if err := checkAgent(t.Context(), &a, t.TempDir(), false); err == nil {
 		t.Error("checkAgent without a directory should fail")
 	}
 	a.Dir = t.TempDir()
-	if err := checkAgent(&a, t.TempDir(), false); err != nil {
+	if err := checkAgent(t.Context(), &a, t.TempDir(), false); err != nil {
 		t.Fatalf("checkAgent: %v", err)
 	}
 	if a.Command != filepath.Join(dir, "fake-acp") || !slices.Equal(a.Args, flags) || a.Name != "fake-acp" {
 		t.Errorf("checked agent: %q %q %q", a.Command, a.Args, a.Name)
 	}
-	if _, err := a.newRuntime(t.TempDir()); err != nil {
+	if _, err := a.newRuntime(t.Context(), t.TempDir()); err != nil {
 		t.Errorf("runtime from a path with a space: %v", err)
 	}
 }
@@ -815,7 +858,7 @@ func TestACPRuntimeFixedTurnReasons(t *testing.T) {
 func TestACPRuntimeRelativeCommand(t *testing.T) {
 	script, flags, _ := splitACPCommand(fakeACPCommand(t, "-status"))
 	t.Chdir(filepath.Dir(script))
-	rt, err := newACPRuntime("./"+filepath.Base(script), flags, t.TempDir(), ownerPolicy)
+	rt, err := newACPRuntime(t.Context(), "./"+filepath.Base(script), flags, t.TempDir(), ownerPolicy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -976,7 +1019,7 @@ func TestWaitingTaskReleasesWhatTheRuntimeKeeps(t *testing.T) {
 	svc.answerWait = 300 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	target, err := serveAgent(ctx, svc, "helper")
+	target, stopped, err := serveAgent(ctx, svc, "helper")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1024,8 +1067,13 @@ func TestWaitingTaskReleasesWhatTheRuntimeKeeps(t *testing.T) {
 	}
 	cancel()
 	select {
-	case <-fix.all:
+	case <-stopped:
 	case <-time.After(5 * time.Second):
-		t.Fatal("stopping the node released nothing")
+		t.Fatal("the agent service did not finish shutting down")
+	}
+	select {
+	case <-fix.all:
+	default:
+		t.Fatal("the service stopped before its runtime")
 	}
 }

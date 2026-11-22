@@ -28,10 +28,10 @@ func TestACPRealAgent(t *testing.T) {
 	if err := a.splitCommand(); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkAgent(&a, data, false); err != nil {
+	if err := checkAgent(t.Context(), &a, data, false); err != nil {
 		t.Fatal(err)
 	}
-	svc, err := newAgent(&a, data)
+	svc, err := newAgent(t.Context(), &a, data)
 	if err != nil {
 		t.Fatal(err)
 	}

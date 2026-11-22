@@ -71,16 +71,13 @@ type acpRuntime struct {
 	info acpAgent
 	// stopped, if set, takes each turn's stop reason; runtime check uses it.
 	stopped func(string)
-	// kept are the processes that wait for answers, by the node's task
-	// (keep). Once draining, the node stops: none is kept, and drained
-	// closes when the last kept one has stopped (releaseAll).
-	keptMu   sync.Mutex
-	kept     map[string]*keptSession
-	draining bool
-	drained  chan struct{}
-	// closing counts the kept processes being stopped one by one
-	// (release), which releaseAll waits for too.
-	closing sync.WaitGroup
+	// sessions holds every process until it is reaped. A running turn
+	// supplies its cancellation function; an idle process needs only EOF.
+	sessionsMu sync.Mutex
+	sessions   map[*acpSession]context.CancelFunc
+	kept       map[string]*keptSession
+	draining   bool
+	drain      sync.Once
 	// stderr, if set, takes what the agent wrote to stderr in each turn,
 	// once its run ends; tests use it.
 	stderr func(string)
@@ -173,7 +170,7 @@ func acpConfigDir(command, dataDir string, policy agentPolicy) (string, error) {
 
 // newACPRuntime makes the runtime of the ACP agent that program, with
 // args, starts.
-func newACPRuntime(program string, args []string, dataDir string, policy agentPolicy) (runtime, error) {
+func newACPRuntime(ctx context.Context, program string, args []string, dataDir string, policy agentPolicy) (runtime, error) {
 	if program == "" {
 		return nil, errors.New("the acp runtime needs the agent's command: -command \"my-agent acp\"")
 	}
@@ -199,7 +196,7 @@ func newACPRuntime(program string, args []string, dataDir string, policy agentPo
 	// The agent says what it supports before it runs any task, so an
 	// owner's policy that it does not enforce stops agent add and the
 	// node's start, not a task.
-	ctx, cancel := context.WithTimeout(context.Background(), acpProbeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, acpProbeTimeout)
 	defer cancel()
 	dir, err := os.MkdirTemp("", "agentiscale-acp-")
 	if err != nil {
@@ -287,6 +284,20 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 	} else {
 		s.setProgress(req.progress)
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	r.sessionsMu.Lock()
+	if r.draining {
+		r.sessionsMu.Unlock()
+		s.close()
+		return turnResult{}, context.Canceled
+	}
+	// Arm escalation before exposing this turn to shutdown. A pending
+	// permission reply can block the protocol lock even before the prompt.
+	stopWatch := s.watchCancel(ctx)
+	defer stopWatch()
+	r.sessions[s] = cancel
+	r.sessionsMu.Unlock()
 	kept := false
 	defer func() {
 		if kept {
@@ -370,9 +381,15 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 		}
 		return turnResult{}, r.failure(ctx, s, err)
 	}
-	stop := context.AfterFunc(ctx, func() { s.cancel(session) })
-	defer stop()
+	cancelSent := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(cancelSent)
+		s.cancel(session)
+	})
 	err = s.await(context.Background(), "session/prompt", ch, &prompted)
+	if !stop() {
+		<-cancelSent
+	}
 	if ctx.Err() != nil {
 		if r.stopped != nil && err == nil {
 			r.stopped(prompted.StopReason)
@@ -410,8 +427,17 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 		return turnResult{}, errors.New("the agent ended the turn with an answer that is not done or needs_input, or an empty question")
 	}
 	if result.Question {
+		// End this turn's watchdog before transferring the process to
+		// the next turn. An already cancelled turn cannot keep it.
+		stopWatch()
+		if err := ctx.Err(); err != nil {
+			return turnResult{}, err
+		}
 		// The process waits for the answer, with the session open.
 		if kept = r.keep(req.Task, result.Session, s); !kept && !info.AgentCapabilities.LoadSession {
+			if s.exited() {
+				return turnResult{}, errors.New("the agent's process that asked the question has ended, and the agent cannot load a session to take the answer")
+			}
 			return turnResult{}, fmt.Errorf("the agent asked a question, but %d of its processes already wait for answers and it cannot load a session to take one later", maxWaiting)
 		}
 	}
@@ -432,16 +458,17 @@ func (r *acpRuntime) keep(task, session string, s *acpSession) bool {
 	if task == "" {
 		return false
 	}
-	r.keptMu.Lock()
-	defer r.keptMu.Unlock()
+	r.sessionsMu.Lock()
+	defer r.sessionsMu.Unlock()
+	if r.draining || s.exited() || len(r.kept) >= maxWaiting || r.kept[task] != nil {
+		return false
+	}
 	if r.kept == nil {
 		r.kept = map[string]*keptSession{}
 	}
-	if r.draining || len(r.kept) >= maxWaiting || r.kept[task] != nil {
-		return false
-	}
 	s.setProgress(nil)
 	r.kept[task] = &keptSession{s: s, session: session}
+	r.sessions[s] = nil
 	return true
 }
 
@@ -451,68 +478,58 @@ func (r *acpRuntime) take(task, session string) *acpSession {
 	if task == "" || session == "" {
 		return nil
 	}
-	r.keptMu.Lock()
+	r.sessionsMu.Lock()
 	k := r.kept[task]
 	if k == nil || k.session != session {
-		r.keptMu.Unlock()
+		r.sessionsMu.Unlock()
 		return nil
 	}
 	delete(r.kept, task)
-	r.keptMu.Unlock()
+	r.sessionsMu.Unlock()
 	select {
 	case <-k.s.done:
-		k.s.close()
-		return nil
 	default:
-		return k.s
+		if !k.s.exited() {
+			return k.s
+		}
 	}
+	k.s.close()
+	return nil
 }
 
 // release stops the process kept for task, if one is: the task ended
 // without an answer.
 func (r *acpRuntime) release(task string) {
-	r.keptMu.Lock()
+	r.sessionsMu.Lock()
 	k := r.kept[task]
 	delete(r.kept, task)
+	r.sessionsMu.Unlock()
 	if k != nil {
-		r.closing.Add(1)
-	}
-	r.keptMu.Unlock()
-	if k != nil {
-		defer r.closing.Done()
 		k.s.close()
 	}
 }
 
-// releaseAll stops every kept process, together, and returns once they
-// have stopped, however many callers ask: the node stops. From then on no
-// process is kept.
+// releaseAll cancels active turns, closes idle sessions and joins every
+// process, including those already being released.
 func (r *acpRuntime) releaseAll() {
-	r.keptMu.Lock()
-	first := !r.draining
-	r.draining = true
-	if r.drained == nil {
-		r.drained = make(chan struct{})
-	}
-	kept, drained := r.kept, r.drained
-	r.kept = nil
-	r.keptMu.Unlock()
-	if !first {
-		<-drained
-		return
-	}
-	var wg sync.WaitGroup
-	for _, k := range kept {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			k.s.close()
-		}()
-	}
-	wg.Wait()
-	// Also the processes released one by one just before.
-	r.closing.Wait()
-	close(drained)
+	r.drain.Do(func() {
+		r.sessionsMu.Lock()
+		r.draining = true
+		sessions := r.sessions
+		r.sessions = nil
+		r.kept = nil
+		r.sessionsMu.Unlock()
+		for s, cancel := range sessions {
+			if cancel != nil {
+				cancel()
+			} else {
+				go s.close()
+			}
+		}
+		for s := range sessions {
+			<-s.closed
+		}
+	})
 }
 
 // failure is err as the task's failure, which the task's caller reads: a
@@ -588,13 +605,33 @@ func (r *acpRuntime) prompt(req taskRequest, status bool) string {
 // start starts the agent's command in dir with stdin and stdout as the ACP
 // connection. progress, if set, takes the turn's steps.
 func (r *acpRuntime) start(ctx context.Context, dir string, progress func(string)) (*acpSession, error) {
+	// Register the new process before shutdown can take its snapshot.
+	r.sessionsMu.Lock()
+	defer r.sessionsMu.Unlock()
+	if r.draining {
+		return nil, context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	cmd := exec.Command(r.command, r.args...)
 	cmd.Dir = dir
 	cmd.Env = r.env()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	s := &acpSession{cmd: cmd, progress: progress, pending: map[int64]chan acpResponse{},
-		out: make(chan acpWrite), dead: make(chan struct{}), broken: make(chan struct{}), done: make(chan struct{})}
+	s := &acpSession{
+		owner: r, cmd: cmd, progress: progress,
+		pending:      make(map[int64]chan acpResponse),
+		out:          make(chan acpWrite),
+		dead:         make(chan struct{}),
+		broken:       make(chan struct{}),
+		done:         make(chan struct{}),
+		exitObserved: make(chan struct{}),
+		closed:       make(chan struct{}),
+	}
 	cmd.Stderr = &s.stderr
+	// A detached helper can retain stderr after the agent exits. Give
+	// os/exec a bounded interval to collect the last diagnostic bytes.
+	cmd.WaitDelay = 100 * time.Millisecond
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -607,6 +644,11 @@ func (r *acpRuntime) start(ctx context.Context, dir string, progress func(string
 		return nil, fmt.Errorf("start %s: %w", r.command, err)
 	}
 	s.stdin = stdin
+	if r.sessions == nil {
+		r.sessions = make(map[*acpSession]context.CancelFunc)
+	}
+	r.sessions[s] = nil
+	go s.observeExit()
 	go s.read(stdout)
 	go s.write()
 	return s, nil
@@ -615,6 +657,13 @@ func (r *acpRuntime) start(ctx context.Context, dir string, progress func(string
 // acpSession is one run of the agent's command: the node's ACP client
 // connection to it.
 type acpSession struct {
+	owner     *acpRuntime
+	closeOnce sync.Once
+	closed    chan struct{}
+	// A helper may inherit stdout or stderr and keep it open after the
+	// agent exits. processExited is read only after exitObserved closes.
+	exitObserved  chan struct{}
+	processExited bool
 	// info is what the agent declared at this process's initialize.
 	info     acpAgent
 	cmd      *exec.Cmd
@@ -1007,28 +1056,68 @@ func (s *acpSession) update(params json.RawMessage) {
 	}
 }
 
-// cancel asks the agent to end the session's turn, and stops its processes
-// if it has not after acpCancelGrace.
-func (s *acpSession) cancel(session string) {
-	// The watchdog starts first, apart from stdin: an agent that reads
-	// no more cannot hold it off.
-	timer := time.AfterFunc(acpCancelGrace, s.kill)
-	go func() {
-		<-s.done
-		timer.Stop()
-	}()
-	go func() {
-		s.order.Lock()
-		s.cancelled = true
-		sent := s.promptSent
-		s.order.Unlock()
-		if !sent {
-			return
+// watchCancel bounds teardown even when a turn cannot reach its next ACP
+// operation. Disarming joins the watchdog before another turn can reuse s.
+func (s *acpSession) watchCancel(ctx context.Context) func() {
+	done, stopped := make(chan struct{}), make(chan struct{})
+	disarm := context.AfterFunc(ctx, func() {
+		defer close(stopped)
+		select {
+		case <-done:
+		case <-time.After(acpCancelGrace):
+			s.kill()
+			s.close()
 		}
-		ctx, stop := context.WithTimeout(context.Background(), acpCancelGrace)
-		defer stop()
-		s.send(ctx, map[string]any{"jsonrpc": "2.0", "method": "session/cancel", "params": map[string]string{"sessionId": session}})
-	}()
+	})
+	return sync.OnceFunc(func() {
+		close(done)
+		if !disarm() {
+			<-stopped
+		}
+	})
+}
+
+// cancel asks the agent to end a prompt that has gone out.
+func (s *acpSession) cancel(session string) {
+	s.order.Lock()
+	s.cancelled = true
+	sent := s.promptSent
+	s.order.Unlock()
+	if !sent {
+		return
+	}
+	ctx, stop := context.WithTimeout(context.Background(), acpCancelGrace)
+	defer stop()
+	s.send(ctx, map[string]any{"jsonrpc": "2.0", "method": "session/cancel", "params": map[string]string{"sessionId": session}})
+}
+
+// observeExit reaps a process that has exited while waiting for an answer.
+// An active turn still owns stdout until it has read the final response.
+func (s *acpSession) observeExit() {
+	s.processExited = waitACPExit(s.cmd.Process.Pid)
+	close(s.exitObserved)
+	if s.processExited {
+		r := s.owner
+		r.sessionsMu.Lock()
+		for task, k := range r.kept {
+			if k.s == s {
+				delete(r.kept, task)
+				r.sessionsMu.Unlock()
+				s.close()
+				return
+			}
+		}
+		r.sessionsMu.Unlock()
+	}
+}
+
+func (s *acpSession) exited() bool {
+	select {
+	case <-s.exitObserved:
+		return s.processExited
+	default:
+		return false
+	}
 }
 
 // kill stops the agent's processes and every write waiting for them.
@@ -1037,6 +1126,7 @@ func (s *acpSession) kill() {
 		close(s.dead)
 		if p := s.cmd.Process; p != nil {
 			syscall.Kill(-p.Pid, syscall.SIGKILL)
+			_ = p.Kill() // The agent may have moved out of its original group.
 		}
 	})
 }
@@ -1044,13 +1134,24 @@ func (s *acpSession) kill() {
 // close ends the agent's run: it closes stdin, on which the agent exits,
 // and stops its processes if it has not after acpCancelGrace.
 func (s *acpSession) close() {
-	s.stdin.Close()
-	select {
-	case <-s.done:
-	case <-time.After(acpCancelGrace):
-	}
-	s.kill()
-	s.cmd.Wait()
+	s.closeOnce.Do(func() {
+		s.stdin.Close()
+		timer := time.AfterFunc(acpCancelGrace, s.kill)
+		// Observe exit without reaping. Keeping the leader's PID reserved
+		// until we kill any remaining group members avoids signaling a
+		// new group that happens to reuse the same ID.
+		<-s.exitObserved
+		if !s.processExited {
+			<-s.dead
+		}
+		s.kill()
+		timer.Stop()
+		s.cmd.Wait()
+		s.owner.sessionsMu.Lock()
+		delete(s.owner.sessions, s)
+		s.owner.sessionsMu.Unlock()
+		close(s.closed)
+	})
 }
 
 // acpProgress is the progress line of one session/update, or "" for one
