@@ -420,7 +420,7 @@ func (n *taskNetwork) newGrant(agent string, sent *sentTasks) (*networkGrant, er
 	g.server = server
 	// Sessions a runtime leaves open end with the task, or when idle for
 	// longer than a task may run and wait for an answer.
-	g.handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{SessionTimeout: taskDeadline + answerWait})
+	g.handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{SessionTimeout: taskDeadline + defaultAnswerWait})
 	n.mu.Lock()
 	n.grants[sha256.Sum256([]byte(g.bearer))] = g
 	n.mu.Unlock()

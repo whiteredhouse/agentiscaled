@@ -60,9 +60,8 @@ func TestActivityFollowsTheTasks(t *testing.T) {
 
 // A question nobody answered in time no longer counts as waiting.
 func TestActivityLeavesOutLapsedQuestions(t *testing.T) {
-	defer func(d time.Duration) { answerWait = d }(answerWait)
-	answerWait = 50 * time.Millisecond
 	h := newAgentHarness(t, testSender)
+	h.svc.answerWait = 50 * time.Millisecond
 	task := h.send(t, "", "double a number", nil)
 	<-h.fix.prompts
 	h.fix.ask <- "Which number?"

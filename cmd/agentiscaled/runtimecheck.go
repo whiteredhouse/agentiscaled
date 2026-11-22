@@ -88,6 +88,7 @@ func runRuntimeCheck(ctx context.Context, args []string, out io.Writer) error {
 		return errors.New("the agent does not keep the runtime contract")
 	}
 	r := rt.(*acpRuntime)
+	defer r.releaseAll()
 	c := r.info.conventions()
 	report("PASS", "initialize", fmt.Sprintf("%s speaks ACP version %d", r.info.name(r.command), r.info.ProtocolVersion))
 	if r.info.Meta.Agentiscale == nil {

@@ -152,9 +152,11 @@ the text is the result or a question in `_meta`:
 - `done`: the text is the task's result, and the task completes.
 - `needs_input`: the text is a question to the caller, and the task waits for the
   answer. The node keeps your process open and sends the answer as the next
-  `session/prompt` in the same session. A node keeps at most 16 processes waiting
-  for answers, each for at most an hour, and closes stdin when the task ends
-  without an answer. When the process that asked is gone, because it exited or
+  `session/prompt` in the same session. Each hosted agent keeps up to 16 processes
+  waiting for answers. The caller has one hour to answer a question. Once the
+  node accepts the answer, it keeps the process for that turn, even if the hour
+  passes while the turn is starting. When a question expires, the node closes
+  stdin. When the process that asked is gone, because it exited or
   more questions wait than the node keeps, an agent with `loadSession` gets the
   answer in a new process: the node starts your command again and sends
   `initialize`, `session/load` with the same `sessionId`, and then the answer as a

@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"iter"
 	"log"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +16,8 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
 )
 
 // answer sends text on task id, as the caller's answer to the agent's
@@ -153,15 +158,16 @@ func TestCancelATaskWaitingForAnAnswer(t *testing.T) {
 	if cancelled.Status.State != a2a.TaskStateCanceled || cancelled.Metadata[metaExecutionBegun] != true {
 		t.Fatalf("cancel: %s %v", cancelled.Status.State, cancelled.Metadata)
 	}
-	if h.svc.waitingFor(task.ID) != nil {
+	h.svc.mu.Lock()
+	defer h.svc.mu.Unlock()
+	if h.svc.waiting[task.ID] != nil {
 		t.Fatal("the cancelled task still waits")
 	}
 }
 
 func TestAnUnansweredQuestionTimesOut(t *testing.T) {
-	defer func(d time.Duration) { answerWait = d }(answerWait)
-	answerWait = 50 * time.Millisecond
 	h := newAgentHarness(t, testSender)
+	h.svc.answerWait = 50 * time.Millisecond
 	task := h.send(t, "", "double a number", nil)
 	<-h.fix.prompts
 	h.fix.ask <- "Which number?"
@@ -174,6 +180,74 @@ func TestAnUnansweredQuestionTimesOut(t *testing.T) {
 	}
 	if _, err := answer(h.client, task.ID, "", "21"); err == nil {
 		t.Fatal("an answer after the timeout was taken")
+	}
+}
+
+// observedTaskUpdater reports when the fork refuses an update because a
+// request still holds the task.
+type observedTaskUpdater struct {
+	a2asrv.TaskUpdater
+	busy chan struct{}
+}
+
+func (u observedTaskUpdater) UpdateTask(ctx context.Context, event *a2a.TaskStatusUpdateEvent) (*a2a.Task, error) {
+	task, err := u.TaskUpdater.UpdateTask(ctx, event)
+	if errors.Is(err, a2asrv.ErrTaskActive) {
+		select {
+		case u.busy <- struct{}{}:
+		default:
+		}
+	}
+	return task, err
+}
+
+func TestAnUnansweredQuestionTimesOutDuringARefusedAnswer(t *testing.T) {
+	dir := t.TempDir()
+	fix := newFixture()
+	svc, err := newAgentService(dir, fix, dir, "helper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	busy := make(chan struct{}, 1)
+	executor := a2asrv.AgentExecutorFunc(func(ctx context.Context, e *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {
+			for ev, err := range svc.Execute(ctx, e) {
+				if e.StoredTask != nil {
+					// Expire the wait just as the empty answer is about to
+					// publish its refusal. Keep the execution active until
+					// the first timeout update has actually been refused.
+					svc.mu.Lock()
+					svc.expireLocked(e.TaskID)
+					svc.mu.Unlock()
+					select {
+					case <-busy:
+					case <-time.After(5 * time.Second):
+						t.Error("the timeout did not reach the active answer")
+						return
+					}
+				}
+				if !yield(ev, err) {
+					return
+				}
+			}
+		}
+	})
+	store := taskstore.NewInMemory(&taskstore.InMemoryStoreConfig{CallerAuthenticator: a2asrv.NewTaskStoreCallerAuthenticator()})
+	requests := a2asrv.NewHandler(executor, a2asrv.WithTaskStore(store), a2asrv.WithCallInterceptors(peerIdentity{tasks: store}))
+	svc.updates = observedTaskUpdater{requests.(a2asrv.TaskUpdater), busy}
+	srv := httptest.NewServer(a2asrv.NewJSONRPCHandler(requests))
+	t.Cleanup(srv.Close)
+	h := &agentHarness{client: a2aClient(t, srv.URL, meshHeaders{"secret", testSender})}
+	task := h.send(t, "", "double a number", nil)
+	<-fix.prompts
+	fix.ask <- "Which number?"
+	h.await(t, task.ID, a2a.TaskStateInputRequired)
+	refused := h.answer(t, task.ID, "", " ")
+	if !strings.Contains(statusText(refused), "no text") {
+		t.Fatalf("answer was not refused: %s", statusText(refused))
+	}
+	if got := h.await(t, task.ID, a2a.TaskStateFailed); terminal(got) != "timeout" {
+		t.Fatalf("terminal state %q, want timeout", terminal(got))
 	}
 }
 
@@ -294,7 +368,7 @@ func TestAnExpiredWaitTimesOutWhenTheNextQuestionFindsIt(t *testing.T) {
 	h.svc.mu.Lock()
 	w := h.svc.waiting[first.ID]
 	w.timer.Stop()
-	w.since = time.Now().Add(-2 * answerWait)
+	w.since = time.Now().Add(-2 * h.svc.answerWait)
 	h.svc.mu.Unlock()
 	second := h.send(t, "", "triple a number", nil)
 	<-h.fix.prompts

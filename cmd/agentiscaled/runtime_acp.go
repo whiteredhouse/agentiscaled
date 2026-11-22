@@ -423,14 +423,11 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 type keptSession struct {
 	s       *acpSession
 	session string
-	timer   *time.Timer
 }
 
-// keep keeps s, whose turn of the node's task asked a question in
-// session, for the answer: at most maxWaiting processes, each at most
-// answerWait, as the agent service keeps the task. It says whether it kept
-// s. Processes are kept by the node's task, not by their sessions: two
-// processes may name theirs alike.
+// keep retains the process for the next turn of this task. The service
+// releases it when the question expires or the task ends. Processes can
+// choose identical session IDs, so the node's task ID identifies the entry.
 func (r *acpRuntime) keep(task, session string, s *acpSession) bool {
 	if task == "" {
 		return false
@@ -444,7 +441,7 @@ func (r *acpRuntime) keep(task, session string, s *acpSession) bool {
 		return false
 	}
 	s.setProgress(nil)
-	r.kept[task] = &keptSession{s: s, session: session, timer: time.AfterFunc(answerWait, func() { r.release(task) })}
+	r.kept[task] = &keptSession{s: s, session: session}
 	return true
 }
 
@@ -462,7 +459,6 @@ func (r *acpRuntime) take(task, session string) *acpSession {
 	}
 	delete(r.kept, task)
 	r.keptMu.Unlock()
-	k.timer.Stop()
 	select {
 	case <-k.s.done:
 		k.s.close()
@@ -484,7 +480,6 @@ func (r *acpRuntime) release(task string) {
 	r.keptMu.Unlock()
 	if k != nil {
 		defer r.closing.Done()
-		k.timer.Stop()
 		k.s.close()
 	}
 }
@@ -508,7 +503,6 @@ func (r *acpRuntime) releaseAll() {
 	}
 	var wg sync.WaitGroup
 	for _, k := range kept {
-		k.timer.Stop()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

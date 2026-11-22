@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -401,6 +403,38 @@ func TestACPRuntimeQuestionAndAnswer(t *testing.T) {
 				t.Errorf("processes still kept: %v", r.kept)
 			}
 		})
+	}
+}
+
+// Once the service admits an answer, a slow token mint must not expire
+// the process that can take it. This agent cannot reload the session.
+func TestACPAdmittedAnswerKeepsProcess(t *testing.T) {
+	const wait = time.Second
+	h := newAgentHarness(t, testSender)
+	h.svc.answerWait = wait
+	rt := newFakeACP(t, ownerPolicy, "-status", "-http")
+	t.Cleanup(rt.releaseAll)
+	h.svc.rt = rt
+	network, _ := fakeNodeNetworkServer(t)
+	var mints atomic.Int32
+	network.node = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/oauth/token" && mints.Add(1) == 2 {
+			// The second turn owns the running slot before minting its token.
+			time.Sleep(wait + 100*time.Millisecond)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"access_token":"test-token"}`))}, nil
+	})}
+	h.svc.network = network
+
+	task := h.send(t, "", "ASK-ME", nil)
+	h.await(t, task.ID, a2a.TaskStateInputRequired)
+	h.answer(t, task.ID, "", "blue")
+	done := h.await(t, task.ID, a2a.TaskStateCompleted)
+	if got := mints.Load(); got != 2 {
+		t.Fatalf("minted tokens for %d turns, want 2", got)
+	}
+	if result := describeTask(done).Result; !strings.Contains(result, "prompts=2 ") {
+		t.Errorf("expected the process that asked to take its second prompt, got %q", result)
 	}
 }
 
@@ -939,6 +973,7 @@ func TestWaitingTaskReleasesWhatTheRuntimeKeeps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	svc.answerWait = 300 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	target, err := serveAgent(ctx, svc, "helper")
@@ -977,9 +1012,6 @@ func TestWaitingTaskReleasesWhatTheRuntimeKeeps(t *testing.T) {
 	}
 	released("cancelling a turn that then asked", late.ID)
 	// A question nobody answers in time ends its task by itself.
-	old := answerWait
-	answerWait = 300 * time.Millisecond
-	t.Cleanup(func() { answerWait = old })
 	lapsed := h.send(t, "", "lapse", nil)
 	<-fix.prompts
 	fix.ask <- "Anyone?"
