@@ -33,8 +33,8 @@ apart. For each task, the node:
    connection and the environment below
 2. sends `initialize` and reads what your agent declares
 3. sends `session/new`, with the network's MCP server in `mcpServers`
-4. sends `session/prompt` with the task, and reads your `session/update`
-   notifications as the turn's steps and result
+4. sends `session/prompt` with the task and reads your `session/update`
+   notifications for steps and streamed messages
 5. takes your `session/prompt` response as the turn's end
 6. when the turn ends in a question, keeps your process open and later sends the
    caller's answer as another `session/prompt` in the same session
@@ -78,6 +78,7 @@ conventions in `_meta.agentiscale`:
     "agentiscale": {
       "contract": 1,
       "status": true,
+      "resultText": true,
       "policies": ["config-dir", "dir-instructions", "dir-skills"],
       "login": ["my-agent", "login"]
     }
@@ -89,6 +90,10 @@ conventions in `_meta.agentiscale`:
 - `status: true` says your agent ends each turn with
   `_meta.agentiscale.status` (see [End the turn](#end-the-turn)). The node reads
   it at `initialize`, before it writes the prompt.
+- The node sends `_meta.agentiscale.resultText: true` in its `initialize`
+  request when it can read the final text from a prompt response. Return
+  `resultText: true` to use this option on that connection. With older nodes,
+  stream the final message so they can read it.
 - `policies` lists the owner's policies your agent enforces when the environment
   asks it to. The node refuses to run an agent with a policy it did not declare:
   an owner who turns off their own configuration gets an error at `agent add`, not
@@ -137,17 +142,25 @@ Set `kind` and `locations` on your tool calls to get useful steps.
 
 ## End the turn
 
-Your `session/prompt` response ends the turn. Its text is the
-`agent_message_chunk` text you sent after the node sent the prompt: the history
-that `session/load` replays before it answers is not part of the turn. Say whether
-the text is the result or a question in `_meta`:
+Your `session/prompt` response ends the turn. When both sides have advertised
+`resultText`, you can put the final text and its status together in that
+response. For example, this reply asks the caller a question.
 
 ```json
 {
   "stopReason": "end_turn",
-  "_meta": { "agentiscale": { "status": "done" } }
+  "_meta": {
+    "agentiscale": { "status": "needs_input", "text": "Which branch should I review?" }
+  }
 }
 ```
+
+If you omit `text` or send `null`, the node reads the final streamed agent
+message. Use the same ACP `messageId` on all its `agent_message_chunk`
+updates and a different ID for each earlier message. This keeps commentary
+out of the answer. If your agent omits IDs, send the final answer together
+after its tool calls. Only updates for this prompt count. A complete response
+still counts if the agent closes stdout immediately afterward.
 
 - `done`: the text is the task's result, and the task completes.
 - `needs_input`: the text is a question to the caller, and the task waits for the
@@ -167,13 +180,16 @@ the text is the result or a question in `_meta`:
   may not be the owner, gets only a fixed reason, such as the method and error
   code. Your error message and the last lines of your stderr go to the node's log,
   which only the owner reads.
-- The turn's text may be up to 1 MiB. A longer one fails the task.
+- The final text may be up to 1 MiB. An explicit empty string is an empty
+  result for `done`. A question must contain text. To assemble interleaved
+  messages, the node retains up to 1,024 message IDs and 16 MiB of IDs and
+  text per prompt. If the stream exceeds either limit, supply negotiated
+  final text in the response.
 
-An agent that does not declare `status: true` at `initialize` gets every prompt
-with the node's instructions to answer with only a JSON object,
-`{"status":"done"|"needs_input","text":"…"}`, as Codex and Claude Code do. A
-`status` in the response wins over the text. Text that is neither is the result as
-it stands. Prefer `status`: it cannot be confused with the agent's own output.
+An agent that omits `status: true` at `initialize` gets a prompt asking for
+one JSON object, `{"status":"done"|"needs_input","text":"…"}`. The node parses
+the final message for this answer. A status in the prompt response takes
+precedence. Plain text is returned to the caller as a completed result.
 
 ## Cancellation
 

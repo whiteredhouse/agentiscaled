@@ -39,6 +39,10 @@ const (
 	acpMaxLine = 16 << 20
 	// acpMaxResult bounds a turn's result text.
 	acpMaxResult = 1 << 20
+	// Named messages can resume later in the same prompt. Bound the
+	// identifiers and text retained while collecting their chunks.
+	acpMaxMessageIDs = 1024
+	acpMaxNamedBytes = 16 << 20
 )
 
 // acpStopReasons are the stop reasons of ACP besides end_turn, which a
@@ -112,6 +116,8 @@ type acpConventions struct {
 	// _meta.agentiscale.status, so the prompt need not ask for an answer
 	// in turnSchema.
 	Status bool `json:"status"`
+	// ResultText enables a final text alongside status in the prompt response.
+	ResultText bool `json:"resultText"`
 	// Login is the command that signs the agent in.
 	Login []string `json:"login"`
 }
@@ -365,7 +371,8 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 		StopReason string `json:"stopReason"`
 		Meta       struct {
 			Agentiscale struct {
-				Status string `json:"status"`
+				Status string          `json:"status"`
+				Text   json.RawMessage `json:"text"`
 			} `json:"agentiscale"`
 		} `json:"_meta"`
 	}
@@ -410,13 +417,18 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 		s.logFailure(r, fmt.Errorf("stop reason %q", prompted.StopReason))
 		return turnResult{}, fmt.Errorf("the agent stopped the turn: %s", reason)
 	}
-	text, err := s.result()
+	answer := prompted.Meta.Agentiscale
+	var finalText json.RawMessage
+	if conventions.ResultText && answer.Status != "" {
+		finalText = answer.Text
+	}
+	text, err := s.result(finalText)
 	if err != nil {
 		return turnResult{}, err
 	}
 	var result turnResult
-	if status := prompted.Meta.Agentiscale.Status; status != "" {
-		result, err = turnAnswer{Status: status, Text: text}.result(session)
+	if answer.Status != "" {
+		result, err = turnAnswer{Status: answer.Status, Text: text}.result(session)
 	} else {
 		result, err = parseTurn(text, session)
 	}
@@ -690,11 +702,10 @@ type acpSession struct {
 	mu         sync.Mutex
 	nextID     int64
 	pending    map[int64]chan acpResponse
-	// session is the session whose updates are the turn's, once begun.
-	session string
-	text    strings.Builder
-	// overflow is set when the turn's text passed acpMaxResult.
-	overflow bool
+	// Updates belong to the turn only while its prompt request is pending.
+	session  string
+	promptID int64
+	messages acpTurnMessages
 	// readErr is why the connection ended.
 	readErr error
 	done    chan struct{}
@@ -739,6 +750,7 @@ func (s *acpSession) initialize(ctx context.Context) (acpAgent, error) {
 			"terminal": false,
 		},
 		"clientInfo": map[string]string{"name": "agentiscaled", "version": version},
+		"_meta":      map[string]any{"agentiscale": map[string]bool{"resultText": true}},
 	}, &a)
 	if err != nil {
 		return a, err
@@ -768,6 +780,9 @@ func (s *acpSession) request(ctx context.Context, method string, params any) (ch
 	id := s.nextID
 	ch := make(chan acpResponse, 1)
 	s.pending[id] = ch
+	if method == "session/prompt" {
+		s.promptID = id
+	}
 	s.mu.Unlock()
 	if err := s.send(ctx, map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}); err != nil {
 		return nil, err
@@ -790,29 +805,40 @@ func (s *acpSession) sendPrompt(ctx context.Context, params any) (chan acpRespon
 // await waits for the response on ch and decodes its result into out, if
 // set.
 func (s *acpSession) await(ctx context.Context, method string, ch chan acpResponse, out any) error {
+	var resp acpResponse
+	var connErr error
 	select {
-	case resp := <-ch:
-		if resp.err != nil {
-			if e, ok := resp.err.(*acpError); ok {
-				e.Method = method
-			}
-			return resp.err
-		}
-		if out != nil && len(resp.result) > 0 && string(resp.result) != "null" {
-			if err := json.Unmarshal(resp.result, out); err != nil {
-				return fmt.Errorf("the agent's %s result: %w", method, err)
-			}
-		}
-		return nil
+	case resp = <-ch:
 	case <-s.done:
-		return s.ended(method)
+		connErr = s.ended(method)
 	case <-s.dead:
-		return &acpExit{method: method}
+		connErr = &acpExit{method: method}
 	case <-s.broken:
-		return s.brokenErr(method)
+		connErr = s.brokenErr(method)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	if connErr != nil {
+		// read queues complete replies before it reports EOF. A subsequent
+		// shutdown or write error must also preserve an already queued reply.
+		select {
+		case resp = <-ch:
+		default:
+			return connErr
+		}
+	}
+	if resp.err != nil {
+		if e, ok := resp.err.(*acpError); ok {
+			e.Method = method
+		}
+		return resp.err
+	}
+	if out != nil && len(resp.result) > 0 && string(resp.result) != "null" {
+		if err := json.Unmarshal(resp.result, out); err != nil {
+			return fmt.Errorf("the agent's %s result: %w", method, err)
+		}
+	}
+	return nil
 }
 
 // brokenErr is the failed write to stdin, during method.
@@ -925,6 +951,12 @@ func (s *acpSession) read(stdout io.Reader) {
 			s.mu.Lock()
 			ch := s.pending[id]
 			delete(s.pending, id)
+			if ch != nil && id == s.promptID {
+				// Later notifications are outside this turn even if Run has
+				// not yet consumed the reply on ch.
+				s.promptID = 0
+				s.messages.named = nil // Keep only the final message for Run.
+			}
 			s.mu.Unlock()
 			if ch != nil {
 				resp := acpResponse{result: msg.Result}
@@ -979,8 +1011,7 @@ func (s *acpSession) answer(msg acpMessage) {
 func (s *acpSession) begin(session string) {
 	s.mu.Lock()
 	s.session = session
-	s.text.Reset()
-	s.overflow = false
+	s.messages = acpTurnMessages{}
 	s.mu.Unlock()
 	s.order.Lock()
 	s.promptSent, s.cancelled = false, false
@@ -994,14 +1025,81 @@ func (s *acpSession) setProgress(progress func(string)) {
 	s.mu.Unlock()
 }
 
-// result is the turn's text, or an error if it passed acpMaxResult.
-func (s *acpSession) result() (string, error) {
+type acpMessageText struct {
+	text     strings.Builder
+	overflow bool
+}
+
+// Named messages can interleave. For an agent that omits IDs, a tool call
+// or another speaker separates two runs of unidentified chunks.
+type acpTurnMessages struct {
+	named      map[string]*acpMessageText
+	namedBytes int
+	limited    bool
+	last       *acpMessageText
+	lastNamed  bool
+	separated  bool
+}
+
+func (m *acpTurnMessages) append(id *string, text string) {
+	if m.limited {
+		return
+	}
+	if id != nil {
+		if m.named == nil {
+			m.named = make(map[string]*acpMessageText)
+		}
+		m.last = m.named[*id]
+		if m.last == nil {
+			m.last = new(acpMessageText)
+			m.named[*id] = m.last
+			m.namedBytes += len(*id)
+		}
+	} else if m.last == nil || m.lastNamed || m.separated {
+		m.last = new(acpMessageText)
+	}
+	m.lastNamed, m.separated = id != nil, false
+	if !m.last.overflow {
+		before := m.last.text.Len()
+		if before+len(text) > acpMaxResult {
+			m.last.overflow = true
+			m.last.text.Reset()
+		} else {
+			m.last.text.WriteString(text)
+		}
+		if id != nil {
+			m.namedBytes += m.last.text.Len() - before
+		}
+	}
+	if len(m.named) > acpMaxMessageIDs || m.namedBytes > acpMaxNamedBytes {
+		// Evicting some messages would let a later chunk be mistaken for
+		// their complete text. Only explicit response text is reliable now.
+		*m = acpTurnMessages{limited: true}
+	}
+}
+
+// result prefers negotiated response text, including an explicit empty string.
+// When it is absent the agent's last streamed message supplies the answer.
+func (s *acpSession) result(finalText json.RawMessage) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.overflow {
+	var text string
+	var overflow bool
+	switch {
+	case len(finalText) != 0 && string(finalText) != "null":
+		if err := json.Unmarshal(finalText, &text); err != nil {
+			return "", errors.New("the agent's final response text must be a string")
+		}
+		overflow = len(text) > acpMaxResult
+	case s.messages.limited:
+		return "", errors.New("the agent's streamed messages exceeded the turn's buffer limit")
+	case s.messages.last != nil:
+		text, overflow = s.messages.last.text.String(), s.messages.last.overflow
+	}
+	if overflow {
 		return "", fmt.Errorf("the agent's result is longer than the limit of %d bytes", acpMaxResult)
 	}
-	return strings.TrimSpace(s.text.String()), nil
+	return strings.TrimSpace(text), nil
 }
 
 // update takes a session/update notification: the agent's message text
@@ -1015,7 +1113,7 @@ func (s *acpSession) update(params json.RawMessage) {
 		return
 	}
 	s.mu.Lock()
-	ours := s.session != "" && n.SessionID == s.session
+	ours := s.promptID != 0 && n.SessionID == s.session
 	s.mu.Unlock()
 	if !ours {
 		return
@@ -1024,6 +1122,7 @@ func (s *acpSession) update(params json.RawMessage) {
 	// so it is read only for a chunk.
 	var u struct {
 		SessionUpdate string          `json:"sessionUpdate"`
+		MessageID     *string         `json:"messageId"`
 		Content       json.RawMessage `json:"content"`
 	}
 	if json.Unmarshal(n.Update, &u) != nil {
@@ -1034,19 +1133,22 @@ func (s *acpSession) update(params json.RawMessage) {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		}
-		if json.Unmarshal(u.Content, &c) == nil && c.Type == "text" {
-			s.mu.Lock()
-			if s.overflow || s.text.Len()+len(c.Text) > acpMaxResult {
-				s.overflow = true
-				s.text.Reset()
-			} else {
-				s.text.WriteString(c.Text)
-			}
-			s.mu.Unlock()
+		if json.Unmarshal(u.Content, &c) != nil || c.Type == "" {
+			return
 		}
+		if c.Type != "text" {
+			c.Text = ""
+		}
+		s.mu.Lock()
+		s.messages.append(u.MessageID, c.Text)
+		s.mu.Unlock()
 		return
 	}
 	s.mu.Lock()
+	switch u.SessionUpdate {
+	case "tool_call", "tool_call_update", "user_message_chunk", "agent_thought_chunk":
+		s.messages.separated = true
+	}
 	progress := s.progress
 	s.mu.Unlock()
 	if progress != nil {
