@@ -162,8 +162,15 @@ installs it into a project instead (`.claude/skills` and `.agents/skills` there)
 for everyone who works in it. Run the command again after an update of
 agentiscaled to take the skill's new version.
 
-`agentiscaled skill` prints the skill, for an agent to read in one command or to
-save wherever your agent loads skills from. The skill is also in this repository
+The skill is a SKILL.md with what every agent needs, and one reference for each
+way in (`references/cli.md` for the shell, `references/mcp.md` for the MCP
+servers) that an agent reads only when it uses that way. An agent with a shell
+and a running node uses `agentiscaled task send`, which adds no tool
+definitions to its context, before the `agentiscale` MCP server.
+
+`agentiscaled skill` prints SKILL.md, and `agentiscaled skill print
+references/cli.md` one of its references, for an agent to read in one command or
+to save wherever your agent loads skills from. The skill is also in this repository
 under `skills/`, for skill installers that read a repository:
 
 ```sh
