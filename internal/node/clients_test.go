@@ -110,6 +110,10 @@ func TestClaudeDesktopKeepsTheOwnersConfig(t *testing.T) {
 	if err := os.WriteFile(c.path, []byte(before), 0o640); err != nil {
 		t.Fatal(err)
 	}
+	// Set the owner's existing mode independently of the test runner's umask.
+	if err := os.Chmod(c.path, 0o640); err != nil {
+		t.Fatal(err)
+	}
 	dataDir := "/srv/agentiscale-review"
 	out := connect(t, c, dataDir)
 	if !strings.Contains(out, `added "agentiscale-review"`) || !strings.Contains(out, "Quit Claude Desktop") {

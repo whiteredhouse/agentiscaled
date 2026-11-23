@@ -155,7 +155,7 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 		if err != nil || cardResult.IsError {
 			t.Fatalf("local get_agent_card through MCP: %+v %v", cardResult, err)
 		}
-		tasks := &caller.Client{Mesh: client, BaseURL: "Mesh://agentiscaled", Local: nodeclient.SocketClient(filepath.Join(dir, localAgentSocketName))}
+		tasks := &caller.Client{Mesh: client, BaseURL: "http://agentiscaled", Local: nodeclient.SocketClient(filepath.Join(dir, localAgentSocketName))}
 		target := caller.Target{PeerID: pid, Service: "helper"}
 		fix.release <- "completed locally"
 		// Omitting peer_id must work through the real bridge and its tool schema.
@@ -204,7 +204,7 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		deep := &caller.Client{Mesh: meshTokenClient(ctx, filepath.Join(dir, meshnode.DefaultSocketName), deepToken), BaseURL: "Mesh://agentiscaled", Local: meshTokenClient(ctx, filepath.Join(dir, localAgentSocketName), deepToken)}
+		deep := &caller.Client{Mesh: meshTokenClient(ctx, filepath.Join(dir, meshnode.DefaultSocketName), deepToken), BaseURL: "http://agentiscaled", Local: meshTokenClient(ctx, filepath.Join(dir, localAgentSocketName), deepToken)}
 		_, rejected, err := deep.SendTool(ctx, nil, caller.SendInput{Target: target, Text: "nested"})
 		if err != nil {
 			t.Fatal(err)

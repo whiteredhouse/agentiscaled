@@ -93,7 +93,7 @@ func localAgentsFixture(t *testing.T, role *api.PolicyRole, expiry time.Time, cf
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { server.Close() })
-	tasks := &caller.Client{Mesh: &http.Client{}, BaseURL: "Mesh://remote-must-not-be-used.invalid", Local: nodeclient.SocketClient(filepath.Join(dir, localAgentSocketName))}
+	tasks := &caller.Client{Mesh: &http.Client{}, BaseURL: "http://remote-must-not-be-used.invalid", Local: nodeclient.SocketClient(filepath.Join(dir, localAgentSocketName))}
 	return n, fixes, tasks, dir
 }
 

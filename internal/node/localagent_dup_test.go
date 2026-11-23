@@ -75,7 +75,7 @@ func TestRemoteCallSkipsStuckLocalSocket(t *testing.T) {
 		}
 	}()
 	mesh := &http.Client{Transport: &http.Transport{}}
-	tasks := &caller.Client{LocalInfoTimeout: 100 * time.Millisecond, Mesh: mesh, BaseURL: "Mesh://agentiscaled", Local: nodeclient.SocketClient(socket)}
+	tasks := &caller.Client{LocalInfoTimeout: 100 * time.Millisecond, Mesh: mesh, BaseURL: "http://agentiscaled", Local: nodeclient.SocketClient(socket)}
 	remote := "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"
 	start := time.Now()
 	endpoint, client, err := tasks.Route(context.Background(), caller.Target{PeerID: remote, Service: "codex"})
