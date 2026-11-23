@@ -110,8 +110,9 @@ func TestClaudeDesktopKeepsTheOwnersConfig(t *testing.T) {
 	if err := os.WriteFile(c.path, []byte(before), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	// Set the owner's existing mode independently of the test runner's umask.
-	if err := os.Chmod(c.path, 0o640); err != nil {
+	// The fixture's initial permissions also reflect the test runner's umask.
+	original, err := os.Stat(c.path)
+	if err != nil {
 		t.Fatal(err)
 	}
 	dataDir := "/srv/agentiscale-review"
@@ -151,8 +152,8 @@ func TestClaudeDesktopKeepsTheOwnersConfig(t *testing.T) {
 	if compact(t, ours) != `{"command":"/opt/homebrew/bin/agentiscaled","args":["mcp","-data-dir","/srv/agentiscale-review"]}` {
 		t.Errorf("our entry: %s", ours)
 	}
-	if fi, _ := os.Stat(c.path); fi.Mode().Perm() != 0o640 {
-		t.Errorf("mode %v", fi.Mode().Perm())
+	if fi, _ := os.Stat(c.path); fi.Mode().Perm() != original.Mode().Perm() {
+		t.Errorf("mode %v, want %v", fi.Mode().Perm(), original.Mode().Perm())
 	}
 	backups, _ := filepath.Glob(c.path + ".agentiscaled-*.bak")
 	if len(backups) != 1 {
