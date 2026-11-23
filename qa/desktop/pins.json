@@ -1,0 +1,9 @@
+{
+  "version": "4.4212.0",
+  "url": "https://downloads.claude.ai/releases/darwin/universal/4.4212.0/Claude-cbfe3c56d49c49332ad5a9588303c9dbc70a5e7f.zip",
+  "sha256": "e1e144e20d98e793135f584eba92e3d8fa30a8151f6df40bf10846ae407de5fb",
+  "bundle_id": "com.anthropic.claudefordesktop",
+  "publisher": "Anthropic PBC",
+  "team_id": "Q6L2SF6YDW",
+  "cask_source_revision": "044a7741849cf80d448b6fca992c062ed899fce1"
+}

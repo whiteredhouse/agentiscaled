@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Model the OS supervisor, while retaining the real service config writes.
@@ -24,7 +25,10 @@ type testSupervisor struct {
 
 func installTestSupervisor(t *testing.T, dir string, running bool) *testSupervisor {
 	t.Helper()
-	old := commandRunner
+	old, oldWait := commandRunner, launchdWait
+	// No launchd retries: a bootstrap that fails here fails the start, as a
+	// systemctl restart does.
+	launchdWait.unload, launchdWait.load, launchdWait.poll = 200*time.Millisecond, 0, time.Millisecond
 	state := &testSupervisor{}
 	commandRunner = func(command string, args ...string) ([]byte, error) {
 		action := ""
@@ -66,7 +70,7 @@ func installTestSupervisor(t *testing.T, dir string, running bool) *testSupervis
 		}
 		return []byte("yes\n"), nil
 	}
-	t.Cleanup(func() { commandRunner = old })
+	t.Cleanup(func() { commandRunner, launchdWait = old, oldWait })
 	svc := newService(dir)
 	if svc == nil {
 		t.Skip("no supported user service")
