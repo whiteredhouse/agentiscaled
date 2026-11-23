@@ -38,7 +38,7 @@ type codexRuntime struct {
 	extra []string
 }
 
-func newCodexRuntime(command, dataDir string, policy agentPolicy) (runtime, error) {
+func newCodexRuntime(command, profileDir string, policy agentPolicy) (runtime, error) {
 	if command == "" {
 		command = "codex"
 	}
@@ -51,20 +51,20 @@ func newCodexRuntime(command, dataDir string, policy agentPolicy) (runtime, erro
 		return nil, fmt.Errorf("%s --version: %w", path, err)
 	}
 	log.Printf("codex runtime uses %s", strings.TrimSpace(string(out)))
-	home, err := codexHome(dataDir, policy)
+	home, err := codexHome(profileDir, policy)
 	if err != nil {
 		return nil, err
 	}
 	if policy.OwnerConfig {
-		if !codexSignedIn(path, dataDir, policy) && !codexEnvSignedIn(policy) {
+		if !codexSignedIn(path, profileDir, policy) && !codexEnvSignedIn(policy) {
 			return nil, fmt.Errorf("your Codex is not signed in (CODEX_HOME %s): run\n  %s login", home, path)
 		}
 	} else {
 		if err := os.MkdirAll(filepath.Join(home, "home"), 0o700); err != nil {
 			return nil, err
 		}
-		if !codexSignedIn(path, dataDir, policy) {
-			return nil, fmt.Errorf("the agent's Codex is not signed in. With -agent-owner-config=false it signs in apart from your own Codex, so that a remote request cannot reach your Codex skills, plugins or settings: run\n  CODEX_HOME=%s %s login", home, path)
+		if !codexSignedIn(path, profileDir, policy) {
+			return nil, fmt.Errorf("the agent's Codex is not signed in. With -agent-owner-config=false it signs in apart from your own Codex, so that a remote request cannot reach your Codex skills, plugins or settings: run\n  CODEX_HOME=%s %s login", shellQuote(home), shellQuote(path))
 		}
 	}
 	return &codexRuntime{command: path, installDir: codexInstallDir(path), home: home, policy: policy}, nil
@@ -73,11 +73,10 @@ func newCodexRuntime(command, dataDir string, policy agentPolicy) (runtime, erro
 func (r *codexRuntime) setDefinition(d *agentDefinition) { r.def = d }
 
 // codexHome is the run's CODEX_HOME: with policy.OwnerConfig the owner's,
-// as Codex finds it ($CODEX_HOME, else ~/.codex), else the agent's own in
-// the node's data directory.
-func codexHome(dataDir string, policy agentPolicy) (string, error) {
+// as Codex finds it ($CODEX_HOME, else ~/.codex), else the service profile.
+func codexHome(profileDir string, policy agentPolicy) (string, error) {
 	if !policy.OwnerConfig {
-		return filepath.Abs(filepath.Join(dataDir, "codex"))
+		return filepath.Abs(profileDir)
 	}
 	return codexOwnerConfigDir()
 }
@@ -86,8 +85,8 @@ func codexOwnerConfigDir() (string, error) {
 	return ownerRuntimeConfigDir("CODEX_HOME", ".codex")
 }
 
-func codexSignedIn(_, dataDir string, policy agentPolicy) bool {
-	home, err := codexHome(dataDir, policy)
+func codexSignedIn(_, profileDir string, policy agentPolicy) bool {
+	home, err := codexHome(profileDir, policy)
 	if err != nil {
 		return false
 	}
@@ -106,7 +105,7 @@ func codexEnvSignedIn(policy agentPolicy) bool {
 // stores their CODEX_API_KEY when they have one, so that the background
 // service, which does not get it from their shell, signs in with it too;
 // else for the agent's own CODEX_HOME, which it creates first.
-func codexLogin(ctx context.Context, command, dataDir string, policy agentPolicy) (*exec.Cmd, string) {
+func codexLogin(ctx context.Context, command, profileDir string, policy agentPolicy) (*exec.Cmd, string) {
 	if policy.OwnerConfig {
 		if key := os.Getenv("CODEX_API_KEY"); key != "" {
 			cmd := exec.CommandContext(ctx, command, "login", "--with-api-key")
@@ -115,12 +114,12 @@ func codexLogin(ctx context.Context, command, dataDir string, policy agentPolicy
 		}
 		return exec.CommandContext(ctx, command, "login"), shellQuote(command) + " login"
 	}
-	home, err := codexHome(dataDir, policy)
+	home, err := codexHome(profileDir, policy)
 	if err == nil {
 		err = os.MkdirAll(home, 0o700)
 	}
 	if err != nil {
-		home = filepath.Join(dataDir, "codex")
+		home = profileDir
 	}
 	cmd := exec.CommandContext(ctx, command, "login")
 	cmd.Env = append(os.Environ(), "CODEX_HOME="+home)

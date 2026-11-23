@@ -629,7 +629,7 @@ func TestACPRuntimePolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := filepath.Join(data, "acp-agents", "fake-acp")
+	config := filepath.Join(data, "agents", "fake-acp", "profile")
 	want := "env=AGENTISCALE_CONFIG_DIR=" + config + ",AGENTISCALE_CONTRACT=1,AGENTISCALE_DIR_INSTRUCTIONS=0,AGENTISCALE_DIR_SKILLS=0,AGENTISCALE_ENV=1 "
 	if !strings.Contains(res.Text, want) {
 		t.Errorf("result %q lacks %q", res.Text, want)

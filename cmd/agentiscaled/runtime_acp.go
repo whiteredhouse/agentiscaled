@@ -179,13 +179,7 @@ func (a agentConfig) acpConfigDir(dataDir, checkDir string) (string, error) {
 		key := strings.Join(append([]string{a.Command, checkDir}, a.Args...), "\x00")
 		return filepath.Abs(filepath.Join(dataDir, "acp-checks", fmt.Sprintf("%x", sha256.Sum256([]byte(key)))))
 	}
-	name := a.Name
-	if !validAgentName(name) {
-		// Foreground and saved service names can contain paths or differ
-		// only by case. Keep their profiles distinct on every filesystem.
-		name = fmt.Sprintf("~%x", sha256.Sum256([]byte(name)))
-	}
-	return filepath.Abs(filepath.Join(dataDir, "acp-agents", name))
+	return filepath.Abs(agentProfileDir(dataDir, a.Name))
 }
 
 // newACPRuntime probes the offered command in its configured working directory.

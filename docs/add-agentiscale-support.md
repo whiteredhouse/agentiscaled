@@ -55,7 +55,7 @@ Every process the node starts for your agent gets:
 | --- | --- |
 | `AGENTISCALE_ENV` | `1` when the node runs your agent |
 | `AGENTISCALE_CONTRACT` | The contract version, `1` |
-| `AGENTISCALE_CONFIG_DIR` | Your agent's own configuration directory in the node's data directory, set only when the owner turned off their own configuration (`-owner-config=false`) |
+| `AGENTISCALE_CONFIG_DIR` | Absolute path to the private profile for this run, set only when the owner chooses `-owner-config=false` |
 | `AGENTISCALE_DIR_INSTRUCTIONS` | `0` when the owner turned off the directory's instruction files |
 | `AGENTISCALE_DIR_SKILLS` | `0` when the owner turned off the directory's skills |
 
@@ -126,10 +126,10 @@ find the declared `login` command in the node log or in local `runtime check`
 diagnostics. For `-owner-config=false`, that command includes the agent's
 `AGENTISCALE_CONFIG_DIR`. Your agent manages the credentials there.
 
-Each configured service has its own directory under `<data-dir>/acp-agents`,
-including services that use the same launcher. The local sign-in command shows
-the exact path. If an earlier development build kept your sign-in under
-`<data-dir>/acp/<program>`, sign in once for each service using its new directory.
+Read `AGENTISCALE_CONFIG_DIR` each time the node starts your agent. Each named
+service gets its own `<data-dir>/agents/<service-key>/profile`, even when
+several services use the same launcher. Owners upgrading from an earlier
+directory sign in once per service. See [Private runtime profiles](connect-agents.md#private-runtime-profiles).
 
 ## Steps
 
@@ -261,7 +261,7 @@ A protocol error fails the check. Each turn has a five-minute deadline by defaul
 The turns run your agent's model. Use `-owner-config=false`, `-dir-instructions=false`
 or `-dir-skills=false` to exercise a particular policy. To check a configured
 service's private sign-in, pass its `-name` and node `-data-dir` together with
-`-owner-config=false`.
+`-owner-config=false`. An unnamed private check uses a separate profile.
 
 Then offer your agent on a test node and send it a task:
 

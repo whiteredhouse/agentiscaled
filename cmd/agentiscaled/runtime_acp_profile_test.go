@@ -36,7 +36,7 @@ func TestACPOffersProbeInTheirWorkspaceAndKeepSeparateProfiles(t *testing.T) {
 			t.Fatalf("validate offer %s: %v", name, err)
 		}
 		observed := filepath.Join(dir, "observed-profile")
-		want := filepath.Join(data, "acp-agents", name)
+		want := filepath.Join(data, "agents", name, "profile")
 		readProfile := func() {
 			t.Helper()
 			got, err := os.ReadFile(observed)
@@ -106,13 +106,13 @@ func TestACPCheckPrivateProfileIdentity(t *testing.T) {
 	if check(baseCommand+" --another") == unnamed || check(baseCommand, "-dir", fixtures) == unnamed {
 		t.Fatal("different launch arguments or working directories shared a check profile")
 	}
-	if got, want := check(baseCommand, "-name", "reviewer"), filepath.Join(data, "acp-agents", "reviewer"); got != want {
+	if got, want := check(baseCommand, "-name", "reviewer"), filepath.Join(data, "agents", "reviewer", "profile"); got != want {
 		t.Fatalf("named check selected %s, want %s", got, want)
 	}
 	seen := map[string]bool{}
 	for _, name := range []string{"reviewer", "Reviewer", "other/../reviewer", "team.agent"} {
 		path := check(baseCommand, "-name", name)
-		if filepath.Dir(path) != filepath.Join(data, "acp-agents") || seen[strings.ToLower(path)] {
+		if filepath.Base(path) != "profile" || filepath.Dir(filepath.Dir(path)) != filepath.Join(data, "agents") || seen[strings.ToLower(path)] {
 			t.Fatalf("service name %q selected aliased or nested path %q", name, path)
 		}
 		seen[strings.ToLower(path)] = true

@@ -211,7 +211,7 @@ files (`AGENTS.md`) and skills. Your MCP servers include agentiscale itself if y
 connected Codex. Whatever you answer, while it works on a task the agent can ask your network's
 other agents for help, with a token that lasts only as long as the task (see
 [Agents call other agents](connect-agents.md#agents-call-other-agents)). Answer n
-to give the agent its own configuration and sign-in in its node's data directory, with
+to give the agent its own [private runtime profile](connect-agents.md#private-runtime-profiles) and sign-in, with
 no MCP servers of yours (`-owner-config=false`), or to leave out the directory's
 instruction files or skills when it may hold content from someone you don't trust
 (`-dir-instructions=false`, `-dir-skills=false`).

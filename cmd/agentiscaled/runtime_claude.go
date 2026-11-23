@@ -47,7 +47,7 @@ func (r *claudeRuntime) setDefinition(d *agentDefinition) { r.def = d }
 // from before its sign-in. Only the owner's configuration may use them.
 var claudeEnvCredentials = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
 
-func newClaudeRuntime(command, dataDir string, policy agentPolicy) (runtime, error) {
+func newClaudeRuntime(command, profileDir string, policy agentPolicy) (runtime, error) {
 	if command == "" {
 		command = "claude"
 	}
@@ -74,20 +74,20 @@ func newClaudeRuntime(command, dataDir string, policy agentPolicy) (runtime, err
 	if noPrompts {
 		log.Printf("claude runtime: %s has no --permission-prompts; its print mode denies what would prompt", version)
 	}
-	config, err := claudeConfigDir(dataDir, policy)
+	config, err := claudeConfigDir(profileDir, policy)
 	if err != nil {
 		return nil, err
 	}
 	if policy.OwnerConfig {
-		if !claudeSignedIn(path, dataDir, policy) && !claudeEnvSignedIn(policy) {
+		if !claudeSignedIn(path, profileDir, policy) && !claudeEnvSignedIn(policy) {
 			return nil, fmt.Errorf("your Claude Code is not signed in: run\n  %s auth login", path)
 		}
 	} else {
 		if err := os.MkdirAll(config, 0o700); err != nil {
 			return nil, err
 		}
-		if !claudeSignedIn(path, dataDir, policy) {
-			return nil, fmt.Errorf("the agent's Claude Code is not signed in. With -agent-owner-config=false it signs in apart from your own Claude Code, so that a remote request cannot reach your Claude Code skills, plugins or settings: run\n  CLAUDE_CONFIG_DIR=%s %s auth login", config, path)
+		if !claudeSignedIn(path, profileDir, policy) {
+			return nil, fmt.Errorf("the agent's Claude Code is not signed in. With -agent-owner-config=false it signs in apart from your own Claude Code, so that a remote request cannot reach your Claude Code skills, plugins or settings: run\n  CLAUDE_CONFIG_DIR=%s %s auth login", shellQuote(config), shellQuote(path))
 		}
 	}
 	return &claudeRuntime{command: path, config: config, policy: policy, noPermissionPrompts: noPrompts}, nil
@@ -95,12 +95,12 @@ func newClaudeRuntime(command, dataDir string, policy agentPolicy) (runtime, err
 
 // claudeConfigDir is the run's CLAUDE_CONFIG_DIR: empty with
 // policy.OwnerConfig, so the owner's applies as Claude Code finds it, else
-// the agent's own in the node's data directory.
-func claudeConfigDir(dataDir string, policy agentPolicy) (string, error) {
+// the service profile.
+func claudeConfigDir(profileDir string, policy agentPolicy) (string, error) {
 	if policy.OwnerConfig {
 		return "", nil
 	}
-	return filepath.Abs(filepath.Join(dataDir, "claude"))
+	return filepath.Abs(profileDir)
 }
 
 func claudeOwnerConfigDir() (string, error) {
@@ -110,11 +110,11 @@ func claudeOwnerConfigDir() (string, error) {
 // claudeSignedIn asks Claude Code whether it is signed in, in a way the
 // background service also sees: without a credential from this shell's
 // environment.
-func claudeSignedIn(command, dataDir string, policy agentPolicy) bool {
+func claudeSignedIn(command, profileDir string, policy agentPolicy) bool {
 	if command == "" {
 		command = "claude"
 	}
-	config, err := claudeConfigDir(dataDir, policy)
+	config, err := claudeConfigDir(profileDir, policy)
 	if err != nil {
 		return false
 	}
@@ -152,16 +152,16 @@ func claudeEnvSignedIn(policy agentPolicy) bool {
 // claudeLogin is `claude auth login`, Claude Code's own sign-in flow: the
 // owner's own with policy.OwnerConfig, else for the agent's own
 // CLAUDE_CONFIG_DIR, which it creates first.
-func claudeLogin(ctx context.Context, command, dataDir string, policy agentPolicy) (*exec.Cmd, string) {
+func claudeLogin(ctx context.Context, command, profileDir string, policy agentPolicy) (*exec.Cmd, string) {
 	if policy.OwnerConfig {
 		return exec.CommandContext(ctx, command, "auth", "login"), shellQuote(command) + " auth login"
 	}
-	config, err := claudeConfigDir(dataDir, policy)
+	config, err := claudeConfigDir(profileDir, policy)
 	if err == nil {
 		err = os.MkdirAll(config, 0o700)
 	}
 	if err != nil {
-		config = filepath.Join(dataDir, "claude")
+		config = profileDir
 	}
 	cmd := exec.CommandContext(ctx, command, "auth", "login")
 	cmd.Env = append(withoutEnv(os.Environ(), append([]string{"CLAUDE_CONFIG_DIR"}, claudeEnvCredentials...)), "CLAUDE_CONFIG_DIR="+config)

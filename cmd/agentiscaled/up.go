@@ -470,8 +470,9 @@ func checkAgent(ctx context.Context, a *agentConfig, dataDir string, service boo
 	}
 	// A credential in this shell's environment does not reach the
 	// background service.
-	if service && spec.signedIn != nil && !spec.signedIn(a.Command, dataDir, policy) {
-		_, shown := spec.login(context.Background(), a.Command, dataDir, policy)
+	profileDir := agentProfileDir(dataDir, a.Name)
+	if service && spec.signedIn != nil && !spec.signedIn(a.Command, profileDir, policy) {
+		_, shown := spec.login(context.Background(), a.Command, profileDir, policy)
 		return fmt.Errorf("%s is signed in only through this shell's environment, which the background service does not get: run\n  %s\nor use -foreground and start 'agentiscaled run' from this shell", a.Runtime, shown)
 	}
 	return nil

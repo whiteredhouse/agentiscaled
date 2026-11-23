@@ -158,10 +158,17 @@ func TestAgentAddListRemove(t *testing.T) {
 	}
 	// Another name joins it on the same node, which keeps its identity.
 	second := t.TempDir()
-	if err := runAgent(ctx, []string{"add", "codex", "-y", "-name", "second", "-dir", second, "-command", command}, &out); err != nil {
+	secondArgs := []string{"add", "codex", "-y", "-name", "second", "-dir", second, "-command", command, "-owner-config=false"}
+	write(t, filepath.Join(def, "codex", "auth.json"), "{}")
+	secondProfile := agentProfileDir(def, "second")
+	if err := runAgent(ctx, secondArgs, io.Discard); err == nil || !strings.Contains(err.Error(), secondProfile) {
+		t.Fatalf("expected sign-in instructions for %s, got %v", secondProfile, err)
+	}
+	write(t, filepath.Join(secondProfile, "auth.json"), "{}")
+	if err := runAgent(ctx, secondArgs, &out); err != nil {
 		t.Fatalf("second add: %v\n%s", err, &out)
 	}
-	if s, _ = loadSettings(def); len(s.Agents) != 2 || s.Agents[0].Name != "helper" || s.Agents[1].Name != "second" || s.Agents[1].Dir != second || s.PeerID != pid {
+	if s, _ = loadSettings(def); len(s.Agents) != 2 || s.Agents[0].Name != "helper" || s.Agents[1].Name != "second" || s.Agents[1].Dir != second || !s.Agents[1].OwnConfig || s.PeerID != pid {
 		t.Fatalf("second agent: %+v", s)
 	}
 	if extra, _ := filepath.Glob(filepath.Join(filepath.Dir(def), "agentiscale-*")); len(extra) != 0 {

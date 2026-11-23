@@ -84,6 +84,29 @@ func TestLoadDefinition(t *testing.T) {
 	}
 }
 
+func TestDefinitionRemovalIsScopedToTheService(t *testing.T) {
+	data := t.TempDir()
+	first, err := copyDefinition(data, "reviewer", writeDefinition(t, t.TempDir(), "role.md", claudeAgentFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const alias = "other/../reviewer"
+	second, err := copyDefinition(data, alias, writeDefinition(t, t.TempDir(), "role.toml", codexAgentFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(second) != agentStateDir(data, alias) {
+		t.Fatalf("definition copy %q is outside its service state", second)
+	}
+	removeDefinitionCopies(data, alias)
+	if _, err := os.Stat(second); !os.IsNotExist(err) {
+		t.Fatalf("removed definition %s: %v", second, err)
+	}
+	if body, err := os.ReadFile(first); err != nil || string(body) != claudeAgentFile {
+		t.Fatalf("other service's definition changed: %q, %v", body, err)
+	}
+}
+
 func TestDefinitionRoot(t *testing.T) {
 	for path, want := range map[string]string{
 		"/w/proj/.claude/agents/a.md":  "/w/proj",

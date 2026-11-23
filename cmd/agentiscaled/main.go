@@ -212,7 +212,7 @@ func (a agentConfig) newRuntime(ctx context.Context, dataDir string) (runtime, e
 	if a.Runtime == "acp" {
 		return newACPRuntime(ctx, a, dataDir, "")
 	}
-	return runtimes[a.Runtime].new(a.Command, dataDir, a.policy())
+	return runtimes[a.Runtime].new(a.Command, agentProfileDir(dataDir, a.Name), a.policy())
 }
 
 // splitCommand splits an acp agent's -command line into Command and Args;

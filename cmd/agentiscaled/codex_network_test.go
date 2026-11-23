@@ -43,14 +43,14 @@ func TestCodexCallsTheNetwork(t *testing.T) {
 			home := codexTempDir(t)
 			t.Setenv("HOME", home)
 			t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
-			dataDir := codexTempDir(t)
+			profileDir := codexTempDir(t)
 			if policy.OwnerConfig {
 				t.Setenv("CODEX_API_KEY", "owner-codex-key")
 				write(t, filepath.Join(home, ".codex", "config.toml"), "")
 			} else {
-				write(t, filepath.Join(dataDir, "codex", "auth.json"), `{"OPENAI_API_KEY": "agent-key"}`)
+				write(t, filepath.Join(profileDir, "auth.json"), `{"OPENAI_API_KEY": "agent-key"}`)
 			}
-			rt, err := newCodexRuntime(command, dataDir, policy)
+			rt, err := newCodexRuntime(command, profileDir, policy)
 			if err != nil {
 				t.Fatal(err)
 			}

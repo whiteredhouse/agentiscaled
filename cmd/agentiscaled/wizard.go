@@ -331,8 +331,13 @@ func expandHome(path string) string {
 // prepareAgent signs the runtime in before the selected node starts.
 func (w *wizard) prepareAgent(ctx context.Context, o *agentOffer) error {
 	spec := runtimes[o.runtime]
-	if spec.login != nil && !spec.signedIn(spec.defaultCommand, o.dataDir, o.policy) {
-		cmd, shown := spec.login(ctx, spec.defaultCommand, o.dataDir, o.policy)
+	command := o.command
+	if command == "" {
+		command = spec.defaultCommand
+	}
+	profileDir := agentProfileDir(o.dataDir, o.name)
+	if spec.login != nil && !spec.signedIn(command, profileDir, o.policy) {
+		cmd, shown := spec.login(ctx, command, profileDir, o.policy)
 		if spec.envSignedIn != nil && spec.envSignedIn(o.policy) {
 			fmt.Fprintf(w.out, "\nYour %s credential is only in this shell, which the agent's background service does not get; storing it:\n  %s\n", o.runtime, shown)
 		} else if o.policy.OwnerConfig {

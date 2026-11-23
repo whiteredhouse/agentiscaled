@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -127,6 +128,22 @@ type agentPolicy struct {
 	OwnerConfig bool
 }
 
+// agentStateDir is the node's state for one hosted service. Ordinary offer
+// names are already safe path components. Other accepted names can contain
+// paths or differ only by case; hashing the exact name keeps them distinct
+// even on a case-insensitive filesystem.
+func agentStateDir(dataDir, name string) string {
+	if !validAgentName(name) {
+		name = fmt.Sprintf("~%x", sha256.Sum256([]byte(name)))
+	}
+	return filepath.Join(dataDir, "agents", name)
+}
+
+// agentProfileDir holds the runtime's private configuration and sign-in.
+func agentProfileDir(dataDir, name string) string {
+	return filepath.Join(agentStateDir(dataDir, name), "profile")
+}
+
 // agentNameError tells why a name cannot be an agent's service name in the
 // network, by the rule the node's service registry applies to a2a://<name>.
 func agentNameError(name string) error {
@@ -136,14 +153,11 @@ func agentNameError(name string) error {
 	return nil
 }
 
-// runtimes maps each -agent value to how its runtime is made, from
-// -agent-command (empty for the runtime's default command), the node's
-// data directory, where the runtime may keep state, and the agent's policy;
-// and the service name it
-// is served under unless -agent-name says otherwise, and the command it runs
-// unless -agent-command does.
+// runtimes defines each runtime's default service name, command and sign-in
+// behavior. Callers pass the named service's private profile directory.
+// With OwnerConfig enabled, the runtime uses the owner's configuration.
 var runtimes = map[string]struct {
-	new            func(command, dataDir string, policy agentPolicy) (runtime, error)
+	new            func(command, profileDir string, policy agentPolicy) (runtime, error)
 	defaultName    string
 	defaultCommand string
 	ownerConfigDir func() (string, error)
@@ -152,9 +166,9 @@ var runtimes = map[string]struct {
 	// that signs it in, with how to show that command. A runtime may also
 	// accept a credential in the environment (envSignedIn), which only a
 	// node run from the owner's shell gets.
-	signedIn    func(command, dataDir string, policy agentPolicy) bool
+	signedIn    func(command, profileDir string, policy agentPolicy) bool
 	envSignedIn func(policy agentPolicy) bool
-	login       func(ctx context.Context, command, dataDir string, policy agentPolicy) (*exec.Cmd, string)
+	login       func(ctx context.Context, command, profileDir string, policy agentPolicy) (*exec.Cmd, string)
 	// ownerEnv names the variables that locate the owner's configuration
 	// of the runtime. `up` keeps their values for the background service,
 	// which starts without the owner's shell, so that with
@@ -259,12 +273,10 @@ var (
 	errStoppedByOwner    = errors.New("stopped by the owner")
 )
 
-// newAgentService makes the service of the agent named name, which works in
-// dir, keeping its state in the node's data directory: what is the agent's
-// alone under agents/<name>, and the owner's stop for all of the node's
-// agents.
+// newAgentService keeps the named agent's delivery history in its service
+// directory. All agents on the node share the owner's stop file.
 func newAgentService(dir string, rt runtime, dataDir, name string) (*agentService, error) {
-	state := filepath.Join(dataDir, "agents", name)
+	state := agentStateDir(dataDir, name)
 	if err := os.MkdirAll(state, 0o700); err != nil {
 		return nil, err
 	}

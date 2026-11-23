@@ -117,7 +117,7 @@ func TestSetUpAgentSignsInOnce(t *testing.T) {
 	runAttached = func(_ context.Context, cmd *exec.Cmd) error {
 		ran = append(ran, cmd.Args)
 		if cmd.Args[len(cmd.Args)-1] == "login" {
-			if !contains(cmd.Env, "CODEX_HOME="+filepath.Join(offer.dataDir, "codex")) {
+			if !contains(cmd.Env, "CODEX_HOME="+agentProfileDir(offer.dataDir, offer.name)) {
 				t.Errorf("login env lacks the agent's CODEX_HOME")
 			}
 		}
@@ -133,8 +133,7 @@ func TestSetUpAgentSignsInOnce(t *testing.T) {
 	}
 
 	// Signed in already: preparation launches no command.
-	offer.policy, offer.name, offer.description = agentPolicy{}, "helper", "Answers questions"
-	if err := os.WriteFile(filepath.Join(offer.dataDir, "codex", "auth.json"), []byte("{}"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(agentProfileDir(offer.dataDir, offer.name), "auth.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ran = nil
@@ -149,7 +148,7 @@ func TestSetUpAgentSignsInOnce(t *testing.T) {
 
 func o(t *testing.T) *agentOffer {
 	dir := filepath.Join(os.Getenv("HOME"), "repo")
-	return &agentOffer{runtime: "codex", agentDir: dir, dataDir: defaultDataDir(), policy: agentPolicy{DirInstructions: true, DirSkills: true}} // the agent's own config
+	return &agentOffer{runtime: "codex", name: "helper", agentDir: dir, dataDir: defaultDataDir(), policy: agentPolicy{DirInstructions: true, DirSkills: true}} // the agent's own config
 }
 
 // With the owner's configuration, preparation signs in to their own Codex.
@@ -223,7 +222,6 @@ func TestWizardOfferOverridesSavedAnswers(t *testing.T) {
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			t.Setenv("CODEX_HOME", t.TempDir())
 			write(t, filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"), "{}")
-			write(t, filepath.Join(dir, "codex", "auth.json"), "{}")
 			writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", PeerID: pid, NetworkID: "saved-network", MeshURL: mesh.srv.URL})
 			input := "y\n\n\n" + workspace + "\n\n\n\n"
 			if !defaults {
@@ -233,6 +231,9 @@ func TestWizardOfferOverridesSavedAnswers(t *testing.T) {
 			offer, err := w.offerAgent()
 			if err != nil || offer == nil {
 				t.Fatalf("offer: %+v %v", offer, err)
+			}
+			if !offer.policy.OwnerConfig {
+				write(t, filepath.Join(agentProfileDir(dir, offer.name), "auth.json"), "{}")
 			}
 			if offer.dataDir != dir {
 				t.Fatalf("did not reuse agent node: %q, want %q", offer.dataDir, dir)
