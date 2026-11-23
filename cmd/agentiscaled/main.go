@@ -23,23 +23,23 @@ import (
 
 const usage = `agentiscaled is the agentiscale node.
 
-Commands:
+Use the network:
+  task     send a task to an agent, wait for it to finish, or cancel it
+           (send, wait, cancel)
+  mcp      serve the node's MCP tools on stdio for agent clients
+  skill    print or install the skill for finding and calling agents
+
+Run this node:
   up       sign in, join this machine to your network and keep the node running
-  client   connect agent clients (Claude Desktop, Codex CLI) to the node, or disconnect them
-  agent    offer an agent from this machine to your network (add, remove, list)
-  runtime  list supported agent runtimes and their local configuration, or check
-           an agent's support of the agentiscale runtime contract (check)
-  down     stop the node's background service; its identity stays
+  down     stop the background service and keep the node's identity
   status   show the node's service, network and mesh connection
+  agent    offer and manage local agents (add, remove, list) and control task
+           execution for all agents on this node (stop, resume, status)
+  runtime  list runtimes and check an agent's runtime support
+  client   connect or disconnect agent clients such as Claude Desktop and Codex CLI
+  run      run the node in the foreground with its saved settings
+  reset    drop the node's identity and keep its settings
   version  print the version
-  reset    drop the node's identity so 'up' joins it again as a new node; its settings stay
-  run      run the node in the foreground with the settings 'up' saved
-  mcp      serve the node's MCP tools on stdio, for agent clients
-  task     send a task to an agent and print its answer (send), wait for a task
-           to end (wait) or cancel it (cancel), or control task execution on
-           this node (status, stop, resume)
-  skill    print the agentiscale skill, which teaches agents to call other agents
-           of your network, or install it for Claude Code and Codex (install)
 
 Without a command, agentiscaled runs the node in the foreground with the
 flags given (see agentiscaled -h).

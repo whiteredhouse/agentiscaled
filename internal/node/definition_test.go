@@ -376,11 +376,11 @@ func TestStatusShowsTaskStop(t *testing.T) {
 	if err := RunStatus(context.Background(), []string{"-data-dir", dir}, &out); err != nil || !strings.Contains(out.String(), "Tasks:    accepted\n") || !strings.Contains(out.String(), "Data:     "+dir+"\n") {
 		t.Fatalf("status: %v\n%s", err, &out)
 	}
-	if err := RunTaskControl([]string{"stop", "-data-dir", dir}, io.Discard); err != nil {
+	if err := RunAgent(context.Background(), []string{"stop", "-data-dir", dir}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if err := RunStatus(context.Background(), []string{"-data-dir", dir}, &out); err != nil || !strings.Contains(out.String(), "Tasks:    stopped since ") || !strings.Contains(out.String(), "task resume") {
+	if err := RunStatus(context.Background(), []string{"-data-dir", dir}, &out); err != nil || !strings.Contains(out.String(), "Tasks:    stopped since ") || !strings.Contains(out.String(), "agent resume") {
 		t.Fatalf("status after stop: %v\n%s", err, &out)
 	}
 	out.Reset()
