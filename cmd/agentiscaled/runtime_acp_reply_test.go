@@ -83,7 +83,8 @@ echo '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","_meta":{"agenti
 			if err := os.WriteFile(program, []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			r, err := newACPRuntime(t.Context(), program, nil, t.TempDir(), ownerPolicy)
+			a := agentConfig{Runtime: "acp", Name: "agent", Command: program, Dir: t.TempDir()}
+			r, err := a.newRuntime(t.Context(), t.TempDir())
 			if err != nil {
 				t.Fatal(err)
 			}

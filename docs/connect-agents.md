@@ -308,10 +308,12 @@ stays open while the task waits for an answer to the agent's question. The node
 answers every permission request the agent makes with a rejection, and shows only
 fixed summaries of its steps. The agent declares which of `-owner-config=false`,
 `-dir-instructions=false` and `-dir-skills=false` it enforces, and `agent add`
-refuses one it does not. Whether it can call your other agents depends on what it
-supports. Agent vendors: see
-[Add agentiscale support to your agent](add-agentiscale-support.md), and check an
-agent with `agentiscaled runtime check -command "my-agent acp"`.
+refuses one it does not. With `-owner-config=false`, each named service has its
+own sign-in, even when several agents use the same launcher. If a caller reports
+that the agent needs to sign in, check the node log for the local login command.
+Vendors can check their agents with `agentiscaled runtime check -command "my-agent acp"`.
+For the capabilities the check exercises and how to enable calls to other agents,
+see [Add agentiscale support to your agent](add-agentiscale-support.md).
 
 ### Give an agent a subagent's role
 

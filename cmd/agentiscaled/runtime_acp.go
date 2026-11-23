@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,8 +74,10 @@ type acpRuntime struct {
 	def    *agentDefinition
 	// info is what the agent declared when the runtime was made.
 	info acpAgent
-	// stopped, if set, takes each turn's stop reason; runtime check uses it.
-	stopped func(string)
+	// runtime check observes which process received a prompt, whether it
+	// loaded the session, and the reason it stopped.
+	prompted func(*acpSession, bool)
+	stopped  func(string)
 	// sessions holds every process until it is reaped. A running turn
 	// supplies its cancellation function; an idle process needs only EOF.
 	sessionsMu sync.Mutex
@@ -164,32 +167,43 @@ func runtimeDefaultName(rt, command string) string {
 	return runtimes[rt].defaultName
 }
 
-// acpConfigDir is the agent's own configuration directory: empty with the
-// owner's configuration, else one per program in the node's data
-// directory.
-func acpConfigDir(command, dataDir string, policy agentPolicy) (string, error) {
-	if policy.OwnerConfig {
+// acpConfigDir selects the service's private configuration. An unnamed
+// runtime check uses a separate profile keyed by its resolved command,
+// arguments and explicit working directory. A temporary check directory
+// changes on every run and is omitted from that key.
+func (a agentConfig) acpConfigDir(dataDir, checkDir string) (string, error) {
+	if !a.OwnConfig {
 		return "", nil
 	}
-	return filepath.Abs(filepath.Join(dataDir, "acp", strings.ToLower(filepath.Base(command))))
+	if a.Name == "" {
+		key := strings.Join(append([]string{a.Command, checkDir}, a.Args...), "\x00")
+		return filepath.Abs(filepath.Join(dataDir, "acp-checks", fmt.Sprintf("%x", sha256.Sum256([]byte(key)))))
+	}
+	name := a.Name
+	if !validAgentName(name) {
+		// Foreground and saved service names can contain paths or differ
+		// only by case. Keep their profiles distinct on every filesystem.
+		name = fmt.Sprintf("~%x", sha256.Sum256([]byte(name)))
+	}
+	return filepath.Abs(filepath.Join(dataDir, "acp-agents", name))
 }
 
-// newACPRuntime makes the runtime of the ACP agent that program, with
-// args, starts.
-func newACPRuntime(ctx context.Context, program string, args []string, dataDir string, policy agentPolicy) (runtime, error) {
-	if program == "" {
+// newACPRuntime probes the offered command in its configured working directory.
+func newACPRuntime(ctx context.Context, a agentConfig, dataDir, checkDir string) (runtime, error) {
+	if a.Command == "" {
 		return nil, errors.New("the acp runtime needs the agent's command: -command \"my-agent acp\"")
 	}
-	path, err := exec.LookPath(program)
+	path, err := exec.LookPath(a.Command)
 	if err != nil {
-		return nil, fmt.Errorf("the agent command %q was not found: %w", program, err)
+		return nil, fmt.Errorf("the agent command %q was not found: %w", a.Command, err)
 	}
-	// Each run starts in another directory, where a relative path would
-	// name another program or none.
-	if path, err = filepath.Abs(path); err != nil {
+	// Once the child switches to its working directory, a relative
+	// executable path could identify a different program.
+	a.Command, err = filepath.Abs(path)
+	if err != nil {
 		return nil, err
 	}
-	config, err := acpConfigDir(path, dataDir, policy)
+	config, err := a.acpConfigDir(dataDir, checkDir)
 	if err != nil {
 		return nil, err
 	}
@@ -198,18 +212,13 @@ func newACPRuntime(ctx context.Context, program string, args []string, dataDir s
 			return nil, err
 		}
 	}
-	r := &acpRuntime{command: path, args: args, config: config, policy: policy}
+	r := &acpRuntime{command: a.Command, args: a.Args, config: config, policy: a.policy()}
 	// The agent says what it supports before it runs any task, so an
 	// owner's policy that it does not enforce stops agent add and the
 	// node's start, not a task.
 	ctx, cancel := context.WithTimeout(ctx, acpProbeTimeout)
 	defer cancel()
-	dir, err := os.MkdirTemp("", "agentiscale-acp-")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(dir)
-	s, err := r.start(ctx, dir, nil)
+	s, err := r.start(ctx, a.Dir, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -378,10 +387,14 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 	}
 	// The prompt goes out only while the turn may run, and a cancel only
 	// after it (sendPrompt, cancel).
+	var written chan bool
+	if r.prompted != nil {
+		written = make(chan bool, 1)
+	}
 	ch, err := s.sendPrompt(ctx, map[string]any{
 		"sessionId": session,
 		"prompt":    []map[string]string{{"type": "text", "text": r.prompt(req, conventions.Status)}},
-	})
+	}, written)
 	if err != nil {
 		if ctx.Err() != nil {
 			return turnResult{}, ctx.Err()
@@ -393,7 +406,26 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 		defer close(cancelSent)
 		s.cancel(session)
 	})
+	observe := r.prompted
+	loaded := !resumed && req.Session != ""
+	if written != nil {
+		select {
+		case ok := <-written:
+			if ok {
+				observe(s, loaded)
+				observe = nil
+			}
+		case <-s.done:
+		case <-s.broken:
+		case <-s.dead:
+		case <-ctx.Done():
+		}
+	}
 	err = s.await(context.Background(), "session/prompt", ch, &prompted)
+	if observe != nil && err == nil && ctx.Err() == nil {
+		// A reply also confirms delivery if EOF raced the writer's acknowledgement.
+		observe(s, loaded)
+	}
 	if !stop() {
 		<-cancelSent
 	}
@@ -544,33 +576,49 @@ func (r *acpRuntime) releaseAll() {
 	})
 }
 
-// failure is err as the task's failure, which the task's caller reads: a
-// bounded reason, with the agent's sign-in command when it needs one. What
-// the agent said, in its error or on stderr, can hold anything, so it goes
-// only to the node's log, which is the owner's.
+// acpSignInRequired carries a local remedy for the node's owner. Only Error
+// is published to a task's caller.
+type acpSignInRequired struct {
+	login  []string
+	config string
+}
+
+func (*acpSignInRequired) Error() string { return "the agent requires the node owner to sign in" }
+
+func (e *acpSignInRequired) ownerMessage() string {
+	args := make([]string, 0, len(e.login)+1)
+	if e.config != "" {
+		args = append(args, "AGENTISCALE_CONFIG_DIR="+shellQuote(e.config))
+	}
+	if len(e.login) == 0 {
+		text := "sign in on this node using the agent's sign-in flow"
+		if len(args) > 0 {
+			text += " with " + args[0]
+		}
+		return text
+	}
+	for _, arg := range e.login {
+		args = append(args, shellQuote(arg))
+	}
+	return "sign in on this node by running\n  " + strings.Join(args, " ")
+}
+
+// failure records local diagnostics and returns the reason that the task
+// service may publish to its caller.
 func (r *acpRuntime) failure(ctx context.Context, s *acpSession, err error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	s.logFailure(r, err)
-	name := r.info.name(r.command)
 	var rpcErr *acpError
-	if !errors.As(err, &rpcErr) {
-		return fmt.Errorf("%s failed: %s", name, failureReason(err))
+	if errors.As(err, &rpcErr) && rpcErr.Code == acpAuthRequired {
+		signIn := &acpSignInRequired{login: s.info.conventions().Login, config: r.config}
+		s.logFailure(r, fmt.Errorf("%w; %s", err, signIn.ownerMessage()))
+		return signIn
 	}
-	if rpcErr.Code == acpAuthRequired {
-		if login := r.info.conventions().Login; len(login) > 0 {
-			quoted := make([]string, len(login))
-			for i, arg := range login {
-				quoted[i] = shellQuote(arg)
-			}
-			shown := strings.Join(quoted, " ")
-			if r.config != "" {
-				shown = "AGENTISCALE_CONFIG_DIR=" + shellQuote(r.config) + " " + shown
-			}
-			return fmt.Errorf("%s is not signed in: run\n  %s", name, shown)
-		}
-		return fmt.Errorf("%s is not signed in", name)
+	s.logFailure(r, err)
+	name := s.info.name(r.command)
+	if rpcErr == nil {
+		return fmt.Errorf("%s failed: %s", name, failureReason(err))
 	}
 	return fmt.Errorf("%s failed: %s answered with error %d; the node's log has its message", name, rpcErr.Method, rpcErr.Code)
 }
@@ -766,7 +814,7 @@ func (s *acpSession) initialize(ctx context.Context) (acpAgent, error) {
 
 // call sends a request and decodes its result into out, if set.
 func (s *acpSession) call(ctx context.Context, method string, params any, out any) error {
-	ch, err := s.request(ctx, method, params)
+	ch, err := s.request(ctx, method, params, nil)
 	if err != nil {
 		return err
 	}
@@ -774,7 +822,7 @@ func (s *acpSession) call(ctx context.Context, method string, params any, out an
 }
 
 // request sends a request; its response comes on the channel.
-func (s *acpSession) request(ctx context.Context, method string, params any) (chan acpResponse, error) {
+func (s *acpSession) request(ctx context.Context, method string, params any, written chan<- bool) (chan acpResponse, error) {
 	s.mu.Lock()
 	s.nextID++
 	id := s.nextID
@@ -784,20 +832,20 @@ func (s *acpSession) request(ctx context.Context, method string, params any) (ch
 		s.promptID = id
 	}
 	s.mu.Unlock()
-	if err := s.send(ctx, map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}); err != nil {
+	if err := s.send(ctx, map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}, written); err != nil {
 		return nil, err
 	}
 	return ch, nil
 }
 
 // sendPrompt sends session/prompt unless ctx has ended.
-func (s *acpSession) sendPrompt(ctx context.Context, params any) (chan acpResponse, error) {
+func (s *acpSession) sendPrompt(ctx context.Context, params any, written chan<- bool) (chan acpResponse, error) {
 	s.order.Lock()
 	defer s.order.Unlock()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	ch, err := s.request(ctx, "session/prompt", params)
+	ch, err := s.request(ctx, "session/prompt", params, written)
 	s.promptSent = err == nil
 	return ch, err
 }
@@ -866,18 +914,20 @@ type acpWrite struct {
 	b   []byte
 	ctx context.Context
 	ack chan error
+	// written optionally reports whether the complete message reached stdin.
+	written chan<- bool
 }
 
 // send hands msg to the writer for the agent's stdin, which writes it
 // unless ctx has ended when it takes it. It gives up when ctx ends or the
 // agent's run does, however full the pipe is. A nil error means the
 // message is the next the writer writes.
-func (s *acpSession) send(ctx context.Context, msg any) error {
+func (s *acpSession) send(ctx context.Context, msg any, written chan<- bool) error {
 	b, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
-	w := acpWrite{b: append(b, '\n'), ctx: ctx, ack: make(chan error, 1)}
+	w := acpWrite{b: append(b, '\n'), ctx: ctx, ack: make(chan error, 1), written: written}
 	select {
 	case s.out <- w:
 		// The writer acks at once, before it writes.
@@ -906,7 +956,11 @@ func (s *acpSession) write() {
 				continue
 			}
 			w.ack <- nil
-			if _, err := s.stdin.Write(w.b); err != nil {
+			_, err := s.stdin.Write(w.b)
+			if w.written != nil {
+				w.written <- err == nil
+			}
+			if err != nil {
 				// Every request waiting for an answer, and every
 				// sender, learns that none comes.
 				s.mu.Lock()
@@ -982,7 +1036,7 @@ func (s *acpSession) read(stdout io.Reader) {
 func (s *acpSession) answer(msg acpMessage) {
 	ctx := context.Background()
 	if msg.Method != "session/request_permission" {
-		s.send(ctx, map[string]any{"jsonrpc": "2.0", "id": msg.ID, "error": map[string]any{"code": -32601, "message": "method not found"}})
+		s.send(ctx, map[string]any{"jsonrpc": "2.0", "id": msg.ID, "error": map[string]any{"code": -32601, "message": "method not found"}}, nil)
 		return
 	}
 	var p struct {
@@ -1004,7 +1058,7 @@ func (s *acpSession) answer(msg acpMessage) {
 			break
 		}
 	}
-	s.send(ctx, map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": map[string]any{"outcome": outcome}})
+	s.send(ctx, map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": map[string]any{"outcome": outcome}}, nil)
 }
 
 // begin makes the updates of session from here on the turn's.
@@ -1190,7 +1244,7 @@ func (s *acpSession) cancel(session string) {
 	}
 	ctx, stop := context.WithTimeout(context.Background(), acpCancelGrace)
 	defer stop()
-	s.send(ctx, map[string]any{"jsonrpc": "2.0", "method": "session/cancel", "params": map[string]string{"sessionId": session}})
+	s.send(ctx, map[string]any{"jsonrpc": "2.0", "method": "session/cancel", "params": map[string]string{"sessionId": session}}, nil)
 }
 
 // observeExit reaps a process that has exited while waiting for an answer.

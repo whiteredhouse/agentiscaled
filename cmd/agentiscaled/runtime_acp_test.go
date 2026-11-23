@@ -51,6 +51,7 @@ func fakeACPAgent(args []string) {
 	closeStdin := fs.Bool("close-stdin", false, "close stdin after session/new, keeping stdout open")
 	badStatus := fs.Bool("bad-status", false, "end turns with a status that is not done or needs_input")
 	badStop := fs.Bool("bad-stop", false, "end turns with a token-shaped stop reason")
+	checkMode := fs.String("check-mode", "", "behavior to exercise during runtime check")
 	permAfterCancel := fs.Bool("perm-after-cancel", false, "on cancel, ask for a permission and log its outcome to stderr")
 	fs.Parse(args)
 
@@ -111,6 +112,9 @@ func fakeACPAgent(args []string) {
 			}
 			reply(res)
 		case "session/new", "session/load":
+			if *checkMode == "slow-start" {
+				time.Sleep(300 * time.Millisecond)
+			}
 			if *authRequired {
 				send(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "error": map[string]any{"code": -32000, "message": "Authentication required"}})
 				continue
@@ -228,9 +232,36 @@ func fakeACPAgent(args []string) {
 					chunk(p.SessionID, strings.Repeat("b", 700<<10))
 				}
 				switch {
+				case strings.Contains(prompt, checkDoneTask):
+					answer("done", "Ready.")
+				case strings.Contains(prompt, "<answer>\n"+checkAnswer+"\n</answer>"):
+					switch *checkMode {
+					case "empty-answer":
+						answer("done", "")
+					case "lost-history":
+						answer("done", "The answer is blue.")
+					default:
+						answer("done", "Blue, and the original word was Lantern.")
+					}
 				case strings.Contains(prompt, "ASK-ME"), strings.Contains(prompt, checkQuestionTask):
+					if *checkMode == "exit-after-question" {
+						if err := os.WriteFile("asking.pid", []byte(fmt.Sprint(os.Getpid())), 0o600); err != nil {
+							panic(err)
+						}
+					}
 					answer("needs_input", "Which color?")
+					if *checkMode == "exit-after-question" {
+						os.Exit(0)
+					}
 				case strings.Contains(prompt, "SLOW"), strings.Contains(prompt, checkLongTask):
+					switch *checkMode {
+					case "prompt-error":
+						send(map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": -32603, "message": "prompt failed"}})
+						return
+					case "quick-result":
+						answer("done", "100000")
+						return
+					}
 					<-cancelled
 					if *permAfterCancel {
 						mu.Lock()
@@ -292,7 +323,9 @@ func newACPFromLine(ctx context.Context, line, dataDir string, policy agentPolic
 	if err != nil {
 		return nil, err
 	}
-	return newACPRuntime(ctx, program, args, dataDir, policy)
+	a := agentConfig{Runtime: "acp", Name: runtimeDefaultName("acp", program), Command: program, Args: args, Dir: dataDir}
+	a.setPolicy(policy)
+	return a.newRuntime(ctx, dataDir)
 }
 
 func newFakeACP(t *testing.T, policy agentPolicy, flags ...string) *acpRuntime {
@@ -596,7 +629,7 @@ func TestACPRuntimePolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := filepath.Join(data, "acp", "fake-acp")
+	config := filepath.Join(data, "acp-agents", "fake-acp")
 	want := "env=AGENTISCALE_CONFIG_DIR=" + config + ",AGENTISCALE_CONTRACT=1,AGENTISCALE_DIR_INSTRUCTIONS=0,AGENTISCALE_DIR_SKILLS=0,AGENTISCALE_ENV=1 "
 	if !strings.Contains(res.Text, want) {
 		t.Errorf("result %q lacks %q", res.Text, want)
@@ -657,10 +690,64 @@ func TestACPRuntimeRefusesNewerContract(t *testing.T) {
 }
 
 func TestACPRuntimeNotSignedIn(t *testing.T) {
-	r := newFakeACP(t, ownerPolicy, "-auth-required")
-	_, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "x"})
-	if err == nil || !strings.Contains(err.Error(), "not signed in: run\n  '/opt/My Agent/fake-acp' login --account 'Jo'\\''s team'") {
-		t.Errorf("not signed in: %v", err)
+	var logged tailBuffer
+	previous := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	h := newAgentHarness(t, testSender)
+	policy := ownerPolicy
+	policy.OwnerConfig = false
+	r := newFakeACP(t, policy, "-auth-required", "-policies", "config-dir")
+	t.Cleanup(r.releaseAll)
+	h.svc.rt = r
+	task := h.await(t, h.send(t, "", "work", nil).ID, a2a.TaskStateFailed)
+	if got := statusText(task); got != "task failed: the agent requires the node owner to sign in" {
+		t.Errorf("peer-visible failure: %q", got)
+	}
+	want := "AGENTISCALE_CONFIG_DIR=" + shellQuote(r.config) + " '/opt/My Agent/fake-acp' login --account 'Jo'\\''s team'"
+	if !strings.Contains(logged.String(), want) {
+		t.Errorf("missing owner sign-in remedy in %q", logged.String())
+	}
+}
+
+func TestACPSignInUsesFailedSession(t *testing.T) {
+	r := &acpRuntime{command: "/opt/agent"}
+	r.info.Meta.Agentiscale = &acpConventions{Login: []string{"other-version", "login"}}
+	s := &acpSession{}
+	s.info.Meta.Agentiscale = &acpConventions{Login: []string{"this-version", "login"}}
+	failure := r.failure(t.Context(), s, &acpError{Method: "session/prompt", Code: acpAuthRequired})
+	var signIn *acpSignInRequired
+	if !errors.As(failure, &signIn) || !strings.HasSuffix(signIn.ownerMessage(), "\n  this-version login") {
+		t.Fatalf("sign-in remedy for the process that failed: %+v", signIn)
+	}
+	// A process failing before initialize completes has supplied no command.
+	r.config = "/opt/Agent Config"
+	failure = r.failure(t.Context(), &acpSession{}, &acpError{Method: "initialize", Code: acpAuthRequired})
+	if !errors.As(failure, &signIn) || signIn.ownerMessage() != "sign in on this node using the agent's sign-in flow with AGENTISCALE_CONFIG_DIR='/opt/Agent Config'" {
+		t.Fatalf("sign-in remedy before initialize: %+v", signIn)
+	}
+}
+
+func TestRuntimeCheckReportsLocalSignIn(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "check profiles")
+	if err := os.Mkdir(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tmp)
+	var out bytes.Buffer
+	err := runRuntimeCheck(t.Context(), []string{
+		"-command", fakeACPCommand(t, "-auth-required", "-policies", "config-dir"),
+		"-owner-config=false", "-dir", t.TempDir(),
+	}, &out)
+	dirs, globErr := filepath.Glob(filepath.Join(tmp, "agentiscale-check-data-*"))
+	if globErr != nil || len(dirs) != 1 {
+		t.Fatalf("could not find the check's reusable data directory: %v, %v", dirs, globErr)
+	}
+	if err == nil || !strings.Contains(out.String(), "AGENTISCALE_CONFIG_DIR='"+dirs[0]+"/") ||
+		!strings.Contains(out.String(), "retry this check with -data-dir "+shellQuote(dirs[0])) ||
+		!strings.Contains(out.String(), "'/opt/My Agent/fake-acp' login --account 'Jo'\\''s team'") {
+		t.Fatalf("runtime check: %v\n%s", err, &out)
 	}
 }
 
@@ -858,7 +945,8 @@ func TestACPRuntimeFixedTurnReasons(t *testing.T) {
 func TestACPRuntimeRelativeCommand(t *testing.T) {
 	script, flags, _ := splitACPCommand(fakeACPCommand(t, "-status"))
 	t.Chdir(filepath.Dir(script))
-	rt, err := newACPRuntime(t.Context(), "./"+filepath.Base(script), flags, t.TempDir(), ownerPolicy)
+	a := agentConfig{Runtime: "acp", Name: "script", Command: "./" + filepath.Base(script), Args: flags, Dir: t.TempDir()}
+	rt, err := a.newRuntime(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -894,11 +982,11 @@ func TestACPSendDropsCancelledWrites(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	for range 64 {
-		if err := s.send(ctx, map[string]string{"method": "session/prompt"}); !errors.Is(err, context.Canceled) {
+		if err := s.send(ctx, map[string]string{"method": "session/prompt"}, nil); !errors.Is(err, context.Canceled) {
 			t.Fatalf("send with a cancelled context: %v", err)
 		}
 	}
-	if err := s.send(context.Background(), map[string]string{"method": "ok"}); err != nil {
+	if err := s.send(context.Background(), map[string]string{"method": "ok"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(50 * time.Millisecond)

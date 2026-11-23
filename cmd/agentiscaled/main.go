@@ -210,7 +210,7 @@ type agentConfig struct {
 // newRuntime makes the agent's runtime, which checks that it can run.
 func (a agentConfig) newRuntime(ctx context.Context, dataDir string) (runtime, error) {
 	if a.Runtime == "acp" {
-		return newACPRuntime(ctx, a.Command, a.Args, dataDir, a.policy())
+		return newACPRuntime(ctx, a, dataDir, "")
 	}
 	return runtimes[a.Runtime].new(a.Command, dataDir, a.policy())
 }
@@ -332,7 +332,11 @@ func newAgents(ctx context.Context, c *config) ([]*hostedAgent, error) {
 	env := map[string]string{}
 	ownerConfig := false
 	names := map[string]bool{}
-	for _, a := range c.agents {
+	for i := range c.agents {
+		a := &c.agents[i]
+		if a.Name == "" {
+			a.Name = runtimeDefaultName(a.Runtime, a.Command)
+		}
 		if names[a.Name] {
 			return nil, fmt.Errorf("two agents are named %q; each agent needs a name of its own", a.Name)
 		}
@@ -392,6 +396,7 @@ func newAgent(ctx context.Context, a *agentConfig, dataDir string) (*agentServic
 	if err := agentDirApart(dir, dataDir); err != nil {
 		return nil, err
 	}
+	a.Dir = dir
 	rt, err := a.newRuntime(ctx, dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("agent %s: %w", a.Name, err)
@@ -402,7 +407,6 @@ func newAgent(ctx context.Context, a *agentConfig, dataDir string) (*agentServic
 			return nil, fmt.Errorf("agent %s: %w", a.Name, err)
 		}
 	}
-	a.Dir = dir
 	s, err := newAgentService(dir, rt, dataDir, a.Name)
 	if err != nil {
 		return nil, err

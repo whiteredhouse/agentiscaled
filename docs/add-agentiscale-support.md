@@ -40,8 +40,10 @@ apart. For each task, the node:
    caller's answer as another `session/prompt` in the same session
 7. closes stdin when the task ends
 
-The node also starts your command once, for `initialize` only, when the owner adds
-the agent and when the node starts, to check what your agent declares.
+When the owner adds the agent and when the node starts, the node checks what
+your agent declares by running `initialize` in the configured working directory.
+Relative arguments such as `./agent.py` resolve there on both the check and the
+task run.
 
 The node is the ACP client. It offers no `fs` or `terminal` capability: your agent
 works on the directory with its own tools, under its own configuration and the
@@ -118,10 +120,16 @@ configuration and every policy on, but no other way.
 
 ## Sign-in
 
-The node never reads or stores your agent's credentials. If your agent is not
-signed in, answer `session/new` with ACP's `auth_required` error (`-32000`). The
-task fails with your `login` command, with `AGENTISCALE_CONFIG_DIR` set when the
-agent has a configuration of its own, so the owner can run it.
+If your agent needs the owner to sign in, answer with ACP's `auth_required`
+error (`-32000`). The task caller sees that sign-in is required. The owner can
+find the declared `login` command in the node log or in local `runtime check`
+diagnostics. For `-owner-config=false`, that command includes the agent's
+`AGENTISCALE_CONFIG_DIR`. Your agent manages the credentials there.
+
+Each configured service has its own directory under `<data-dir>/acp-agents`,
+including services that use the same launcher. The local sign-in command shows
+the exact path. If an earlier development build kept your sign-in under
+`<data-dir>/acp/<program>`, sign in once for each service using its new directory.
 
 ## Steps
 
@@ -240,15 +248,20 @@ role's model and tool settings don't apply to your agent.
 agentiscaled runtime check -command "my-agent acp"
 ```
 
-`runtime check` starts your command the way the node does and checks, in an empty
-directory: `initialize` and what you declare, a turn that ends in a result, and a
-cancelled turn, a turn that ends in a question and the answer in the process that
-asked. With `loadSession` it also checks an answer in a new process, after
-`session/load`; without it, it skips that. Each turn has 5
-minutes (`-timeout`): a turn that does not end in time fails its step. Add
-`-owner-config=false`, `-dir-instructions=false` or `-dir-skills=false` to check
-your agent under those policies. The turns run your agent's model, with the
-configuration and sign-in the check gives it.
+`runtime check` runs the startup probe and the turns in `-dir`, which defaults
+to a new empty directory. It checks `initialize`, a completed turn, and whether
+the process that asked a question can use the answer and the earlier context.
+If the agent advertises `loadSession`, a separate check starts a fresh process
+and verifies that it resumes the session. The cancellation check sends a long
+prompt and starts its cancellation timer once the prompt has been written.
+If the agent completes that turn before cancellation, the checker reports `WARN`.
+A protocol error fails the check. Each turn has a five-minute deadline by default
+(`-timeout`).
+
+The turns run your agent's model. Use `-owner-config=false`, `-dir-instructions=false`
+or `-dir-skills=false` to exercise a particular policy. To check a configured
+service's private sign-in, pass its `-name` and node `-data-dir` together with
+`-owner-config=false`.
 
 Then offer your agent on a test node and send it a task:
 
