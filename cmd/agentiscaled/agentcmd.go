@@ -142,7 +142,7 @@ func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
 				return fmt.Errorf("-%s needs a runtime: agentiscaled agent add %s -%s …", f, strings.Join(runtimeNames(), "|"), f)
 			}
 		}
-		if offer, err = ask.chooseAgent(false); err != nil {
+		if offer, err = ask.chooseAgent(false, policy, set); err != nil {
 			return err
 		} else if offer == nil {
 			return errors.New("no agent offered")

@@ -215,6 +215,9 @@ to give the agent its own [private runtime profile](connect-agents.md#private-ru
 no MCP servers of yours (`-owner-config=false`), or to leave out the directory's
 instruction files or skills when it may hold content from someone you don't trust
 (`-dir-instructions=false`, `-dir-skills=false`).
+You can set any of these choices on the command line. For example,
+`agentiscaled agent add -owner-config=false` uses a private profile and asks
+only about the remaining choices.
 
 The agent runs on the same node your local apps use. There is one mesh identity,
 one sign-in to agentiscale, and one background service. If Codex needs a runtime

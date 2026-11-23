@@ -96,7 +96,7 @@ func codexSignedIn(_, profileDir string, policy agentPolicy) bool {
 
 // codexEnvSignedIn says whether the owner's Codex has an API key in the
 // environment, which Codex uses before its sign-in. It counts only with the
-// owner's configuration: the agent's own never gets the node's credentials.
+// owner's configuration.
 func codexEnvSignedIn(policy agentPolicy) bool {
 	return policy.OwnerConfig && os.Getenv("CODEX_API_KEY") != ""
 }
@@ -204,8 +204,8 @@ func (r *codexRuntime) Describe(card *a2a.AgentCard) {
 //     included, so the run can call the network's other agents. Otherwise
 //     CODEX_HOME and HOME are the agent's own, so none of the owner's
 //     skills (~/.agents/skills, ~/.codex/skills), plugins or settings
-//     exist for the run, and it uses the agent's own sign-in: no API key or
-//     token in the node's environment reaches it (codexEnv). Its
+//     exist for the run, and it uses the agent's own sign-in. The private
+//     environment excludes CODEX_API_KEY and OPENAI_API_KEY (codexEnv). Its
 //     configuration is ignored too, so the run has no MCP servers and
 //     cannot delegate.
 //   - The checkout's AGENTS.md files and skills load as in any Codex run
@@ -412,10 +412,8 @@ func codexThread(events []byte) string {
 	return ""
 }
 
-// codexEnv is the run's environment: of the node's, only what a process
-// needs to run and reach the network, so that no credential of the owner's,
-// such as CODEX_API_KEY, which Codex prefers to its sign-in, comes along;
-// and the agent's own CODEX_HOME and HOME.
+// codexEnv sets the agent's CODEX_HOME and HOME, and keeps selected process
+// and network variables. Proxy URLs pass through with any embedded credentials.
 func codexEnv(environ []string, home string) []string {
 	keep := map[string]bool{
 		"PATH": true, "USER": true, "LOGNAME": true, "SHELL": true, "TMPDIR": true,

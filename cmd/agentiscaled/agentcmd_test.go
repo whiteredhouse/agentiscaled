@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -203,6 +205,71 @@ func TestAgentAddListRemove(t *testing.T) {
 	out.Reset()
 	if err := runAgent(ctx, []string{"list"}, &out); err != nil || !strings.Contains(out.String(), "offers no agent") {
 		t.Fatalf("list after remove: %v\n%s", err, &out)
+	}
+}
+
+func TestInteractiveAgentAddHonorsExplicitPolicyFlags(t *testing.T) {
+	withDefaultDataDir(t)
+	bin := t.TempDir()
+	const cli = `#!/bin/sh
+case "$1" in
+  --version) echo test-codex ;;
+  login) printf '{}' > "$CODEX_HOME/auth.json" ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte(cli), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("CODEX_API_KEY", "")
+
+	const owner = "Use your own codex configuration"
+	const instructions = "Load the directory's instruction files"
+	const skills = "Load the directory's skills"
+	for _, tc := range []struct {
+		name    string
+		flags   []string
+		prompts []string
+		answer  string
+		want    agentPolicy
+	}{
+		{"private profile", []string{"-owner-config=false"}, []string{instructions, skills}, "\n", agentPolicy{DirInstructions: true, DirSkills: true}},
+		{"owner profile", []string{"-owner-config=true", "-dir-instructions=false"}, []string{skills}, "n", agentPolicy{OwnerConfig: true}},
+		{"prompt for profile", []string{"-dir-instructions=true", "-dir-skills=false"}, []string{owner}, "n", agentPolicy{DirInstructions: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, ownerProfile := t.TempDir(), t.TempDir()
+			t.Setenv("CODEX_HOME", ownerProfile)
+			key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+			pid := seedNode(t, dir, "https://mesh.invalid", key)
+			writeSettings(t, dir, settings{PeerID: pid, Clients: "none", Foreground: true})
+			upWizardInput(t, "helper\n\n"+t.TempDir()+"\n"+tc.answer+"\n")
+
+			var out bytes.Buffer
+			if err := runAgent(t.Context(), append([]string{"add", "-data-dir", dir}, tc.flags...), &out); err != nil {
+				t.Fatalf("agent add: %v\n%s", err, &out)
+			}
+			for _, q := range []string{owner, instructions, skills} {
+				if got := strings.Contains(out.String(), q); got != slices.Contains(tc.prompts, q) {
+					t.Errorf("asked %q = %t; want prompts %q", q, got, tc.prompts)
+				}
+			}
+			saved, err := loadSettings(dir)
+			if err != nil || len(saved.Agents) != 1 {
+				t.Fatalf("saved agents: %v, %v", saved.Agents, err)
+			}
+			if got := saved.Agents[0].policy(); got != tc.want {
+				t.Errorf("saved policy = %+v; want %+v", got, tc.want)
+			}
+			profile := filepath.Join(dir, "agents", "helper", "profile")
+			if tc.want.OwnerConfig {
+				profile = ownerProfile
+			}
+			if _, err := os.Stat(filepath.Join(profile, "auth.json")); err != nil {
+				t.Errorf("expected Codex sign-in in %s: %v", profile, err)
+			}
+		})
 	}
 }
 

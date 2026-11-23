@@ -59,9 +59,11 @@ Every process the node starts for your agent gets:
 | `AGENTISCALE_DIR_INSTRUCTIONS` | `0` when the owner turned off the directory's instruction files |
 | `AGENTISCALE_DIR_SKILLS` | `0` when the owner turned off the directory's skills |
 
-With `-owner-config=false` the process gets only what a process needs from the
-node's environment (`PATH`, `HOME`, locale, proxy and certificate settings) and
-none of the owner's credentials.
+With `-owner-config=false`, the node filters inherited variables by name. It
+keeps basic process, locale, proxy and certificate settings, including `PATH`
+and `HOME`, and excludes variables such as `OPENAI_API_KEY` and `GITHUB_TOKEN`.
+The process receives the full value of every retained variable, including any
+credentials embedded in a proxy URL.
 
 ## Declare what you support
 

@@ -259,10 +259,11 @@ as `CODEX_HOME` and the `home` subdirectory as `HOME`. It runs with
 `--ignore-user-config`, so the owner's Codex skills, plugins, settings and MCP servers
 are excluded. The node supplies the MCP server for [calls to other agents](#agents-call-other-agents).
 Codex inherits basic process, locale, proxy and CA settings such as `PATH`,
-`CODEX_CA_CERTIFICATE` and `SSL_CERT_FILE`. The node filters out API keys and
-tokens, including `CODEX_API_KEY`. The directory's `AGENTS.md` files and
-skills load as in any Codex run in it. For a directory whose content may come from
-someone you don't trust, `-dir-instructions=false` passes `-c project_doc_max_bytes=0` so no
+`CODEX_CA_CERTIFICATE` and `SSL_CERT_FILE`. The node excludes credential
+variables such as `CODEX_API_KEY` and `GITHUB_TOKEN`. The directory's
+`AGENTS.md` files and skills load as in any Codex run in it. For a directory
+whose content may come from someone you don't trust, `-dir-instructions=false`
+passes `-c project_doc_max_bytes=0` so no
 `AGENTS.md` is loaded, and `-dir-skills=false` turns off every skill in or
 above the directory (`.agents/skills`, `.codex/skills`), the machine's
 `/etc/codex/skills` and Codex's bundled skills. Commands Codex
@@ -287,11 +288,11 @@ denied (`--permission-prompts none`, or the print mode's own denial on a Claude 
 too old for that flag). With `-owner-config=false` it uses the service's
 [private profile](#private-runtime-profiles) as `CLAUDE_CONFIG_DIR`
 and runs `--restricted` (a Claude Code without it is refused: update it with `claude update`) with only the Read, Grep and Glob tools, confined to the
-agent's directory, no MCP servers but the network's own (see
-[Agents call other agents](#agents-call-other-agents)), and none of your credentials from the environment
-(`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`). `-dir-instructions=false`
-stops `CLAUDE.md` files from loading. `-dir-skills=false` turns off every
-skill and command of the run, since Claude Code cannot turn off only the directory's.
+agent's directory, and only the node's MCP server for
+[calls to other agents](#agents-call-other-agents). The node excludes Claude
+sign-in variables such as `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN`.
+`-dir-instructions=false` stops `CLAUDE.md` files from loading. `-dir-skills=false`
+turns off every skill and command of the run, since Claude Code cannot turn off only the directory's.
 
 ### Other agents (ACP)
 
@@ -326,6 +327,9 @@ foreground flags when they contain other characters, such as a dot. Two
 services using the same runtime can sign in to different accounts. If you
 switch runtimes under the same service name, the new runtime uses the same
 profile and can read the files already there.
+
+All three runtimes inherit the node's proxy settings, including any credentials
+in a proxy URL.
 
 If you're upgrading from `<data-dir>/codex`, `<data-dir>/claude` or an older ACP
 profile under `<data-dir>/acp` or `<data-dir>/acp-agents`, sign in once for

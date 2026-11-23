@@ -134,9 +134,8 @@ func claudeSignedIn(command, profileDir string, policy agentPolicy) bool {
 	return json.Unmarshal(out, &status) == nil && status.LoggedIn
 }
 
-// claudeEnvSignedIn says whether the owner's Claude Code has a credential in
-// the environment. It counts only with the owner's configuration: the
-// agent's own never gets the node's credentials.
+// claudeEnvSignedIn says whether the owner's Claude Code has a sign-in
+// credential in the environment. It counts only with the owner's configuration.
 func claudeEnvSignedIn(policy agentPolicy) bool {
 	if !policy.OwnerConfig {
 		return false
@@ -187,8 +186,7 @@ func (r *claudeRuntime) Describe(card *a2a.AgentCard) {
 //   - Otherwise CLAUDE_CONFIG_DIR is the agent's own and the run is
 //     restricted (--restricted): no user, project or local settings, no MCP
 //     servers, and only the read-only file tools, confined to the agent's
-//     directory. No credential in the node's environment reaches it
-//     (claudeEnv).
+//     directory. Its environment excludes Claude's sign-in variables (claudeEnv).
 //   - With a definition (-definition), its instructions are added to the
 //     system prompt; a Claude Code agent file's tools only narrow the run's
 //     built-in tools, and its model and disallowed tools apply.
@@ -323,18 +321,16 @@ func (r *claudeRuntime) Run(ctx context.Context, dir string, req taskRequest) (t
 	return parseTurn(result.Result, session)
 }
 
-// claudeEnv is the run's environment: of the node's, only what a process
-// needs to run and reach the network, and the agent's own CLAUDE_CONFIG_DIR,
-// so that no credential of the owner's, such as ANTHROPIC_API_KEY, which
-// Claude Code prefers to its sign-in, comes along. HOME stays, since on
+// claudeEnv adds the agent's CLAUDE_CONFIG_DIR to the filtered environment,
+// which excludes Claude's sign-in variables. HOME stays, since on
 // macOS the sign-in is in the user's keychain, under a name of the config
 // directory's.
 func claudeEnv(environ []string, config string) []string {
 	return append([]string{"CLAUDE_CONFIG_DIR=" + config}, processEnv(environ)...)
 }
 
-// processEnv is what of environ a process needs to run and reach the
-// network, and none of the owner's credentials.
+// processEnv keeps selected process and network variables by name.
+// Proxy URLs pass through with any embedded credentials.
 func processEnv(environ []string) []string {
 	keep := map[string]bool{
 		"PATH": true, "HOME": true, "USER": true, "LOGNAME": true, "SHELL": true, "TMPDIR": true,

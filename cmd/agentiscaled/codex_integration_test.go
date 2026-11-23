@@ -330,8 +330,8 @@ func write(t *testing.T, path, content string) {
 	}
 }
 
-// The run gets the agent's CODEX_HOME and HOME and what a process needs,
-// and no credential from the node's environment.
+// The run gets the agent's CODEX_HOME and HOME, and inherits proxy and CA
+// settings. Model and service credential variables are excluded.
 func TestCodexEnvCarriesNoOwnerCredential(t *testing.T) {
 	env := codexEnv([]string{
 		"PATH=/usr/bin", "HOME=/Users/owner", "CODEX_HOME=/Users/owner/.codex", "LC_ALL=C", "https_proxy=http://proxy", "CODEX_CA_CERTIFICATE=/etc/corp-ca.pem",
