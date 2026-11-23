@@ -1,0 +1,483 @@
+package node
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/whiteredhouse/agentiscaled/internal/caller"
+)
+
+func TestLineWriterSplitsLinesAcrossWrites(t *testing.T) {
+	var lines []string
+	w := &lineWriter{line: func(b []byte) { lines = append(lines, string(b)) }}
+	for _, chunk := range []string{"one\ntw", "o\n", "\nthr", "ee"} {
+		if n, err := w.Write([]byte(chunk)); n != len(chunk) || err != nil {
+			t.Fatalf("write %q: %d %v", chunk, n, err)
+		}
+	}
+	w.Close()
+	if want := []string{"one", "two", "", "three"}; !slices.Equal(lines, want) {
+		t.Fatalf("lines %q, want %q", lines, want)
+	}
+}
+
+// A line over the bound, such as a large tool output, is skipped whole and
+// never kept, and the lines after it still come through.
+func TestLineWriterSkipsOverlongLines(t *testing.T) {
+	var lines []string
+	w := &lineWriter{line: func(b []byte) { lines = append(lines, string(b)) }}
+	big := strings.Repeat("x", 1<<20)
+	w.Write([]byte("before\n"))
+	for i := 0; i <= maxRuntimeLine>>20; i++ {
+		w.Write([]byte(big))
+	}
+	if len(w.partial) > maxRuntimeLine {
+		t.Fatalf("kept %d bytes of an overlong line", len(w.partial))
+	}
+	w.Write([]byte("tail\nafter\n"))
+	w.Close()
+	if want := []string{"before", "after"}; !slices.Equal(lines, want) {
+		t.Fatalf("lines %q, want %q", lines, want)
+	}
+}
+
+// The bound holds for a line whose last chunk comes with its newline.
+func TestLineWriterBoundsLineEndingInChunk(t *testing.T) {
+	var lines []int
+	w := &lineWriter{line: func(b []byte) { lines = append(lines, len(b)) }}
+	w.Write(make([]byte, maxRuntimeLine))
+	w.Write([]byte("x\nok\n"))
+	w.Write(append(make([]byte, maxRuntimeLine), '\n'))
+	w.Write(append(bytes.Repeat([]byte("y"), maxRuntimeLine+1), '\n'))
+	w.Close()
+	if want := []int{2, maxRuntimeLine}; !slices.Equal(lines, want) {
+		t.Fatalf("line lengths %v, want %v", lines, want)
+	}
+}
+
+func TestProgressLineIsOneShortLine(t *testing.T) {
+	if got := progressLine("go test \\\n  ./...\t-run X"); got != "go test \\ ./... -run X" {
+		t.Fatalf("one line: %q", got)
+	}
+	long := progressLine(strings.Repeat("é", 500))
+	if n := len([]rune(long)); n != maxProgressLine || !strings.HasSuffix(long, "…") {
+		t.Fatalf("long line: %d runes %q", n, long[len(long)-8:])
+	}
+}
+
+func TestClaudeProgress(t *testing.T) {
+	for event, want := range map[string]string{
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"GITHUB_TOKEN=ghp_secret go test ./...","description":"Run tests"}}]}}`:                                                                         "Running go",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"curl -H 'Authorization: Bearer sk-secret' https://x"}}]}}`:                                                                                     "Running curl",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"$(cat ~/.token) --flag"}}]}}`:                                                                                                                  "Running a command",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/home/me/w/main.go","old_string":"a"}}]}}`:                                                                                                   "Editing main.go",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/key with spaces.pem"}}]}}`:                                                                                                              "Reading a file",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"sk-live-123"}}]}}`:                                                                                                                             "Searching files",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"WebFetch","input":{"url":"https://s3.example/x?X-Amz-Signature=abc"}}]}}`:                                                                                                "Fetching a web page",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__docs__search","input":{"q":"secret"}}]}}`:                                                                                                                           "Using mcp__docs__search",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[{"content":"Read code","status":"completed"},{"content":"Rotate key sk-1","status":"in_progress"},{"content":"c","status":"pending"}]}}]}}`: "Working on step 2 of 3",
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"StructuredOutput","input":{"status":"done","text":"ok"}}]}}`:                                                                                                             "",
+		// What the agent says, its structured answer, results, thinking and other events are not steps.
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"The token is sk-secret"}]}}`: "",
+		`{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm"}]}}`:            "",
+		`{"type":"user","message":{"content":[{"type":"tool_result","content":"PASS"}]}}`:              "",
+		`{"type":"result","result":"ok"}`:    "",
+		`{"type":"system","subtype":"init"}`: "",
+		`not json`:                           "",
+	} {
+		if got := claudeProgress([]byte(event)); got != want {
+			t.Errorf("%s: %q, want %q", event, got, want)
+		}
+	}
+}
+
+func TestCodexProgress(t *testing.T) {
+	for event, want := range map[string]string{
+		`{"type":"item.started","item":{"id":"1","type":"command_execution","command":"bash -lc 'TOKEN=abc go test ./...'","status":"in_progress"}}`:                         "Running go",
+		`{"type":"item.started","item":{"id":"1","type":"command_execution","command":"/usr/bin/git push https://user:pw@host/repo"}}`:                                       "Running git",
+		`{"type":"item.completed","item":{"id":"2","type":"file_change","status":"completed","changes":[{"path":"/w/a.go","kind":"update"},{"path":"b.go","kind":"add"}]}}`:  "Changed a.go, b.go",
+		`{"type":"item.completed","item":{"id":"2","type":"file_change","status":"completed","changes":[{"path":"a"},{"path":"b"},{"path":"c"},{"path":"d"},{"path":"e"}]}}`: "Changed a, b, c, 2 more",
+		// A patch that failed changed nothing.
+		`{"type":"item.completed","item":{"id":"2","type":"file_change","status":"failed","changes":[{"path":"main.go","kind":"update"}]}}`:             "",
+		`{"type":"item.started","item":{"id":"3","type":"mcp_tool_call","server":"docs","tool":"search","arguments":{"q":"secret"}}}`:                   "Using docs.search",
+		`{"type":"item.started","item":{"id":"4","type":"web_search","query":"my private query"}}`:                                                      "Searching the web",
+		`{"type":"item.updated","item":{"id":"5","type":"todo_list","items":[{"text":"Read","completed":true},{"text":"Fix sk-1","completed":false}]}}`: "Working on step 2 of 2",
+		// What the agent says, finished commands, reasoning and other events are not steps.
+		`{"type":"item.completed","item":{"id":"6","type":"agent_message","text":"Tests pass; token sk-1."}}`: "",
+		`{"type":"item.completed","item":{"id":"1","type":"command_execution","command":"ls","exit_code":0}}`: "",
+		`{"type":"item.completed","item":{"id":"8","type":"reasoning","text":"hmm"}}`:                         "",
+		`{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}`:                        "",
+		`{"type":"turn.completed","usage":{}}`:                                                                "",
+	} {
+		if got := codexProgress([]byte(event)); got != want {
+			t.Errorf("%s: %q, want %q", event, got, want)
+		}
+	}
+}
+
+// Codex reports its steps while it runs, and its session from the same
+// stream.
+func TestCodexRuntimeReportsSteps(t *testing.T) {
+	dir := t.TempDir()
+	codex := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --output-last-message ] && out=$2; shift; done\ncat > /dev/null\n" +
+		"echo '{\"type\":\"thread.started\",\"thread_id\":\"0199a213-81c0-7800-8aa1-bbab2a035a53\"}'\n" +
+		"echo '{\"type\":\"item.started\",\"item\":{\"id\":\"1\",\"type\":\"command_execution\",\"command\":\"go vet\"}}'\n" +
+		"echo '{\"type\":\"item.completed\",\"item\":{\"id\":\"2\",\"type\":\"file_change\",\"status\":\"completed\",\"changes\":[{\"path\":\"main.go\",\"kind\":\"update\"}]}}'\n" +
+		"printf '{\"status\":\"done\",\"text\":\"Fixed\"}' > \"$out\"\n"
+	if err := os.WriteFile(codex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var steps []string
+	out, err := (&codexRuntime{command: codex, home: filepath.Join(dir, "home")}).Run(context.Background(), dir,
+		taskRequest{Sender: testSender, Text: "fix", Progress: func(s string) { steps = append(steps, s) }})
+	if err != nil || out.Text != "Fixed" || out.Session != "0199a213-81c0-7800-8aa1-bbab2a035a53" {
+		t.Fatalf("run: %+v %v", out, err)
+	}
+	if want := []string{"Running go", "Changed main.go"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps %q, want %q", steps, want)
+	}
+}
+
+// The agent's steps reach the caller as the message of the working
+// status, the latest one winning when they come faster than progressEvery,
+// and the task's result is unchanged.
+func TestTaskProgressReachesCaller(t *testing.T) {
+	old := progressEvery
+	progressEvery = 300 * time.Millisecond
+	t.Cleanup(func() { progressEvery = old })
+	h := newAgentHarness(t, testSender)
+	task := h.send(t, "", "fix the bug", nil)
+	<-h.fix.prompts
+	h.fix.steps <- "Bash: go test ./..."
+	h.awaitMessage(t, task.ID, "Bash: go test ./...")
+	h.fix.steps <- "Edit: a.go"
+	h.fix.steps <- "Edit: b.go"
+	h.awaitMessage(t, task.ID, "Edit: b.go")
+	h.fix.release <- "fixed"
+	done := h.await(t, task.ID, a2a.TaskStateCompleted)
+	if out := caller.DescribeTask(done); out.Result != "fixed" || out.Terminal != "completed" || out.Message != "" {
+		t.Fatalf("done: %+v", out)
+	}
+	var seen []string
+	for _, m := range done.History {
+		if m.Role == a2a.MessageRoleAgent {
+			seen = append(seen, messageText(m))
+		}
+	}
+	if want := []string{"Bash: go test ./...", "Edit: b.go"}; !slices.Equal(seen, want) {
+		t.Fatalf("progress in history %q, want %q (a step overtaken within progressEvery is not sent)", seen, want)
+	}
+}
+
+func (h *agentHarness) awaitMessage(t *testing.T, id a2a.TaskID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		task, err := h.client.GetTask(context.Background(), &a2a.GetTaskRequest{ID: id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := caller.DescribeTask(task)
+		if out.State == "working" && out.Message == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task %s: %+v, want working with message %q", id, out, want)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// get_task passes each new step to an MCP client that asked for progress,
+// and returns the task as before.
+func TestGetTaskNotifiesProgress(t *testing.T) {
+	old := progressEvery
+	progressEvery = 10 * time.Millisecond
+	t.Cleanup(func() { progressEvery = old })
+	h := newAgentHarness(t, testSender)
+	// Stands in for the node's mesh route to the agent.
+	proxy := httptest.NewServer(h.svc.handler("codex", "secret"))
+	defer proxy.Close()
+	server := mcp.NewServer(&mcp.Implementation{Name: "t", Version: "1"}, nil)
+	caller.AddTools(server, &caller.Client{Mesh: &http.Client{Transport: meshHeaders{"secret", testSender}}, BaseURL: proxy.URL})
+	notes := make(chan string, 8)
+	client := mcp.NewClient(&mcp.Implementation{Name: "c", Version: "1"}, &mcp.ClientOptions{
+		ProgressNotificationHandler: func(_ context.Context, r *mcp.ProgressNotificationClientRequest) { notes <- r.Params.Message },
+	})
+	ct, st := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := server.Connect(ctx, st, nil); err != nil {
+		t.Fatal(err)
+	}
+	session, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	target := map[string]any{"peer_id": testSender, "service": "codex"}
+	sent, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "send_task", Arguments: merge(target, map[string]any{"text": "fix"})})
+	if err != nil || sent.IsError {
+		t.Fatalf("send: %+v %v", sent, err)
+	}
+	id := sent.StructuredContent.(map[string]any)["task_id"].(string)
+	<-h.fix.prompts
+	go func() {
+		h.fix.steps <- "Bash: go test ./..."
+		time.Sleep(1500 * time.Millisecond)
+		h.fix.steps <- "Using docs.search"
+		time.Sleep(1500 * time.Millisecond)
+		h.fix.steps <- "Using docs.search"
+		time.Sleep(1500 * time.Millisecond)
+		h.fix.release <- "fixed"
+	}()
+	params := &mcp.CallToolParams{Name: "get_task", Arguments: merge(target, map[string]any{"task_id": id, "wait_seconds": 10})}
+	params.SetProgressToken("p1")
+	got, err := session.CallTool(ctx, params)
+	if err != nil || got.IsError {
+		t.Fatalf("get: %+v %v", got, err)
+	}
+	if out := got.StructuredContent.(map[string]any); out["terminal"] != "completed" || out["result"] != "fixed" {
+		t.Fatalf("get_task: %+v", out)
+	}
+	var seen []string
+	for len(notes) > 0 {
+		seen = append(seen, <-notes)
+	}
+	// Two steps that read the same are still two steps.
+	if want := []string{"Bash: go test ./...", "Using docs.search", "Using docs.search"}; !slices.Equal(seen, want) {
+		t.Fatalf("progress notifications %q, want %q", seen, want)
+	}
+}
+
+func merge(a, b map[string]any) map[string]any {
+	m := map[string]any{}
+	for k, v := range a {
+		m[k] = v
+	}
+	for k, v := range b {
+		m[k] = v
+	}
+	return m
+}
+
+// A failed Codex turn says why: the turn.failed event, not stderr's warnings.
+func TestCodexRuntimeFailureNamesTheTurnError(t *testing.T) {
+	dir := t.TempDir()
+	codex := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\ncat > /dev/null\necho 'WARN model cache' >&2\n" +
+		"echo '{\"type\":\"thread.started\",\"thread_id\":\"0199a213-81c0-7800-8aa1-bbab2a035a53\"}'\n" +
+		"echo '{\"type\":\"turn.failed\",\"error\":{\"message\":\"The model is not supported with this account.\"}}'\nexit 1\n"
+	if err := os.WriteFile(codex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := (&codexRuntime{command: codex, home: filepath.Join(dir, "home")}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x"})
+	if err == nil || !strings.Contains(err.Error(), "The model is not supported with this account.") || strings.Contains(err.Error(), "WARN") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// methodCounter counts the A2A methods the caller sends.
+type methodCounter struct {
+	next http.RoundTripper
+	mu   sync.Mutex
+	seen map[string]int
+	// refuse fails each call of this method, as a node that cannot
+	// stream would.
+	refuse string
+	// stall answers each call of this method with a stream that never
+	// sends, as one held up on the way would.
+	stall string
+}
+
+func (m *methodCounter) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Body != nil {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		r.Body = io.NopCloser(bytes.NewReader(b))
+		var call struct {
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(b, &call)
+		m.mu.Lock()
+		m.seen[call.Method]++
+		m.mu.Unlock()
+		if call.Method == m.stall {
+			body, _ := io.Pipe()
+			go func() { <-r.Context().Done(); body.Close() }()
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: body, Header: http.Header{"Content-Type": {"text/event-stream"}}, Request: r}, nil
+		}
+		if call.Method == m.refuse {
+			return &http.Response{StatusCode: http.StatusBadGateway, Status: "502 Bad Gateway", Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}, Request: r}, nil
+		}
+	}
+	return m.next.RoundTrip(r)
+}
+
+func (m *methodCounter) count(method string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.seen[method]
+}
+
+// get_task follows the task's events as the agent sends them, so steps
+// that come faster than a poll still each reach the caller, and the task
+// is read only before and after the stream.
+func TestGetTaskFollowsTheStream(t *testing.T) {
+	old := progressEvery
+	progressEvery = 10 * time.Millisecond
+	t.Cleanup(func() { progressEvery = old })
+	h := newAgentHarness(t, testSender)
+	proxy := httptest.NewServer(h.svc.handler("codex", "secret"))
+	defer proxy.Close()
+	calls := &methodCounter{next: meshHeaders{"secret", testSender}, seen: map[string]int{}}
+	tasks := &caller.Client{Mesh: &http.Client{Transport: calls}, BaseURL: proxy.URL}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	target := caller.Target{PeerID: testSender, Service: "codex"}
+	_, sent, err := tasks.SendTool(ctx, nil, caller.SendInput{Target: target, Text: "fix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-h.fix.prompts
+	var mu sync.Mutex
+	var seen []string
+	follow := func(step string) {
+		mu.Lock()
+		defer mu.Unlock()
+		seen = append(seen, step)
+	}
+	steps := []string{"Running go", "Edit: a.go", "Edit: b.go", "Running go"}
+	go func() {
+		// Wait until get_task follows the task, then step faster than a poll.
+		for calls.count("SubscribeToTask") == 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
+		time.Sleep(100 * time.Millisecond)
+		for _, s := range steps {
+			h.fix.steps <- s
+			time.Sleep(150 * time.Millisecond)
+		}
+		h.fix.release <- "fixed"
+	}()
+	start := time.Now()
+	got, err := tasks.Watch(ctx, target, a2a.TaskID(sent.TaskID), 15*time.Second, follow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Terminal != "completed" || got.Result != "fixed" {
+		t.Fatalf("get_task: %+v", got)
+	}
+	if !slices.Equal(seen, steps) {
+		t.Fatalf("steps %q, want %q", seen, steps)
+	}
+	if n := calls.count("SubscribeToTask"); n != 1 {
+		t.Fatalf("%d subscriptions, want 1", n)
+	}
+	if n := calls.count("GetTask"); n != 2 {
+		t.Fatalf("%d task reads over %s, want 2: before and after the stream", n, time.Since(start).Round(time.Millisecond))
+	}
+}
+
+// Should the agent not stream, get_task reads the task every second, as
+// before.
+func TestGetTaskPollsWithoutAStream(t *testing.T) {
+	h := newAgentHarness(t, testSender)
+	proxy := httptest.NewServer(h.svc.handler("codex", "secret"))
+	defer proxy.Close()
+	calls := &methodCounter{next: meshHeaders{"secret", testSender}, seen: map[string]int{}, refuse: "SubscribeToTask"}
+	tasks := &caller.Client{Mesh: &http.Client{Transport: calls}, BaseURL: proxy.URL}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	target := caller.Target{PeerID: testSender, Service: "codex"}
+	_, sent, err := tasks.SendTool(ctx, nil, caller.SendInput{Target: target, Text: "fix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-h.fix.prompts
+	go func() {
+		time.Sleep(2500 * time.Millisecond)
+		h.fix.release <- "fixed"
+	}()
+	got, err := tasks.Watch(ctx, target, a2a.TaskID(sent.TaskID), 15*time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Terminal != "completed" || got.Result != "fixed" {
+		t.Fatalf("get_task: %+v", got)
+	}
+	if n := calls.count("GetTask"); n < 3 {
+		t.Fatalf("%d task reads, want polling", n)
+	}
+}
+
+// A stream that stalls does not hold get_task after the task settled.
+func TestGetTaskOutlivesAStalledStream(t *testing.T) {
+	h := newAgentHarness(t, testSender)
+	proxy := httptest.NewServer(h.svc.handler("codex", "secret"))
+	defer proxy.Close()
+	calls := &methodCounter{next: meshHeaders{"secret", testSender}, seen: map[string]int{}, stall: "SubscribeToTask"}
+	tasks := &caller.Client{StreamCheckEvery: 100 * time.Millisecond, Mesh: &http.Client{Transport: calls}, BaseURL: proxy.URL}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	target := caller.Target{PeerID: testSender, Service: "codex"}
+	_, sent, err := tasks.SendTool(ctx, nil, caller.SendInput{Target: target, Text: "fix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-h.fix.prompts
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		h.fix.release <- "fixed"
+	}()
+	start := time.Now()
+	got, err := tasks.Watch(ctx, target, a2a.TaskID(sent.TaskID), 15*time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Terminal != "completed" || got.Result != "fixed" {
+		t.Fatalf("get_task: %+v", got)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("get_task took %s after the task completed", d)
+	}
+}
+
+// The agent ends a stream after maxStream, without an error, while the
+// task goes on: a stream its caller left does not stay open for the
+// task's whole run.
+func TestAgentEndsLongStreams(t *testing.T) {
+	old := maxStream
+	maxStream = 300 * time.Millisecond
+	t.Cleanup(func() { maxStream = old })
+	h := newAgentHarness(t, testSender)
+	task := h.send(t, "", "fix", nil)
+	<-h.fix.prompts
+	start := time.Now()
+	for _, err := range h.client.SubscribeToTask(context.Background(), &a2a.SubscribeToTaskRequest{ID: task.ID}) {
+		if err != nil {
+			t.Fatalf("stream ended with %v", err)
+		}
+	}
+	if d := time.Since(start); d < maxStream || d > 5*time.Second {
+		t.Fatalf("stream ended after %s, want about %s", d, maxStream)
+	}
+	h.await(t, task.ID, a2a.TaskStateWorking)
+	h.fix.release <- "fixed"
+	h.await(t, task.ID, a2a.TaskStateCompleted)
+}
