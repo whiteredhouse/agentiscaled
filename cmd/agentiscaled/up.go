@@ -219,12 +219,12 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 		}
 	}
 	for i := range c.agents {
-		if err := checkSavedAgent(&c.agents[i], c.dataDir, !*noService); err != nil {
+		if err := checkSavedAgent(ctx, &c.agents[i], c.dataDir, !*noService); err != nil {
 			return err
 		}
 	}
 	if opts.addAgent != nil {
-		if err := addAgent(&c, *opts.addAgent, !*noService); err != nil {
+		if err := addAgent(ctx, &c, *opts.addAgent, !*noService); err != nil {
 			return err
 		}
 	}
@@ -250,7 +250,7 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 				if err := ask.prepareAgent(ctx, offer); err != nil {
 					return err
 				}
-				if err := addAgent(&c, offer.config(), !*noService); err != nil {
+				if err := addAgent(ctx, &c, offer.config(), !*noService); err != nil {
 					return err
 				}
 			}
@@ -353,7 +353,7 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 // checkSavedAgent checks a saved agent with the owner's configuration as
 // it was saved, which may differ from this shell's. Client setup and
 // interactive questions use the invoking shell's configuration.
-func checkSavedAgent(a *agentConfig, dataDir string, service bool) error {
+func checkSavedAgent(ctx context.Context, a *agentConfig, dataDir string, service bool) error {
 	if a.policy().OwnerConfig {
 		for _, name := range runtimes[a.Runtime].ownerEnv {
 			previous, existed := os.LookupEnv(name)
@@ -377,13 +377,13 @@ func checkSavedAgent(a *agentConfig, dataDir string, service bool) error {
 			}
 		}
 	}
-	return checkAgent(a, dataDir, service)
+	return checkAgent(ctx, a, dataDir, service)
 }
 
 // addAgent checks a new agent, with the owner's configuration as this shell
 // has it, and adds it to the node's agents, in place of one of the same name.
-func addAgent(c *config, a agentConfig, service bool) error {
-	if err := checkAgent(&a, c.dataDir, service); err != nil {
+func addAgent(ctx context.Context, c *config, a agentConfig, service bool) error {
+	if err := checkAgent(ctx, &a, c.dataDir, service); err != nil {
 		return err
 	}
 	a.Env = agentOwnerEnv(a.Runtime, a.policy())
@@ -419,13 +419,13 @@ func nextSteps(ctx context.Context, out io.Writer, clients string, c config, exe
 // started, so a background service does not restart forever on a bad
 // setting, and fixes its name to the runtime's default when it has none and
 // its command to an absolute path that the service finds.
-func checkAgent(a *agentConfig, dataDir string, service bool) error {
+func checkAgent(ctx context.Context, a *agentConfig, dataDir string, service bool) error {
 	spec, ok := runtimes[a.Runtime]
 	if !ok {
 		return fmt.Errorf("agent runtime %q: unknown (have %s)", a.Runtime, strings.Join(runtimeNames(), ", "))
 	}
 	if a.Name == "" {
-		a.Name = spec.defaultName
+		a.Name = runtimeDefaultName(a.Runtime, a.Command)
 	}
 	if err := agentNameError(a.Name); err != nil {
 		return err
@@ -448,6 +448,9 @@ func checkAgent(a *agentConfig, dataDir string, service bool) error {
 	if command == "" {
 		command = spec.defaultCommand
 	}
+	if command == "" {
+		return fmt.Errorf("agent %s: the %s runtime needs the agent's command", a.Name, a.Runtime)
+	}
 	if path, err := exec.LookPath(command); err == nil {
 		if abs, err := filepath.Abs(path); err == nil {
 			a.Command = abs
@@ -462,13 +465,14 @@ func checkAgent(a *agentConfig, dataDir string, service bool) error {
 		}
 	}
 	// The runtime checks the rest, such as the agent's own sign-in.
-	if _, err = spec.new(a.Command, dataDir, policy); err != nil {
+	if _, err = a.newRuntime(ctx, dataDir); err != nil {
 		return err
 	}
 	// A credential in this shell's environment does not reach the
 	// background service.
-	if service && spec.signedIn != nil && !spec.signedIn(a.Command, dataDir, policy) {
-		_, shown := spec.login(context.Background(), a.Command, dataDir, policy)
+	profileDir := agentProfileDir(dataDir, a.Name)
+	if service && spec.signedIn != nil && !spec.signedIn(a.Command, profileDir, policy) {
+		_, shown := spec.login(context.Background(), a.Command, profileDir, policy)
 		return fmt.Errorf("%s is signed in only through this shell's environment, which the background service does not get: run\n  %s\nor use -foreground and start 'agentiscaled run' from this shell", a.Runtime, shown)
 	}
 	return nil

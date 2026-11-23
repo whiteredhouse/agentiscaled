@@ -76,7 +76,8 @@ Commands:
   up       sign in, join this machine to your network and keep the node running
   client   connect agent clients (Claude Desktop, Codex CLI) to the node, or disconnect them
   agent    offer an agent from this machine to your network (add, remove, list)
-  runtime  list supported agent runtimes and their local configuration
+  runtime  list supported agent runtimes and their local configuration, or check
+           an agent's support of the agentiscale runtime contract (check)
   down     stop the node's background service; its identity stays
   status   show the node's service, network and mesh connection
   version  print the version
@@ -111,7 +112,7 @@ func main() {
 		case "agent":
 			err = runAgent(ctx, args, os.Stdout)
 		case "runtime":
-			err = runRuntimes(args, os.Stdout)
+			err = runRuntimes(ctx, args, os.Stdout)
 		case "skill":
 			err = runSkill(args, os.Stdout, os.Stderr)
 		case "down":
@@ -186,6 +187,9 @@ type agentConfig struct {
 	Dir string `json:"dir"`
 	// Command is the agent CLI, as an absolute path once checked.
 	Command string `json:"command,omitempty"`
+	// Args are the arguments Command takes, for an acp agent, which starts
+	// on stdio with them.
+	Args []string `json:"args,omitempty"`
 	// Description replaces the runtime's on the agent's card.
 	Description string `json:"description,omitempty"`
 	// Definition is the node's copy of the subagent definition the agent
@@ -201,6 +205,28 @@ type agentConfig struct {
 	// Env locates the owner's configuration of the agent's runtime, such
 	// as CODEX_HOME, as `agent add` found it (agentOwnerEnv).
 	Env []string `json:"env,omitempty"`
+}
+
+// newRuntime makes the agent's runtime, which checks that it can run.
+func (a agentConfig) newRuntime(ctx context.Context, dataDir string) (runtime, error) {
+	if a.Runtime == "acp" {
+		return newACPRuntime(ctx, a, dataDir, "")
+	}
+	return runtimes[a.Runtime].new(a.Command, agentProfileDir(dataDir, a.Name), a.policy())
+}
+
+// splitCommand splits an acp agent's -command line into Command and Args;
+// other runtimes take Command as it is.
+func (a *agentConfig) splitCommand() error {
+	if a.Runtime != "acp" || len(a.Args) > 0 {
+		return nil
+	}
+	program, args, err := splitACPCommand(a.Command)
+	if err != nil {
+		return err
+	}
+	a.Command, a.Args = program, args
+	return nil
 }
 
 func (a agentConfig) policy() agentPolicy {
@@ -230,9 +256,13 @@ func agentFlags(fs *flag.FlagSet) func() *agentConfig {
 			return nil
 		}
 		a.setPolicy(policy)
+		if a.Runtime == "acp" {
+			// An empty command fails when the agent is checked.
+			a.splitCommand()
+		}
 		if a.Name == "" {
-			if spec, ok := runtimes[a.Runtime]; ok {
-				a.Name = spec.defaultName
+			if _, ok := runtimes[a.Runtime]; ok {
+				a.Name = runtimeDefaultName(a.Runtime, a.Command)
 			}
 		}
 		return &a
@@ -293,7 +323,7 @@ type hostedAgent struct {
 
 // newAgents checks the agents' configuration before the node starts: each
 // callable service needs a runtime that can run and a name of its own.
-func newAgents(c *config) ([]*hostedAgent, error) {
+func newAgents(ctx context.Context, c *config) ([]*hostedAgent, error) {
 	if len(c.agents) == 0 {
 		return nil, nil
 	}
@@ -302,7 +332,11 @@ func newAgents(c *config) ([]*hostedAgent, error) {
 	env := map[string]string{}
 	ownerConfig := false
 	names := map[string]bool{}
-	for _, a := range c.agents {
+	for i := range c.agents {
+		a := &c.agents[i]
+		if a.Name == "" {
+			a.Name = runtimeDefaultName(a.Runtime, a.Command)
+		}
 		if names[a.Name] {
 			return nil, fmt.Errorf("two agents are named %q; each agent needs a name of its own", a.Name)
 		}
@@ -322,13 +356,13 @@ func newAgents(c *config) ([]*hostedAgent, error) {
 		}
 	}
 	if ownerConfig {
-		if err := ownerEnv(context.Background(), c.dataDir); err != nil {
+		if err := ownerEnv(ctx, c.dataDir); err != nil {
 			return nil, err
 		}
 	}
 	var agents []*hostedAgent
 	for i := range c.agents {
-		svc, err := newAgent(&c.agents[i], c.dataDir)
+		svc, err := newAgent(ctx, &c.agents[i], c.dataDir)
 		if err != nil {
 			return nil, err
 		}
@@ -339,13 +373,12 @@ func newAgents(c *config) ([]*hostedAgent, error) {
 
 // newAgent makes the service of one agent, whose runtime must be able to
 // run. The node's environment is set up already (newAgents).
-func newAgent(a *agentConfig, dataDir string) (*agentService, error) {
-	spec, ok := runtimes[a.Runtime]
-	if !ok {
+func newAgent(ctx context.Context, a *agentConfig, dataDir string) (*agentService, error) {
+	if _, ok := runtimes[a.Runtime]; !ok {
 		return nil, fmt.Errorf("agent %s: unknown runtime %q (have %s)", a.Name, a.Runtime, strings.Join(runtimeNames(), ", "))
 	}
 	if a.Name == "" {
-		a.Name = spec.defaultName
+		a.Name = runtimeDefaultName(a.Runtime, a.Command)
 	}
 	if err := agentNameError(a.Name); err != nil {
 		return nil, err
@@ -363,7 +396,8 @@ func newAgent(a *agentConfig, dataDir string) (*agentService, error) {
 	if err := agentDirApart(dir, dataDir); err != nil {
 		return nil, err
 	}
-	rt, err := spec.new(a.Command, dataDir, a.policy())
+	a.Dir = dir
+	rt, err := a.newRuntime(ctx, dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("agent %s: %w", a.Name, err)
 	}
@@ -373,7 +407,6 @@ func newAgent(a *agentConfig, dataDir string) (*agentService, error) {
 			return nil, fmt.Errorf("agent %s: %w", a.Name, err)
 		}
 	}
-	a.Dir = dir
 	s, err := newAgentService(dir, rt, dataDir, a.Name)
 	if err != nil {
 		return nil, err
@@ -419,7 +452,7 @@ func run(ctx context.Context, c config) error {
 	}
 	defer store.Close()
 
-	agents, err := newAgents(&c)
+	agents, err := newAgents(ctx, &c)
 	if err != nil {
 		return err
 	}
@@ -508,13 +541,23 @@ func run(ctx context.Context, c config) error {
 		if err != nil {
 			return fmt.Errorf("start the agents' network API: %w", err)
 		}
+		var stopped []<-chan struct{}
+		defer func() {
+			// Cancel every service before joining any of them, including
+			// when startup fails after a service has begun accepting tasks.
+			stopNode()
+			for _, done := range stopped {
+				<-done
+			}
+		}()
 		var services []api.ServiceConfig
 		for _, a := range agents {
 			a.svc.network = network
-			target, err := serveAgent(nodeCtx, a.svc, a.Name)
+			target, done, err := serveAgent(nodeCtx, a.svc, a.Name)
 			if err != nil {
 				return fmt.Errorf("start agent %s: %w", a.Name, err)
 			}
+			stopped = append(stopped, done)
 			a.target = target
 			services = append(services, api.ServiceConfig{
 				Type:        api.ServiceTypeStringA2A,

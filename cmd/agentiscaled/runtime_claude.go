@@ -47,7 +47,7 @@ func (r *claudeRuntime) setDefinition(d *agentDefinition) { r.def = d }
 // from before its sign-in. Only the owner's configuration may use them.
 var claudeEnvCredentials = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
 
-func newClaudeRuntime(command, dataDir string, policy agentPolicy) (runtime, error) {
+func newClaudeRuntime(command, profileDir string, policy agentPolicy) (runtime, error) {
 	if command == "" {
 		command = "claude"
 	}
@@ -74,20 +74,20 @@ func newClaudeRuntime(command, dataDir string, policy agentPolicy) (runtime, err
 	if noPrompts {
 		log.Printf("claude runtime: %s has no --permission-prompts; its print mode denies what would prompt", version)
 	}
-	config, err := claudeConfigDir(dataDir, policy)
+	config, err := claudeConfigDir(profileDir, policy)
 	if err != nil {
 		return nil, err
 	}
 	if policy.OwnerConfig {
-		if !claudeSignedIn(path, dataDir, policy) && !claudeEnvSignedIn(policy) {
+		if !claudeSignedIn(path, profileDir, policy) && !claudeEnvSignedIn(policy) {
 			return nil, fmt.Errorf("your Claude Code is not signed in: run\n  %s auth login", path)
 		}
 	} else {
 		if err := os.MkdirAll(config, 0o700); err != nil {
 			return nil, err
 		}
-		if !claudeSignedIn(path, dataDir, policy) {
-			return nil, fmt.Errorf("the agent's Claude Code is not signed in. With -agent-owner-config=false it signs in apart from your own Claude Code, so that a remote request cannot reach your Claude Code skills, plugins or settings: run\n  CLAUDE_CONFIG_DIR=%s %s auth login", config, path)
+		if !claudeSignedIn(path, profileDir, policy) {
+			return nil, fmt.Errorf("the agent's Claude Code is not signed in. With -agent-owner-config=false it signs in apart from your own Claude Code, so that a remote request cannot reach your Claude Code skills, plugins or settings: run\n  CLAUDE_CONFIG_DIR=%s %s auth login", shellQuote(config), shellQuote(path))
 		}
 	}
 	return &claudeRuntime{command: path, config: config, policy: policy, noPermissionPrompts: noPrompts}, nil
@@ -95,12 +95,12 @@ func newClaudeRuntime(command, dataDir string, policy agentPolicy) (runtime, err
 
 // claudeConfigDir is the run's CLAUDE_CONFIG_DIR: empty with
 // policy.OwnerConfig, so the owner's applies as Claude Code finds it, else
-// the agent's own in the node's data directory.
-func claudeConfigDir(dataDir string, policy agentPolicy) (string, error) {
+// the service profile.
+func claudeConfigDir(profileDir string, policy agentPolicy) (string, error) {
 	if policy.OwnerConfig {
 		return "", nil
 	}
-	return filepath.Abs(filepath.Join(dataDir, "claude"))
+	return filepath.Abs(profileDir)
 }
 
 func claudeOwnerConfigDir() (string, error) {
@@ -110,11 +110,11 @@ func claudeOwnerConfigDir() (string, error) {
 // claudeSignedIn asks Claude Code whether it is signed in, in a way the
 // background service also sees: without a credential from this shell's
 // environment.
-func claudeSignedIn(command, dataDir string, policy agentPolicy) bool {
+func claudeSignedIn(command, profileDir string, policy agentPolicy) bool {
 	if command == "" {
 		command = "claude"
 	}
-	config, err := claudeConfigDir(dataDir, policy)
+	config, err := claudeConfigDir(profileDir, policy)
 	if err != nil {
 		return false
 	}
@@ -134,9 +134,8 @@ func claudeSignedIn(command, dataDir string, policy agentPolicy) bool {
 	return json.Unmarshal(out, &status) == nil && status.LoggedIn
 }
 
-// claudeEnvSignedIn says whether the owner's Claude Code has a credential in
-// the environment. It counts only with the owner's configuration: the
-// agent's own never gets the node's credentials.
+// claudeEnvSignedIn says whether the owner's Claude Code has a sign-in
+// credential in the environment. It counts only with the owner's configuration.
 func claudeEnvSignedIn(policy agentPolicy) bool {
 	if !policy.OwnerConfig {
 		return false
@@ -152,16 +151,16 @@ func claudeEnvSignedIn(policy agentPolicy) bool {
 // claudeLogin is `claude auth login`, Claude Code's own sign-in flow: the
 // owner's own with policy.OwnerConfig, else for the agent's own
 // CLAUDE_CONFIG_DIR, which it creates first.
-func claudeLogin(ctx context.Context, command, dataDir string, policy agentPolicy) (*exec.Cmd, string) {
+func claudeLogin(ctx context.Context, command, profileDir string, policy agentPolicy) (*exec.Cmd, string) {
 	if policy.OwnerConfig {
 		return exec.CommandContext(ctx, command, "auth", "login"), shellQuote(command) + " auth login"
 	}
-	config, err := claudeConfigDir(dataDir, policy)
+	config, err := claudeConfigDir(profileDir, policy)
 	if err == nil {
 		err = os.MkdirAll(config, 0o700)
 	}
 	if err != nil {
-		config = filepath.Join(dataDir, "claude")
+		config = profileDir
 	}
 	cmd := exec.CommandContext(ctx, command, "auth", "login")
 	cmd.Env = append(withoutEnv(os.Environ(), append([]string{"CLAUDE_CONFIG_DIR"}, claudeEnvCredentials...)), "CLAUDE_CONFIG_DIR="+config)
@@ -187,8 +186,7 @@ func (r *claudeRuntime) Describe(card *a2a.AgentCard) {
 //   - Otherwise CLAUDE_CONFIG_DIR is the agent's own and the run is
 //     restricted (--restricted): no user, project or local settings, no MCP
 //     servers, and only the read-only file tools, confined to the agent's
-//     directory. No credential in the node's environment reaches it
-//     (claudeEnv).
+//     directory. Its environment excludes Claude's sign-in variables (claudeEnv).
 //   - With a definition (-definition), its instructions are added to the
 //     system prompt; a Claude Code agent file's tools only narrow the run's
 //     built-in tools, and its model and disallowed tools apply.
@@ -323,20 +321,24 @@ func (r *claudeRuntime) Run(ctx context.Context, dir string, req taskRequest) (t
 	return parseTurn(result.Result, session)
 }
 
-// claudeEnv is the run's environment: of the node's, only what a process
-// needs to run and reach the network, and the agent's own CLAUDE_CONFIG_DIR,
-// so that no credential of the owner's, such as ANTHROPIC_API_KEY, which
-// Claude Code prefers to its sign-in, comes along. HOME stays, since on
+// claudeEnv adds the agent's CLAUDE_CONFIG_DIR to the filtered environment,
+// which excludes Claude's sign-in variables. HOME stays, since on
 // macOS the sign-in is in the user's keychain, under a name of the config
 // directory's.
 func claudeEnv(environ []string, config string) []string {
+	return append([]string{"CLAUDE_CONFIG_DIR=" + config}, processEnv(environ)...)
+}
+
+// processEnv keeps selected process and network variables by name.
+// Proxy URLs pass through with any embedded credentials.
+func processEnv(environ []string) []string {
 	keep := map[string]bool{
 		"PATH": true, "HOME": true, "USER": true, "LOGNAME": true, "SHELL": true, "TMPDIR": true,
 		"LANG": true, "TERM": true, "TZ": true,
 		"HTTP_PROXY": true, "HTTPS_PROXY": true, "ALL_PROXY": true, "NO_PROXY": true,
 		"NODE_EXTRA_CA_CERTS": true, "SSL_CERT_FILE": true, "SSL_CERT_DIR": true,
 	}
-	env := []string{"CLAUDE_CONFIG_DIR=" + config}
+	var env []string
 	for _, kv := range environ {
 		k, _, _ := strings.Cut(kv, "=")
 		if keep[strings.ToUpper(k)] || strings.HasPrefix(k, "LC_") {

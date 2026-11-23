@@ -25,7 +25,7 @@ func TestUpPreservesHostedAgent(t *testing.T) {
 	if err := os.Chmod(command, 0700); err != nil {
 		t.Fatal(err)
 	}
-	write(t, filepath.Join(dir, "codex", "auth.json"), "{}")
+	write(t, filepath.Join(agentProfileDir(dir, "helper"), "auth.json"), "{}")
 	want := settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "debug", Agents: []agentConfig{{Runtime: "codex", Dir: t.TempDir(), Command: command, Name: "helper", Description: "Helps", OwnConfig: true, IgnoreDirSkills: true, Env: []string{"CODEX_HOME=/saved/config"}}}, PeerID: pid, NetworkID: "saved-network", MeshURL: mesh.srv.URL}
 	writeSettings(t, dir, want)
 	want.Clients, want.Foreground = "none", true // the choices this up is given

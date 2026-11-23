@@ -66,15 +66,19 @@ func runSkill(args []string, out, errOut io.Writer) error {
 	}
 }
 
+// skillRuntimes are the runtimes whose skills directory skill install
+// knows; an agent of the acp runtime keeps its skills its own way.
+var skillRuntimes = []string{"claude", "codex"}
+
 // installSkill writes the skill for each runtime named, all when none is.
 func installSkill(names []string, project string, out io.Writer) error {
 	if len(names) == 0 {
-		names = runtimeNames()
+		names = skillRuntimes
 	}
 	var dirs []string
 	for _, name := range names {
-		if _, ok := runtimes[name]; !ok {
-			return fmt.Errorf("unknown runtime %q: use %s", name, strings.Join(runtimeNames(), " or "))
+		if !slices.Contains(skillRuntimes, name) {
+			return fmt.Errorf("unknown runtime %q: use %s", name, strings.Join(skillRuntimes, " or "))
 		}
 		dir, err := skillDir(name, project)
 		if err != nil {

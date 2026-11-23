@@ -96,7 +96,7 @@ func parseDefinition(path string, b []byte) (d *agentDefinition, err error) {
 // can change the agent's role, and no change in the project changes it
 // unseen.
 func definitionCopy(dataDir, name, path string) string {
-	return filepath.Join(dataDir, "agents", name, "definition"+strings.ToLower(filepath.Ext(path)))
+	return filepath.Join(agentStateDir(dataDir, name), "definition"+strings.ToLower(filepath.Ext(path)))
 }
 
 // copyDefinition copies the definition at source to agent name's state and
@@ -128,7 +128,7 @@ func copyDefinition(dataDir, name, source string) (string, error) {
 // either format.
 func removeDefinitionCopies(dataDir, name string) {
 	for _, ext := range []string{".md", ".toml"} {
-		_ = os.Remove(filepath.Join(dataDir, "agents", name, "definition"+ext))
+		_ = os.Remove(filepath.Join(agentStateDir(dataDir, name), "definition"+ext))
 	}
 }
 

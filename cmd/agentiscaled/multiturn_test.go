@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"iter"
+	"log"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -11,6 +16,8 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
 )
 
 // answer sends text on task id, as the caller's answer to the agent's
@@ -151,24 +158,166 @@ func TestCancelATaskWaitingForAnAnswer(t *testing.T) {
 	if cancelled.Status.State != a2a.TaskStateCanceled || cancelled.Metadata[metaExecutionBegun] != true {
 		t.Fatalf("cancel: %s %v", cancelled.Status.State, cancelled.Metadata)
 	}
-	if h.svc.waitingFor(task.ID) != nil {
+	h.svc.mu.Lock()
+	defer h.svc.mu.Unlock()
+	if h.svc.waiting[task.ID] != nil {
 		t.Fatal("the cancelled task still waits")
 	}
 }
 
-func TestAnAnswerAfterTheWaitEndsTheTask(t *testing.T) {
-	defer func(d time.Duration) { answerWait = d }(answerWait)
-	answerWait = 50 * time.Millisecond
+type pausedTimeoutUpdater struct {
+	a2asrv.TaskUpdater
+	resume <-chan struct{}
+}
+
+func (u pausedTimeoutUpdater) UpdateTask(ctx context.Context, event *a2a.TaskStatusUpdateEvent) (*a2a.Task, error) {
+	select {
+	case <-u.resume:
+		return u.TaskUpdater.UpdateTask(ctx, event)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestCancelBetweenWaitExpiryAndTimeoutPublication(t *testing.T) {
 	h := newAgentHarness(t, testSender)
+	resume := make(chan struct{})
+	defer close(resume)
+	h.svc.updates = pausedTimeoutUpdater{h.svc.updates, resume}
 	task := h.send(t, "", "double a number", nil)
 	<-h.fix.prompts
 	h.fix.ask <- "Which number?"
 	h.await(t, task.ID, a2a.TaskStateInputRequired)
-	time.Sleep(100 * time.Millisecond)
-	h.answer(t, task.ID, "", "21")
+
+	// The timer released the waiting session. The store still holds the
+	// question until the timer's asynchronous UpdateTask can publish.
+	h.svc.mu.Lock()
+	h.svc.expireLocked(task.ID)
+	h.svc.mu.Unlock()
+	cancelled, err := h.client.CancelTask(t.Context(), &a2a.CancelTaskRequest{ID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Status.State != a2a.TaskStateCanceled || cancelled.Metadata[metaExecutionBegun] != true || !strings.Contains(statusText(cancelled), "after the task had started") {
+		t.Fatalf("cancel after expiry: %s, %v, %q", cancelled.Status.State, cancelled.Metadata, statusText(cancelled))
+	}
+}
+
+func TestCancelBeforeTheAdmittedTurnStarts(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		resumed bool
+	}{{"first turn", false}, {"resumed turn", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newAgentHarness(t, testSender)
+			e := &a2asrv.ExecutorContext{TaskID: "task", Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("work"))}
+			if tc.resumed {
+				if why := h.svc.wait(e.TaskID, waitingTask{sender: testSender, session: "session", since: time.Now()}); why != "" {
+					t.Fatal(why)
+				}
+				e.StoredTask = &a2a.Task{Status: a2a.TaskStatus{State: a2a.TaskStateInputRequired}}
+			}
+			_, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			run, _, why, _ := h.svc.admit(e, taskSender{peer: testSender}, nil, "work", cancel)
+			if run == nil {
+				t.Fatal(why)
+			}
+			// The turn has published working, but has not reached the runtime.
+			e.StoredTask = &a2a.Task{Status: a2a.TaskStatus{State: a2a.TaskStateWorking}}
+			for ev := range h.svc.Cancel(t.Context(), e) {
+				got := ev.(*a2a.TaskStatusUpdateEvent).Metadata[metaExecutionBegun]
+				if got != tc.resumed {
+					t.Errorf("execution_begun = %v, want %t", got, tc.resumed)
+				}
+			}
+		})
+	}
+}
+
+func TestAnUnansweredQuestionTimesOut(t *testing.T) {
+	h := newAgentHarness(t, testSender)
+	h.svc.answerWait = 50 * time.Millisecond
+	task := h.send(t, "", "double a number", nil)
+	<-h.fix.prompts
+	h.fix.ask <- "Which number?"
+	h.await(t, task.ID, a2a.TaskStateInputRequired)
+	// The task times out when the time to answer is up, not when an
+	// answer comes; an answer after that is refused.
 	late := h.await(t, task.ID, a2a.TaskStateFailed)
 	if terminal(late) != "timeout" || !strings.Contains(statusText(late), "no answer came") {
-		t.Fatalf("late answer: %q %q", terminal(late), statusText(late))
+		t.Fatalf("lapsed task: %q %q", terminal(late), statusText(late))
+	}
+	if _, err := answer(h.client, task.ID, "", "21"); err == nil {
+		t.Fatal("an answer after the timeout was taken")
+	}
+}
+
+// observedTaskUpdater reports when the fork refuses an update because a
+// request still holds the task.
+type observedTaskUpdater struct {
+	a2asrv.TaskUpdater
+	busy chan struct{}
+}
+
+func (u observedTaskUpdater) UpdateTask(ctx context.Context, event *a2a.TaskStatusUpdateEvent) (*a2a.Task, error) {
+	task, err := u.TaskUpdater.UpdateTask(ctx, event)
+	if errors.Is(err, a2asrv.ErrTaskActive) {
+		select {
+		case u.busy <- struct{}{}:
+		default:
+		}
+	}
+	return task, err
+}
+
+func TestAnUnansweredQuestionTimesOutDuringARefusedAnswer(t *testing.T) {
+	dir := t.TempDir()
+	fix := newFixture()
+	svc, err := newAgentService(dir, fix, dir, "helper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	busy := make(chan struct{}, 1)
+	executor := a2asrv.AgentExecutorFunc(func(ctx context.Context, e *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+		return func(yield func(a2a.Event, error) bool) {
+			for ev, err := range svc.Execute(ctx, e) {
+				if e.StoredTask != nil {
+					// Expire the wait just as the empty answer is about to
+					// publish its refusal. Keep the execution active until
+					// the first timeout update has actually been refused.
+					svc.mu.Lock()
+					svc.expireLocked(e.TaskID)
+					svc.mu.Unlock()
+					select {
+					case <-busy:
+					case <-time.After(5 * time.Second):
+						t.Error("the timeout did not reach the active answer")
+						return
+					}
+				}
+				if !yield(ev, err) {
+					return
+				}
+			}
+		}
+	})
+	store := taskstore.NewInMemory(&taskstore.InMemoryStoreConfig{CallerAuthenticator: a2asrv.NewTaskStoreCallerAuthenticator()})
+	requests := a2asrv.NewHandler(executor, a2asrv.WithTaskStore(store), a2asrv.WithCallInterceptors(peerIdentity{tasks: store}))
+	svc.updates = observedTaskUpdater{requests.(a2asrv.TaskUpdater), busy}
+	srv := httptest.NewServer(a2asrv.NewJSONRPCHandler(requests))
+	t.Cleanup(srv.Close)
+	h := &agentHarness{client: a2aClient(t, srv.URL, meshHeaders{"secret", testSender})}
+	task := h.send(t, "", "double a number", nil)
+	<-fix.prompts
+	fix.ask <- "Which number?"
+	h.await(t, task.ID, a2a.TaskStateInputRequired)
+	refused := h.answer(t, task.ID, "", " ")
+	if !strings.Contains(statusText(refused), "no text") {
+		t.Fatalf("answer was not refused: %s", statusText(refused))
+	}
+	if got := h.await(t, task.ID, a2a.TaskStateFailed); terminal(got) != "timeout" {
+		t.Fatalf("terminal state %q, want timeout", terminal(got))
 	}
 }
 
@@ -269,5 +418,37 @@ func TestCodexThread(t *testing.T) {
 	}
 	if got := codexThread([]byte(`{"type":"thread.started","thread_id":"--last"}`)); got != "" {
 		t.Fatalf("thread %q from a malformed id", got)
+	}
+}
+
+// A wait that has run out ends with a published timeout also when the
+// next question finds it before its timer does, and publishing it logs no
+// failure.
+func TestAnExpiredWaitTimesOutWhenTheNextQuestionFindsIt(t *testing.T) {
+	logged := &syncBuffer{}
+	log.SetOutput(logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	h := newAgentHarness(t, testSender)
+	first := h.send(t, "", "double a number", nil)
+	<-h.fix.prompts
+	h.fix.ask <- "Which number?"
+	h.await(t, first.ID, a2a.TaskStateInputRequired)
+	waitIdle(t, h.svc)
+	// The first wait ran out, and its timer has not fired yet.
+	h.svc.mu.Lock()
+	w := h.svc.waiting[first.ID]
+	w.timer.Stop()
+	w.since = time.Now().Add(-2 * h.svc.answerWait)
+	h.svc.mu.Unlock()
+	second := h.send(t, "", "triple a number", nil)
+	<-h.fix.prompts
+	h.fix.ask <- "Which one?"
+	h.await(t, second.ID, a2a.TaskStateInputRequired)
+	lapsed := h.await(t, first.ID, a2a.TaskStateFailed)
+	if terminal(lapsed) != "timeout" || !strings.Contains(statusText(lapsed), "no answer came") {
+		t.Fatalf("expired wait: %q %q", terminal(lapsed), statusText(lapsed))
+	}
+	if strings.Contains(logged.String(), "publish the timeout") {
+		t.Errorf("the node logged a failure: %s", logged.String())
 	}
 }

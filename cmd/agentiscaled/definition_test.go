@@ -84,6 +84,29 @@ func TestLoadDefinition(t *testing.T) {
 	}
 }
 
+func TestDefinitionRemovalIsScopedToTheService(t *testing.T) {
+	data := t.TempDir()
+	first, err := copyDefinition(data, "reviewer", writeDefinition(t, t.TempDir(), "role.md", claudeAgentFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const alias = "other/../reviewer"
+	second, err := copyDefinition(data, alias, writeDefinition(t, t.TempDir(), "role.toml", codexAgentFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(second) != agentStateDir(data, alias) {
+		t.Fatalf("definition copy %q is outside its service state", second)
+	}
+	removeDefinitionCopies(data, alias)
+	if _, err := os.Stat(second); !os.IsNotExist(err) {
+		t.Fatalf("removed definition %s: %v", second, err)
+	}
+	if body, err := os.ReadFile(first); err != nil || string(body) != claudeAgentFile {
+		t.Fatalf("other service's definition changed: %q, %v", body, err)
+	}
+}
+
 func TestDefinitionRoot(t *testing.T) {
 	for path, want := range map[string]string{
 		"/w/proj/.claude/agents/a.md":  "/w/proj",
@@ -273,7 +296,7 @@ func TestAgentAddDefinition(t *testing.T) {
 	if b, err := os.ReadFile(copyPath); err != nil || string(b) != codexAgentFile {
 		t.Fatalf("copy: %q, %v", b, err)
 	}
-	svc, err := newAgent(&a, def)
+	svc, err := newAgent(t.Context(), &a, def)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,14 +320,14 @@ func TestAgentAddDefinition(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newAgent(&a, def); err != nil {
+	if _, err := newAgent(t.Context(), &a, def); err != nil {
 		t.Fatalf("agent without its source: %v", err)
 	}
 	// The node reads only the copy in the agent's state, whatever the
 	// settings name.
 	moved := a
 	moved.Definition = filepath.Join(project, "elsewhere", "definition.toml")
-	if _, err := newAgent(&moved, def); err != nil {
+	if _, err := newAgent(t.Context(), &moved, def); err != nil {
 		t.Fatalf("agent with another directory in its definition: %v", err)
 	}
 	write(t, path, codexAgentFile)

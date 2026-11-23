@@ -34,6 +34,10 @@ import (
 func TestMain(m *testing.M) {
 	// Tests see only Codex installed, whatever this machine has.
 	installedRuntimes = func() []string { return []string{"codex"} }
+	if os.Getenv("AGENTISCALE_FAKE_ACP") == "1" {
+		fakeACPAgent(os.Args[1:])
+		os.Exit(0)
+	}
 	if os.Getenv("AGENTISCALED_TEST_MAIN") == "1" {
 		watchPoll, watchCheckAfter, watchCheckEvery = 50*time.Millisecond, 300*time.Millisecond, 500*time.Millisecond
 		main()
@@ -513,7 +517,7 @@ func TestResetKeepsEverythingButTheIdentity(t *testing.T) {
 	if err := os.Chmod(codex, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	write(t, filepath.Join(dir, "codex", "auth.json"), `{"agent":"own sign-in"}`)
+	write(t, filepath.Join(agentProfileDir(dir, "helper"), "auth.json"), `{"agent":"own sign-in"}`)
 	write(t, filepath.Join(dir, "api-token"), "TOKEN\n")
 
 	_, oldKey, _ := ed25519.GenerateKey(rand.Reader)
@@ -535,7 +539,7 @@ func TestResetKeepsEverythingButTheIdentity(t *testing.T) {
 	}
 	write(t, clientFiles[0], `{"mcpServers":{"agentiscale":{"command":"agentiscaled","args":["mcp","-data-dir","`+dir+`"]}}}`)
 	write(t, clientFiles[1], "[mcp_servers.agentiscale]\ncommand = \"agentiscaled\"\nargs = [\"mcp\", \"-data-dir\", \""+dir+"\"]\n")
-	kept := append([]string{filepath.Join(dir, "codex", "auth.json"), filepath.Join(dir, "api-token")}, clientFiles...)
+	kept := append([]string{filepath.Join(agentProfileDir(dir, "helper"), "auth.json"), filepath.Join(dir, "api-token")}, clientFiles...)
 	snapshot := map[string][]byte{}
 	for _, f := range kept {
 		snapshot[f], _ = os.ReadFile(f)
@@ -579,7 +583,7 @@ func TestResetKeepsEverythingButTheIdentity(t *testing.T) {
 
 	// The agent, signed in on its own, takes a task with no new sign-in.
 	c := after.config(dir)
-	agent, err := newAgent(&c.agents[0], dir)
+	agent, err := newAgent(t.Context(), &c.agents[0], dir)
 	if err != nil {
 		t.Fatalf("agent after reset: %v", err)
 	}

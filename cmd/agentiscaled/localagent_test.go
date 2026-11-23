@@ -73,7 +73,7 @@ func localAgentsFixture(t *testing.T, role *api.PolicyRole, expiry time.Time, cf
 		if err != nil {
 			t.Fatal(err)
 		}
-		target, err := serveAgent(ctx, agent, name)
+		target, _, err := serveAgent(ctx, agent, name)
 		if err != nil {
 			t.Fatal(err)
 		}

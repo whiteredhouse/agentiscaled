@@ -180,15 +180,16 @@ type agentOffer struct {
 	name        string
 	description string // empty for the runtime's
 	agentDir    string
-	command     string // empty for the runtime's
-	definition  string // absolute path, empty for none
+	command     string   // empty for the runtime's
+	args        []string // an acp agent's arguments
+	definition  string   // absolute path, empty for none
 	dataDir     string
 	policy      agentPolicy
 }
 
 // config is the offered agent as the node keeps it.
 func (o *agentOffer) config() agentConfig {
-	a := agentConfig{Runtime: o.runtime, Name: o.name, Dir: o.agentDir, Command: o.command, Description: o.description, Definition: o.definition}
+	a := agentConfig{Runtime: o.runtime, Name: o.name, Dir: o.agentDir, Command: o.command, Args: o.args, Description: o.description, Definition: o.definition}
 	a.setPolicy(o.policy)
 	return a
 }
@@ -196,12 +197,13 @@ func (o *agentOffer) config() agentConfig {
 // offerAgent asks whether to offer an agent from this machine and, on yes,
 // which runtime, name and directory. It is hosted on the selected node.
 func (w *wizard) offerAgent() (*agentOffer, error) {
-	return w.chooseAgent(true)
+	return w.chooseAgent(true, agentPolicy{}, nil)
 }
 
 // chooseAgent asks which runtime, name and directory to offer an agent
 // with, after asking whether to offer one at all when confirm is set.
-func (w *wizard) chooseAgent(confirm bool) (*agentOffer, error) {
+// Policy flags supplied on the command line already have their answers.
+func (w *wizard) chooseAgent(confirm bool, policy agentPolicy, flagsSet map[string]bool) (*agentOffer, error) {
 	names := installedRuntimes()
 	if len(names) == 0 {
 		fmt.Fprintf(w.out, "\nNo agent CLI to offer from this machine was found (%s).\n", strings.Join(runtimeNames(), ", "))
@@ -279,18 +281,22 @@ func (w *wizard) chooseAgent(confirm bool) (*agentOffer, error) {
 		}
 		break
 	}
-	offer := &agentOffer{runtime: rt, name: name, description: description, agentDir: dir, dataDir: defaultDataDir()}
+	offer := &agentOffer{runtime: rt, name: name, description: description, agentDir: dir, dataDir: defaultDataDir(), policy: policy}
 	// The agent runs as the owner's own runtime would, with their
 	// configuration and the directory's own guidance, unless the owner says
 	// no, such as for code from someone else.
 	for _, q := range []struct {
+		flag     string
 		question string
 		allow    *bool
 	}{
-		{"  Use your own " + rt + " configuration (sign-in, skills, plugins, MCP servers)?", &offer.policy.OwnerConfig},
-		{"  Load the directory's instruction files (AGENTS.md, CLAUDE.md)?", &offer.policy.DirInstructions},
-		{"  Load the directory's skills?", &offer.policy.DirSkills},
+		{"owner-config", "  Use your own " + rt + " configuration (sign-in, skills, plugins, MCP servers)?", &offer.policy.OwnerConfig},
+		{"dir-instructions", "  Load the directory's instruction files (AGENTS.md, CLAUDE.md)?", &offer.policy.DirInstructions},
+		{"dir-skills", "  Load the directory's skills?", &offer.policy.DirSkills},
 	} {
+		if flagsSet[q.flag] {
+			continue
+		}
 		yes, err := w.yesNo(q.question, true)
 		if err := ignoreEOF(err); err != nil {
 			return nil, err
@@ -330,8 +336,13 @@ func expandHome(path string) string {
 // prepareAgent signs the runtime in before the selected node starts.
 func (w *wizard) prepareAgent(ctx context.Context, o *agentOffer) error {
 	spec := runtimes[o.runtime]
-	if spec.login != nil && !spec.signedIn(spec.defaultCommand, o.dataDir, o.policy) {
-		cmd, shown := spec.login(ctx, spec.defaultCommand, o.dataDir, o.policy)
+	command := o.command
+	if command == "" {
+		command = spec.defaultCommand
+	}
+	profileDir := agentProfileDir(o.dataDir, o.name)
+	if spec.login != nil && !spec.signedIn(command, profileDir, o.policy) {
+		cmd, shown := spec.login(ctx, command, profileDir, o.policy)
 		if spec.envSignedIn != nil && spec.envSignedIn(o.policy) {
 			fmt.Fprintf(w.out, "\nYour %s credential is only in this shell, which the agent's background service does not get; storing it:\n  %s\n", o.runtime, shown)
 		} else if o.policy.OwnerConfig {

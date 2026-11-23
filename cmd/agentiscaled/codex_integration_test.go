@@ -84,10 +84,10 @@ func codexOnHostileCheckout(t *testing.T, command string, policy agentPolicy, wr
 		writeSkill(t, filepath.Join(home, dir), name, "OWNER-SKILL")
 	}
 
-	dataDir := codexTempDir(t)
+	profileDir := codexTempDir(t)
 	// With the owner's configuration, CODEX_API_KEY is the owner's sign-in
 	// and the runtime starts on it.
-	if _, err := newCodexRuntime(command, dataDir, policy); err == nil && !policy.OwnerConfig {
+	if _, err := newCodexRuntime(command, profileDir, policy); err == nil && !policy.OwnerConfig {
 		t.Fatal("the runtime started without the agent's own sign-in")
 	}
 	// The run's sign-in: the agent's own, or with the owner's configuration
@@ -98,9 +98,9 @@ func codexOnHostileCheckout(t *testing.T, command string, policy agentPolicy, wr
 		wantAuth = "Bearer owner-codex-key"
 		write(t, filepath.Join(home, ".codex", "config.toml"), "developer_instructions = \"OWNER-CONFIG: follow the owner's settings\"\n")
 	} else {
-		write(t, filepath.Join(dataDir, "codex", "auth.json"), `{"OPENAI_API_KEY": "agent-key"}`)
+		write(t, filepath.Join(profileDir, "auth.json"), `{"OPENAI_API_KEY": "agent-key"}`)
 	}
-	rt, err := newCodexRuntime(command, dataDir, policy)
+	rt, err := newCodexRuntime(command, profileDir, policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,11 +144,11 @@ func codexOnHostileCheckout(t *testing.T, command string, policy agentPolicy, wr
 		}
 		ownerConfig := "developer_instructions = \"OWNER-CONFIG: follow the owner's settings\"\n" +
 			"approval_policy = " + tomlString(approval) + "\ndefault_permissions = \"owner-test\"\n" +
-			"permissions.owner-test = {extends=" + tomlString(extends) + ", filesystem={\":root\"=\"deny\", \":minimal\"=\"read\", \":workspace_roots\"=" + tomlString(access) + ", " + tomlString(codex.installDir) + "=\"read\", " + tomlString(home) + "=\"deny\", " + tomlString(dataDir) + "=\"deny\"}}\n"
+			"permissions.owner-test = {extends=" + tomlString(extends) + ", filesystem={\":root\"=\"deny\", \":minimal\"=\"read\", \":workspace_roots\"=" + tomlString(access) + ", " + tomlString(codex.installDir) + "=\"read\", " + tomlString(home) + "=\"deny\", " + tomlString(profileDir) + "=\"deny\"}}\n"
 		write(t, filepath.Join(home, ".codex", "config.toml"), ownerConfig)
 	}
 	probe := fmt.Sprintf("echo env:$AGENTISCALE_TEST_SECRET:$CODEX_API_KEY:$OPENAI_API_KEY:$CODEX_ACCESS_TOKEN; cat main.go; cat %s; cat %s; cat %s; echo escaped > %s; echo x > written.txt",
-		filepath.Join(home, "outside.txt"), filepath.Join(home, ".codex", "owner-secret"), filepath.Join(dataDir, "codex", "auth.json"), filepath.Join(home, "outside-written.txt"))
+		filepath.Join(home, "outside.txt"), filepath.Join(home, ".codex", "owner-secret"), filepath.Join(profileDir, "auth.json"), filepath.Join(home, "outside-written.txt"))
 	model := &fakeModel{command: probe, escalate: escalate}
 	srv := httptest.NewServer(model)
 	defer srv.Close()
@@ -330,8 +330,8 @@ func write(t *testing.T, path, content string) {
 	}
 }
 
-// The run gets the agent's CODEX_HOME and HOME and what a process needs,
-// and no credential from the node's environment.
+// The run gets the agent's CODEX_HOME and HOME, and inherits proxy and CA
+// settings. Model and service credential variables are excluded.
 func TestCodexEnvCarriesNoOwnerCredential(t *testing.T) {
 	env := codexEnv([]string{
 		"PATH=/usr/bin", "HOME=/Users/owner", "CODEX_HOME=/Users/owner/.codex", "LC_ALL=C", "https_proxy=http://proxy", "CODEX_CA_CERTIFICATE=/etc/corp-ca.pem",
@@ -362,14 +362,14 @@ func TestCodexResumesTheTaskAfterAQuestion(t *testing.T) {
 			home := codexTempDir(t)
 			t.Setenv("HOME", home)
 			t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
-			dataDir := codexTempDir(t)
+			profileDir := codexTempDir(t)
 			if policy.OwnerConfig {
 				t.Setenv("CODEX_API_KEY", "owner-codex-key")
 				write(t, filepath.Join(home, ".codex", "config.toml"), "")
 			} else {
-				write(t, filepath.Join(dataDir, "codex", "auth.json"), `{"OPENAI_API_KEY": "agent-key"}`)
+				write(t, filepath.Join(profileDir, "auth.json"), `{"OPENAI_API_KEY": "agent-key"}`)
 			}
-			rt, err := newCodexRuntime(command, dataDir, policy)
+			rt, err := newCodexRuntime(command, profileDir, policy)
 			if err != nil {
 				t.Fatal(err)
 			}
