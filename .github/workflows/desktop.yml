@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
       - name: Unit tests
@@ -44,7 +44,7 @@ jobs:
       - name: Show the report
         if: always()
         run: cat reports/desktop/preflight.json || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: desktop-preflight-${{ github.run_attempt }}
