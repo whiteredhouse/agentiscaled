@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"slices"
@@ -381,34 +380,16 @@ func findAgent(ctx context.Context, tasks *Client, agent, peer string, wait time
 // discoverAgent lists the other nodes that offer A2A agent name, through
 // the node's discovery API.
 func discoverAgent(ctx context.Context, client *http.Client, base, name, self string) ([]string, error) {
-	q := url.Values{"type": {"a2a"}, "name": {name}, "limit": {"100"}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/mesh/service/discover?"+q.Encode(), nil)
+	found, err := readDiscovery(ctx, client, base, name)
 	if err != nil {
-		return nil, err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("look for %s on the network: %w", name, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("look for %s on the network: %s: %s", name, resp.Status, strings.TrimSpace(string(b)))
-	}
-	var found []struct {
-		PeerID  string `json:"peer_id"`
-		SrvName string `json:"srv_name"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&found); err != nil {
 		return nil, fmt.Errorf("look for %s on the network: %w", name, err)
 	}
 	var peers []string
-	for _, p := range found {
-		if p.SrvName == name && p.PeerID != "" && p.PeerID != self && !slices.Contains(peers, p.PeerID) {
-			peers = append(peers, p.PeerID)
+	for _, row := range ListedAgents(LocalInfo{PeerID: self}, "", found).Agents {
+		if row.Service == name {
+			peers = append(peers, row.PeerID)
 		}
 	}
-	slices.Sort(peers)
 	return peers, nil
 }
 

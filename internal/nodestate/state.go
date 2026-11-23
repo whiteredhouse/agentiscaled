@@ -67,3 +67,6 @@ func CheckHalt(dir string) error {
 	}
 	return nil
 }
+
+// StopFilePath is shared by the node's hosted agents and its owner commands.
+func StopFilePath(dir string) string { return filepath.Join(dir, "tasks-stopped") }
