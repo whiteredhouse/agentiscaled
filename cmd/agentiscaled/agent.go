@@ -755,7 +755,8 @@ func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, from taskSender, f
 		prior.timer.Stop()
 		delete(s.waiting, execCtx.TaskID)
 	}
-	s.current = &agentRun{taskID: execCtx.TaskID, cancel: cancel, started: time.Now()}
+	// An answer continues a task that already executed its previous turn.
+	s.current = &agentRun{taskID: execCtx.TaskID, cancel: cancel, begun: prior != nil, started: time.Now()}
 	return s.current, prior, "", nil
 }
 
@@ -870,9 +871,11 @@ func (s *agentService) watchStop(ctx context.Context, cancel context.CancelCause
 func (s *agentService) Cancel(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 	return func(yield func(a2a.Event, error) bool) {
 		s.mu.Lock()
-		begun := false
+		// Expiry may have removed the waiting entry while the store still
+		// holds the question that proves the task already ran.
+		begun := execCtx.StoredTask != nil && execCtx.StoredTask.Status.State == a2a.TaskStateInputRequired
 		if run := s.current; run != nil && run.taskID == execCtx.TaskID {
-			begun = run.begun
+			begun = begun || run.begun
 			run.cancel(errCancelledByCaller)
 		}
 		// A task waiting for an answer has run already.

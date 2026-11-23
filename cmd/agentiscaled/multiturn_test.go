@@ -165,6 +165,76 @@ func TestCancelATaskWaitingForAnAnswer(t *testing.T) {
 	}
 }
 
+type pausedTimeoutUpdater struct {
+	a2asrv.TaskUpdater
+	resume <-chan struct{}
+}
+
+func (u pausedTimeoutUpdater) UpdateTask(ctx context.Context, event *a2a.TaskStatusUpdateEvent) (*a2a.Task, error) {
+	select {
+	case <-u.resume:
+		return u.TaskUpdater.UpdateTask(ctx, event)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestCancelBetweenWaitExpiryAndTimeoutPublication(t *testing.T) {
+	h := newAgentHarness(t, testSender)
+	resume := make(chan struct{})
+	defer close(resume)
+	h.svc.updates = pausedTimeoutUpdater{h.svc.updates, resume}
+	task := h.send(t, "", "double a number", nil)
+	<-h.fix.prompts
+	h.fix.ask <- "Which number?"
+	h.await(t, task.ID, a2a.TaskStateInputRequired)
+
+	// The timer released the waiting session. The store still holds the
+	// question until the timer's asynchronous UpdateTask can publish.
+	h.svc.mu.Lock()
+	h.svc.expireLocked(task.ID)
+	h.svc.mu.Unlock()
+	cancelled, err := h.client.CancelTask(t.Context(), &a2a.CancelTaskRequest{ID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Status.State != a2a.TaskStateCanceled || cancelled.Metadata[metaExecutionBegun] != true || !strings.Contains(statusText(cancelled), "after the task had started") {
+		t.Fatalf("cancel after expiry: %s, %v, %q", cancelled.Status.State, cancelled.Metadata, statusText(cancelled))
+	}
+}
+
+func TestCancelBeforeTheAdmittedTurnStarts(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		resumed bool
+	}{{"first turn", false}, {"resumed turn", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newAgentHarness(t, testSender)
+			e := &a2asrv.ExecutorContext{TaskID: "task", Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("work"))}
+			if tc.resumed {
+				if why := h.svc.wait(e.TaskID, waitingTask{sender: testSender, session: "session", since: time.Now()}); why != "" {
+					t.Fatal(why)
+				}
+				e.StoredTask = &a2a.Task{Status: a2a.TaskStatus{State: a2a.TaskStateInputRequired}}
+			}
+			_, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			run, _, why, _ := h.svc.admit(e, taskSender{peer: testSender}, nil, "work", cancel)
+			if run == nil {
+				t.Fatal(why)
+			}
+			// The turn has published working, but has not reached the runtime.
+			e.StoredTask = &a2a.Task{Status: a2a.TaskStatus{State: a2a.TaskStateWorking}}
+			for ev := range h.svc.Cancel(t.Context(), e) {
+				got := ev.(*a2a.TaskStatusUpdateEvent).Metadata[metaExecutionBegun]
+				if got != tc.resumed {
+					t.Errorf("execution_begun = %v, want %t", got, tc.resumed)
+				}
+			}
+		})
+	}
+}
+
 func TestAnUnansweredQuestionTimesOut(t *testing.T) {
 	h := newAgentHarness(t, testSender)
 	h.svc.answerWait = 50 * time.Millisecond
