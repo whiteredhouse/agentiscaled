@@ -164,11 +164,9 @@ func TestTaskSendFindsARemoteAgent(t *testing.T) {
 	h := newAgentHarness(t, testSender)
 	remote := randomPeer(t)
 	net.route(remote, h.url)
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		net.offer(remote)
-	}()
-	run := startTaskSend("", "-data-dir", net.dir, "-wait-agent", "2s", "helper", "hello")
+	run := startTaskSend("", "-data-dir", net.dir, "-wait-agent", "10s", "helper", "hello")
+	waitFor(t, func() bool { return net.lookups.Load() > 0 })
+	net.offer(remote)
 	<-h.fix.prompts
 	h.fix.release <- "hi from afar"
 	if err := run.wait(t); err != nil || run.out.String() != "hi from afar\n" {
@@ -226,7 +224,7 @@ func newFakeNetwork(t *testing.T) *fakeNetwork {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /mesh/service/discover", func(w http.ResponseWriter, r *http.Request) {
-		n.lookups.Add(1)
+		defer n.lookups.Add(1)
 		if r.URL.Query().Get("type") != "a2a" || r.URL.Query().Get("name") != "helper" {
 			json.NewEncoder(w).Encode([]any{})
 			return
