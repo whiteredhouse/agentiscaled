@@ -47,6 +47,13 @@ func TestCodexAgainstAHostileCheckout(t *testing.T) {
 	t.Run("policy on", func(t *testing.T) {
 		codexOnHostileCheckout(t, command, agentPolicy{DirInstructions: true, DirSkills: true}, false, false)
 	})
+	// Each directory opt-out on its own, with the owner's configuration on.
+	t.Run("directory instructions off", func(t *testing.T) {
+		codexOnHostileCheckout(t, command, agentPolicy{DirSkills: true, OwnerConfig: true}, false, false)
+	})
+	t.Run("directory skills off", func(t *testing.T) {
+		codexOnHostileCheckout(t, command, agentPolicy{DirInstructions: true, OwnerConfig: true}, false, false)
+	})
 }
 
 func TestCodexOwnerWorkspaceWrite(t *testing.T) {
