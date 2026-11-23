@@ -267,7 +267,7 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 	}
 
 	// The owner asks the caller, which asks the helper.
-	owner := &caller.Client{Mesh: nodeclient.SocketClient(socket), BaseURL: "Mesh://agentiscaled", Local: nodeclient.SocketClient(agentSocket)}
+	owner := &caller.Client{Mesh: nodeclient.SocketClient(socket), BaseURL: "http://agentiscaled", Local: nodeclient.SocketClient(agentSocket)}
 	_, sent, err := owner.SendTool(ctx, nil, caller.SendInput{Target: caller.Target{Service: "caller"}, Text: "x"})
 	if err != nil {
 		t.Fatal(err)
@@ -387,7 +387,7 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 	// sent: what the helper itself allows.
 	asTask := func(task a2a.TaskID) *caller.Client {
 		token := mintFor(task)
-		return &caller.Client{Mesh: meshTokenClient(ctx, socket, token), BaseURL: "Mesh://agentiscaled", Local: meshTokenClient(ctx, agentSocket, token)}
+		return &caller.Client{Mesh: meshTokenClient(ctx, socket, token), BaseURL: "http://agentiscaled", Local: meshTokenClient(ctx, agentSocket, token)}
 	}
 	parent := asTask("parent")
 	settle := func(by *caller.Client, id, want string) {

@@ -267,8 +267,9 @@ func seedNodeSignedBy(t *testing.T, dir, meshURL string, key, signer ed25519.Pri
 // nodeProcess is `agentiscaled run` in its own process, logging to a file
 // as under launchd or systemd.
 type nodeProcess struct {
-	cmd *exec.Cmd
-	log string
+	cmd       *exec.Cmd
+	log       string
+	logOffset int64 // position before this process began appending
 }
 
 func startNode(t *testing.T, dir string) *nodeProcess {
@@ -279,13 +280,17 @@ func startNode(t *testing.T, dir string) *nodeProcess {
 		t.Fatal(err)
 	}
 	defer f.Close()
+	stat, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command(os.Args[0], "run", "-data-dir", dir)
 	cmd.Env = append(os.Environ(), "AGENTISCALED_TEST_MAIN=1")
 	cmd.Stdout, cmd.Stderr = f, f
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	p := &nodeProcess{cmd: cmd, log: logPath}
+	p := &nodeProcess{cmd: cmd, log: logPath, logOffset: stat.Size()}
 	t.Cleanup(p.stop)
 	return p
 }
@@ -315,9 +320,12 @@ func (p *nodeProcess) waitLog(t *testing.T, want string, wait time.Duration) str
 	t.Helper()
 	deadline := time.Now().Add(wait)
 	for {
-		for _, line := range strings.Split(p.output(), "\n") {
-			if strings.Contains(line, want) {
-				return line
+		output := p.output()
+		if int64(len(output)) > p.logOffset {
+			for _, line := range strings.Split(output[p.logOffset:], "\n") {
+				if strings.Contains(line, want) {
+					return line
+				}
 			}
 		}
 		if time.Now().After(deadline) {

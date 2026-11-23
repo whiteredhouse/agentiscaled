@@ -98,9 +98,9 @@ func TestTaskTokensAcrossNodes(t *testing.T) {
 		return token
 	}
 	as := func(token string) *caller.Client {
-		return &caller.Client{Mesh: meshTokenClient(ctx, socketA, token), BaseURL: "Mesh://agentiscaled", Local: meshTokenClient(ctx, agentSocketA, token)}
+		return &caller.Client{Mesh: meshTokenClient(ctx, socketA, token), BaseURL: "http://agentiscaled", Local: meshTokenClient(ctx, agentSocketA, token)}
 	}
-	owner := &caller.Client{Mesh: nodeclient.SocketClient(socketA), BaseURL: "Mesh://agentiscaled", Local: nodeclient.SocketClient(agentSocketA)}
+	owner := &caller.Client{Mesh: nodeclient.SocketClient(socketA), BaseURL: "http://agentiscaled", Local: nodeclient.SocketClient(agentSocketA)}
 	card := func(token string) int {
 		t.Helper()
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://agentiscaled/mesh/"+peerB+"/a2a/helper/.well-known/agent-card.json", nil)
