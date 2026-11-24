@@ -49,3 +49,24 @@ settled.
 | 4 | `-timeout` passed. After `task send` the task is cancelled; after `task wait` it still runs, so wait again or cancel it. |
 | 2 | The task failed, was rejected (for example another task is running, or the owner stopped tasks) or was cancelled. Report the message to the person. Do not resend the same task in a loop. |
 | 1 | The command failed, for example the agent cannot be reached or the node is not running. See the fallback in SKILL.md. |
+
+**Remote MCP tools.** Other nodes can also offer MCP services. Use them only
+when the person asks for one or a task needs a tool that only another node has.
+
+```sh
+agentiscaled network tool find -json             # tools on other nodes; -service NAME or a tool name narrows it
+agentiscaled network tool describe SERVICE/TOOL  # its input schema: read it before you call
+agentiscaled network tool call SERVICE/TOOL '{"key": "value"}'
+echo '{"key": "value"}' | agentiscaled network tool call SERVICE/TOOL -
+```
+
+- `SERVICE/TOOL` is short for the full name `mcp://SERVICE/TOOL` from `find`.
+  When several nodes offer the tool, pass `-peer <peer ID>` from `find`.
+- The arguments are a JSON object whose keys match the input schema. Pass
+  integers above 2^53 as strings if the tool accepts them: the node rounds them.
+- `call` prints the tool's result on standard output. When the tool reports an
+  error, the error goes to standard error and the exit status is 1; with
+  `-json`, the whole MCP result, error included, is on standard output. Give a
+  long call `-timeout`.
+- In `find`, a row marked `unavailable` (with `-json`, one with `error` and no
+  `tool_name`) is a node whose tools could not be read, not a tool.
