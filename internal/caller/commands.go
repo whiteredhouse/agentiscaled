@@ -2,6 +2,7 @@ package caller
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"path/filepath"
@@ -35,6 +36,11 @@ const nodeStartWait = 45 * time.Second
 func readySocket(ctx context.Context, dataDir string) (string, error) {
 	socket := filepath.Join(dataDir, meshnode.DefaultSocketName)
 	if err := nodeclient.WaitForSocket(ctx, socket, nodeStartWait); err != nil {
+		if errors.Is(err, nodeclient.ErrSocketDenied) {
+			// The words "permission denied" are what the skill tells an
+			// agent to look for before it falls back to the MCP server.
+			return "", fmt.Errorf("cannot connect to agentiscaled at %s: a sandbox may block its socket; use the agentiscale MCP server, or run this command outside the sandbox (%w)", socket, err)
+		}
 		return "", fmt.Errorf("no running agentiscaled at %s: start it first (%w)", socket, err)
 	}
 	return socket, nil
