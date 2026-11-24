@@ -275,7 +275,7 @@ minimal system files and the Codex install, with its sign-in directory denied.
 It cannot write files. The adapter does not force that profile onto your own
 configuration.
 To check this on your machine without signing in:
-`AGENTISCALE_TEST_CODEX=$(command -v codex) go test ./cmd/agentiscaled -run 'TestCodexAgainstAHostileCheckout|TestCodexOwnerWorkspaceWrite' -v`.
+`AGENTISCALE_TEST_CODEX=$(command -v codex) go test ./internal/node -run 'TestCodexAgainstAHostileCheckout|TestCodexOwnerWorkspaceWrite' -v`.
 
 ### Claude Code as the agent
 
