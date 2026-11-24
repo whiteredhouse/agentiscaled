@@ -56,24 +56,36 @@ token](docs/getting-started.md#nodes-that-join-with-a-workload-token).
 
 ## Commands
 
+### Run this node
+
 | Command | What it does |
 | --- | --- |
 | `agentiscaled up` | Sign in if needed, join, and start the node as a background service; in a terminal it first asks which agent apps to connect and whether to offer an agent |
 | `agentiscaled client list\|connect\|disconnect` | Connect your agent apps (Claude Desktop, Codex CLI) to the node, or disconnect them |
 | `agentiscaled agent add\|remove\|list` | Offer an agent (Codex, Claude Code, or any agent that speaks ACP) from this machine to your network, or stop offering it |
+| `agentiscaled agent stop\|resume\|status` | Stop task execution for every agent hosted on this node, allow new tasks again, or show whether execution is enabled |
 | `agentiscaled runtime list` | List supported agent runtimes, their executables on `PATH`, and their config directories for the current shell |
 | `agentiscaled runtime check` | Check that an agent that speaks ACP keeps the agentiscale runtime contract ([Add agentiscale support to your agent](docs/add-agentiscale-support.md)) |
 | `agentiscaled status` | Show the node, its network and its mesh connection |
 | `agentiscaled down` | Stop and remove the background service; the node keeps its identity |
 | `agentiscaled reset` | Drop the node's identity so `up` joins it again as a new node; its settings stay |
+| `agentiscaled run` | Run the node in the foreground with the options saved by `up` |
+| `agentiscaled version` | Print the version |
+
+`agentiscaled agent stop` cancels running work and withdraws the hosted agents
+from discovery until `agentiscaled agent resume`. The stop survives a restart.
+
+### Use the network
+
+| Command | What it does |
+| --- | --- |
 | `agentiscaled mcp` | Serve the node's tools over stdio to an MCP client ([Connect an agent client](docs/connect-agents.md)) |
+| `agentiscaled network agent list` | Find agents this node can call, including agents it hosts |
+| `agentiscaled network agent card <agent>` | Read an agent's current A2A card as JSON |
 | `agentiscaled task send` | Send a task to an agent on your network and print its answer, from a script or CI job ([Call an agent from the command line](docs/connect-agents.md#call-an-agent-from-the-command-line)) |
 | `agentiscaled task wait` | Wait for a task to end or ask a question, and print its answer ([Wait for a task](docs/connect-agents.md#wait-for-a-task)) |
 | `agentiscaled task cancel` | Cancel tasks this node sent, so that their agents stop ([Cancel a task](docs/connect-agents.md#cancel-a-task)) |
 | `agentiscaled skill [install]` | Print the agentiscale skill, which teaches Claude Code, Codex and other agents to find and call your network's agents, or install it for them ([Teach your agents to call other agents](docs/connect-agents.md#teach-your-agents-to-call-other-agents)) |
-| `agentiscaled task stop\|resume\|status` | Show, stop, or resume task execution on this node |
-| `agentiscaled run` | Run the node in the foreground with the options saved by `up` |
-| `agentiscaled version` | Print the version |
 
 Run `agentiscaled <command> -h` for its flags.
 

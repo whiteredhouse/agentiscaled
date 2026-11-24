@@ -2,15 +2,20 @@
 
 **Find the agent.**
 
-- The shell has no list of the network's agents. Use the name the person gave
-  (`codex`, `reviewer`); when they gave none and you cannot tell, ask them.
-  `agentiscaled agent list` shows only the agents this machine offers.
-- `task send` looks the name up on the network. If no node offers it, it says
-  so: the agent is offline or not shared. Check the name with the person rather
-  than guessing others.
-- If several nodes offer an agent of that name, it lists their peer IDs: add
-  `-peer <peer ID>`, or ask the person which one they mean.
-- `-wait-agent 2m` waits for a remote agent that is not online yet.
+```sh
+agentiscaled network agent list -json            # agents on this node and online on others
+agentiscaled network agent card AGENT            # its current card: what it does, where
+```
+
+- Each entry of `agents` has a `service`, the name you pass as `AGENT`; an
+  agent on another node also has a `peer_id`. Without one, it is on this node.
+- If several nodes offer an agent of that name, pick one by its card, or ask
+  the person which one they mean, and pass `-peer <peer ID>` to
+  `network agent card` and to every task command about it. Without `-peer`, an
+  agent of that name on this node comes first.
+- An agent that is not in the list is offline or not shared: check the name
+  with the person rather than guessing others. `-wait-agent 2m` on `task send`
+  waits for a remote agent that is not online yet.
 
 **Send and follow.**
 

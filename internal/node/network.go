@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -523,43 +522,24 @@ func (n *taskNetwork) post(ctx context.Context, path string, form url.Values) ([
 	return body, nil
 }
 
-// agentRow is one agent list_agents found.
-type agentRow struct {
-	Service     string `json:"service"`
-	PeerID      string `json:"peer_id,omitempty"`
-	Description string `json:"description,omitempty"`
-}
-
-type listAgentsOut struct {
-	Agents []agentRow `json:"agents"`
-}
+type agentRow = caller.AgentRow
+type listAgentsOut = caller.AgentList
 
 func (n *taskNetwork) listAgents(ctx context.Context, tasks *caller.Client) (*mcp.CallToolResult, listAgentsOut, error) {
-	var out listAgentsOut
 	info, err := tasks.LocalInfo(ctx)
 	if err != nil {
-		return nil, out, fmt.Errorf("list this node's agents: %w", err)
+		return nil, listAgentsOut{}, fmt.Errorf("list this node's agents: %w", err)
 	}
-	for _, name := range info.Services {
-		if name != tasks.Self {
-			out.Agents = append(out.Agents, agentRow{Service: name})
-		}
-	}
+	var providers []*api.DiscoveredProvider
 	if n.discover != nil {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		providers, err := n.discover(ctx)
+		providers, err = n.discover(ctx)
 		if err != nil {
-			return nil, out, fmt.Errorf("discover the network's agents: %w", err)
-		}
-		for _, p := range providers {
-			row := agentRow{Service: p.GetSrvName(), PeerID: p.GetPeerId(), Description: p.GetSrvDescription()}
-			if p.GetPeerId() == info.PeerID || !caller.ServiceName.MatchString(row.Service) || slices.Contains(out.Agents, row) {
-				continue
-			}
-			out.Agents = append(out.Agents, row)
+			return nil, listAgentsOut{}, fmt.Errorf("discover the network's agents: %w", err)
 		}
 	}
+	out := caller.ListedAgents(info, tasks.Self, providers)
 	b, _ := json.MarshalIndent(out, "", "  ")
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, out, nil
 }

@@ -1,6 +1,6 @@
 ---
 name: agentiscale
-description: Find and call the other AI agents of the user's agentiscale network (Codex, Claude Code and others on their machines) with `agentiscaled task send` in a shell or through the agentiscale or agentiscale-network MCP tools. Use when the user asks to have another agent, machine or "my network" do something, to ask, delegate to or get a review from a named agent, or when part of a task fits an agent that works in another directory or on another machine.
+description: Find and call the other AI agents of the user's agentiscale network (Codex, Claude Code and others on their machines) with the `agentiscaled network agent` and `agentiscaled task` commands in a shell or through the agentiscale or agentiscale-network MCP tools. Use when the user asks to have another agent, machine or "my network" do something, to ask, delegate to or get a review from a named agent, or when part of a task fits an agent that works in another directory or on another machine.
 ---
 
 # Call agents on an agentiscale network
@@ -19,7 +19,8 @@ Use the first that you have, then read its reference before you send:
    the network working on a task. It works only while that task runs. Read
    [references/mcp.md](references/mcp.md).
 2. **A shell with `agentiscaled`** (`command -v agentiscaled` finds it) on a
-   machine whose node is running: `agentiscaled task send`. It costs no tool
+   machine whose node is running: `agentiscaled network agent list` to find
+   agents and `agentiscaled task send` to call one. It costs no tool
    definitions in your context, so prefer it to the `agentiscale` server when
    you have both. Read [references/cli.md](references/cli.md).
 3. **MCP server `agentiscale`** (tools `list_local_services`,
@@ -55,9 +56,9 @@ your files, and it works in its own directory on its own machine. So:
   directory, a commit, a branch), the constraints, and the form of answer you
   want. Paste the content it needs, such as a diff or an error, when that
   content is only on your side.
-- Read the agent's card first (`get_agent_card`, or the description that
-  `list_agents` shows) when you are not sure what it does or which directory
-  it works in.
+- When you need to know what an agent does or which directory it works in,
+  read its card with `get_agent_card` or
+  `agentiscaled network agent card AGENT`.
 - Do not paste secrets or credentials into a request.
 - Send work that takes one message to describe. A long back-and-forth is better
   done yourself.

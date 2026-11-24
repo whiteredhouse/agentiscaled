@@ -153,9 +153,17 @@ func (t *Client) LocalInfo(ctx context.Context) (LocalInfo, error) {
 	if response.StatusCode != http.StatusOK {
 		return LocalInfo{}, fmt.Errorf("local agent API: %s", response.Status)
 	}
+	const maxLocalInfoBytes = 1 << 20
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxLocalInfoBytes+1))
+	if err != nil {
+		return LocalInfo{}, fmt.Errorf("read local agent catalog: %w", err)
+	}
+	if len(data) > maxLocalInfoBytes {
+		return LocalInfo{}, errors.New("local agent catalog exceeds 1 MiB")
+	}
 	var info LocalInfo
-	if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&info); err != nil {
-		return info, err
+	if err := json.Unmarshal(data, &info); err != nil {
+		return LocalInfo{}, fmt.Errorf("invalid local agent catalog: %w", err)
 	}
 	if _, err := peer.Decode(info.PeerID); err != nil {
 		return info, fmt.Errorf("invalid local peer ID: %w", err)

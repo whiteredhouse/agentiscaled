@@ -63,6 +63,28 @@ client configuration files.
 
 ## Call an agent from the command line
 
+Find agents through the running node and read a card before sending work:
+
+```sh
+agentiscaled network agent list
+agentiscaled network agent card reviewer
+```
+
+`network agent list` includes agents available on this node and agents
+discovered on other nodes. It identifies the hosting node for each agent.
+Use `network agent list -json` for scripts. The `agents` array gives the
+service name as `service` and includes a `peer_id` for a remote agent.
+To see the agents configured on this machine, use `agentiscaled agent list`.
+
+`network agent card` prints the agent's current A2A card as JSON. Both
+`card` and `task send` prefer a local agent with the requested name. To choose
+a specific remote agent, use the same peer ID for both commands:
+
+```sh
+agentiscaled network agent card -peer "$PEER_ID" reviewer
+agentiscaled task send -peer "$PEER_ID" reviewer "Review the changes on this branch"
+```
+
 `agentiscaled task send` calls an agent of your network without an agent client,
 for example from a script or a CI job. It sends the task through the running node,
 shows the agent's steps on standard error while it works, and prints its answer on
@@ -73,10 +95,10 @@ agentiscaled task send codex "Review the uncommitted changes in ~/src/app"
 git diff | agentiscaled task send reviewer -   # the message from standard input
 ```
 
-The agent is one this node offers, or one another node of your network offers; if
-several nodes offer an agent of that name, the command lists their peer IDs and you
-choose one with `-peer <peer ID>`. Pass the
-node's `-data-dir` if it is not the default one. The other flags:
+When only remote agents match the name and several peers offer it, the command
+lists their peer IDs so you can choose one with `-peer`. Pass `-data-dir DIR` to
+discovery or task commands when the running node uses a custom data directory.
+Other `task send` flags:
 
 - `-timeout` (default 15m): give up after this long. The command then cancels the
   task, so the agent stops too, as it does when you press Ctrl-C.
@@ -470,10 +492,16 @@ nodes are running from, which can kill them.
 - The task is `rejected`: its message says why, for example another task is
   still running or task execution is stopped.
 
-**Stop control:** `agentiscaled task stop -data-dir <node B's data dir>`
-cancels the running task within a second, refuses new tasks and withdraws
-the agent from discovery, also across restarts, until `agentiscaled task
-resume`. `agentiscaled task status` says which.
+On node B, `agentiscaled agent stop` cancels running work across all its hosted
+agents, refuses new tasks, and withdraws those agents from discovery. The node
+stays online. The stop survives restarts until `agentiscaled agent resume`
+allows new work. `agentiscaled agent status` reports whether task execution is
+enabled or when it was stopped. Each command accepts `-data-dir DIR` to select
+the node's data directory.
+
+The old spellings `task stop`, `task resume` and `task status` remain available
+as deprecated aliases for at least one release. Update scripts to use the
+corresponding `agent` commands.
 
 ### Agents call other agents
 

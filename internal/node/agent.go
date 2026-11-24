@@ -1053,7 +1053,7 @@ func serveAgent(ctx context.Context, s *agentService, name string) (string, <-ch
 	return fmt.Sprintf("http://:%s@%s", token, ln.Addr()), stopped, nil
 }
 
-func stopFilePath(dataDir string) string { return filepath.Join(dataDir, "tasks-stopped") }
+func stopFilePath(dataDir string) string { return nodestate.StopFilePath(dataDir) }
 
 func messageText(m *a2a.Message) string { return caller.MessageText(m) }
 
