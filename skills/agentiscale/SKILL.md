@@ -1,6 +1,6 @@
 ---
 name: agentiscale
-description: Find and call the other AI agents of the user's agentiscale network (Codex, Claude Code and others on their machines) through the agentiscale or agentiscale-network MCP tools, or `agentiscaled task send` in a shell. Use when the user asks to have another agent, machine or "my network" do something, to ask, delegate to or get a review from a named agent, or when part of a task fits an agent that works in another directory or on another machine.
+description: Find and call the other AI agents of the user's agentiscale network (Codex, Claude Code and others on their machines) through the agentiscale or agentiscale-network MCP tools, or the `agentiscaled network agent` and `agentiscaled task` commands in a shell. Use when the user asks to have another agent, machine or "my network" do something, to ask, delegate to or get a review from a named agent, or when part of a task fits an agent that works in another directory or on another machine.
 ---
 
 # Call agents on an agentiscale network
@@ -21,7 +21,8 @@ Use the first that you have:
    `discover_remote_services`, `get_agent_card`, `send_task`, `get_task`,
    `cancel_task`, and others). You have it when the person connected you to their
    node with `agentiscaled client connect` or `agentiscaled up`.
-3. **A shell with `agentiscaled`** on a machine whose node is running:
+3. **A shell with `agentiscaled`** on a machine whose node is running. Discover
+   agents with `agentiscaled network agent list` and call one with
    `agentiscaled task send`. See [From a shell](#from-a-shell).
 
 If you have none of these, say so and point the person to
@@ -37,8 +38,8 @@ your files, and it works in its own directory on its own machine. So:
   directory, a commit, a branch), the constraints, and the form of answer you
   want. Paste the content it needs, such as a diff or an error, when that
   content is only on your side.
-- Read the agent's card first (`get_agent_card`) when you are not sure what it
-  does or which directory it works in.
+- When you need to know what an agent does or which directory it works in,
+  read its card with `get_agent_card` or `agentiscaled network agent card AGENT`.
 - Do not paste secrets or credentials into a request.
 - Send work that takes one message to describe. A long back-and-forth is better
   done yourself.
@@ -84,6 +85,18 @@ changes their mind.
 
 ## From a shell
 
+Find an agent and read its current card:
+
+```sh
+agentiscaled network agent list -json
+agentiscaled network agent card AGENT
+```
+
+Each entry in the `agents` array identifies a `service`. Remote entries include
+a `peer_id`. To target a particular remote agent, pass its `-peer <peer ID>` to
+`network agent card` and keep the same peer for every task command. Without
+`-peer`, a local agent with that name takes precedence.
+
 ```sh
 agentiscaled task send AGENT "request"           # answer on stdout, steps on stderr
 git diff | agentiscaled task send AGENT -        # request from standard input
@@ -93,7 +106,8 @@ agentiscaled task send -json AGENT "request"     # task_id, state, message, resu
 - The command exits 0 only when the task completes; 2 means the task failed,
   was rejected or cancelled, 3 that the agent asks a question, 4 that
   `-timeout` passed.
-- If several nodes offer `AGENT`, it lists their peer IDs: add `-peer <peer ID>`.
+- If only remote agents match and several nodes offer the name, choose one of
+  the peer IDs the command lists.
 - `-timeout 5m` gives up and cancels the task after that long (the default is
   longer than most tool-call limits, so set it when your shell call has one).
 - `-wait-agent 2m` waits for a remote agent that is not online yet.

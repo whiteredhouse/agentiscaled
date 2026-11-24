@@ -80,6 +80,8 @@ from discovery until `agentiscaled agent resume`. The stop survives a restart.
 | Command | What it does |
 | --- | --- |
 | `agentiscaled mcp` | Serve the node's tools over stdio to an MCP client ([Connect an agent client](docs/connect-agents.md)) |
+| `agentiscaled network agent list` | Find agents this node can call, including agents it hosts |
+| `agentiscaled network agent card <agent>` | Read an agent's current A2A card as JSON |
 | `agentiscaled task send` | Send a task to an agent on your network and print its answer, from a script or CI job ([Call an agent from the command line](docs/connect-agents.md#call-an-agent-from-the-command-line)) |
 | `agentiscaled task wait` | Wait for a task to end or ask a question, and print its answer ([Wait for a task](docs/connect-agents.md#wait-for-a-task)) |
 | `agentiscaled task cancel` | Cancel tasks this node sent, so that their agents stop ([Cancel a task](docs/connect-agents.md#cancel-a-task)) |

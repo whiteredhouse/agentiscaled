@@ -261,6 +261,10 @@ reported. A service that was already stopped is not restarted as recovery.
 Client setup uses your invoking shell's Codex configuration, even when the hosted
 agent uses a different saved `CODEX_HOME`.
 
+From the shell, use `agentiscaled network agent list` to find agents you can call
+and `agentiscaled network agent card <agent>` to read one's card. See
+[Call an agent from the command line](connect-agents.md#call-an-agent-from-the-command-line).
+
 The MCP tools preserve Agent Mesh's discovery distinction: `list_local_services`
 with type `a2a` lists this node's hosted agents; `discover_remote_services` lists
 agents on other nodes. For a local agent, read its card with `get_agent_card`,
