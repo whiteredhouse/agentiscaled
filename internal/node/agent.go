@@ -214,7 +214,7 @@ type agentService struct {
 	deadline    time.Duration
 	answerWait  time.Duration
 	// stopFile exists while the owner has stopped task execution
-	// (`agentiscaled task stop`).
+	// (`agentiscaled agent stop`).
 	stopFile string
 	// life ends when the node stops, and with it any task still running.
 	life context.Context

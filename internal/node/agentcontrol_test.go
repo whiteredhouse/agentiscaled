@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-func TestAgentControlAliases(t *testing.T) {
+func TestAgentControls(t *testing.T) {
 	dir := t.TempDir()
-	var out, warnings bytes.Buffer
+	var out bytes.Buffer
 	agent := func(command string) string {
 		t.Helper()
 		out.Reset()
@@ -19,45 +19,25 @@ func TestAgentControlAliases(t *testing.T) {
 		}
 		return out.String()
 	}
-	task := func(command string) string {
-		t.Helper()
-		out.Reset()
-		warnings.Reset()
-		if err := RunLegacyTaskControl([]string{command, "-data-dir", dir}, &out, &warnings); err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(warnings.String(), "deprecated") || !strings.Contains(warnings.String(), "agentiscaled agent "+command) {
-			t.Fatalf("task %s warning: %q", command, &warnings)
-		}
-		return out.String()
-	}
 
 	if got := agent("status"); got != "Task execution enabled\n" {
 		t.Fatalf("agent status on an offline node: %q", got)
 	}
-	if got := task("stop"); got != "task execution stopped: the running task is cancelled and new tasks are refused\n" {
-		t.Fatalf("task stop: %q", got)
+	if got := agent("stop"); got != "task execution stopped for all agents on this node: running tasks are cancelled and new tasks are refused\n" {
+		t.Fatalf("agent stop: %q", got)
 	}
 	b, err := os.ReadFile(stopFilePath(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := agent("status"); got != "Task execution stopped since "+string(b) {
-		t.Fatalf("agent status after task stop: %q", got)
+		t.Fatalf("agent status after agent stop: %q", got)
 	}
-	agent("resume")
-	if got := task("status"); got != "running\n" {
-		t.Fatalf("task status after agent resume: %q", got)
-	}
-	agent("stop")
-	if got := task("status"); !strings.HasPrefix(got, "stopped since ") {
-		t.Fatalf("task status after agent stop: %q", got)
-	}
-	if got := task("resume"); got != "task execution resumed\n" {
-		t.Fatalf("task resume: %q", got)
+	if got := agent("resume"); got != "task execution resumed for all agents on this node\n" {
+		t.Fatalf("agent resume: %q", got)
 	}
 	if got := agent("status"); got != "Task execution enabled\n" {
-		t.Fatalf("agent status after task resume: %q", got)
+		t.Fatalf("agent status after agent resume: %q", got)
 	}
 }
 
@@ -83,8 +63,5 @@ func TestAgentStatusMarkerReadError(t *testing.T) {
 	var out bytes.Buffer
 	if err := RunAgent(t.Context(), []string{"status", "-data-dir", dir}, &out); err == nil || out.Len() > 0 {
 		t.Fatalf("agent status for unreadable marker: %v, stdout %q", err, &out)
-	}
-	if err := RunLegacyTaskControl([]string{"status", "-data-dir", dir}, &out, io.Discard); err == nil || out.Len() > 0 {
-		t.Fatalf("task status for unreadable marker: %v, stdout %q", err, &out)
 	}
 }
