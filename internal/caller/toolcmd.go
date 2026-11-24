@@ -1,6 +1,7 @@
 package caller
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -110,7 +111,6 @@ func RunTool(ctx context.Context, args []string, stdin io.Reader, out, errOut io
 		return errors.New(toolUsage)
 	}
 	var tool, name string
-	var arguments map[string]any
 	if cmd == "find" {
 		if len(pos) == 1 {
 			name = pos[0]
@@ -118,16 +118,18 @@ func RunTool(ctx context.Context, args []string, stdin io.Reader, out, errOut io
 	} else if tool, err = toolName(pos[0]); err != nil {
 		return err
 	}
+	// The deadline covers reading the arguments from standard input too.
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var arguments json.RawMessage
 	if cmd == "call" && len(pos) == 2 {
-		if arguments, err = readArguments(pos[1], stdin); err != nil {
+		if arguments, err = readArguments(ctx, pos[1], stdin); err != nil {
 			return err
 		}
 	}
 	if err := nodestate.CheckHalt(*dir); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 	socket, err := readySocket(ctx, *dir)
 	if err != nil {
 		return err
@@ -183,19 +185,53 @@ func toolName(s string) (string, error) {
 	return s, nil
 }
 
-func readArguments(s string, stdin io.Reader) (map[string]any, error) {
+// maxArgumentBytes bounds the arguments read from standard input.
+const maxArgumentBytes = 16 << 20
+
+// readArguments returns ARGUMENTS, or with "-" standard input, as the JSON
+// object it is. It stays raw JSON all the way to the remote tool, so that
+// numbers keep every digit: decoded into Go values, an integer above 2^53
+// would change.
+func readArguments(ctx context.Context, s string, stdin io.Reader) (json.RawMessage, error) {
 	data := []byte(s)
 	if s == "-" {
 		var err error
-		if data, err = io.ReadAll(io.LimitReader(stdin, 16<<20)); err != nil {
-			return nil, fmt.Errorf("read the arguments: %w", err)
+		if data, err = readStdin(ctx, stdin); err != nil {
+			return nil, err
 		}
 	}
-	var arguments map[string]any
-	if err := json.Unmarshal(data, &arguments); err != nil || arguments == nil {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || data[0] != '{' || !json.Valid(data) {
 		return nil, errors.New(`ARGUMENTS must be a JSON object, such as '{"pr": 42}'`)
 	}
-	return arguments, nil
+	return data, nil
+}
+
+// readStdin reads standard input until it ends, at most maxArgumentBytes of
+// it, or until ctx is done: a read blocked on a terminal or a pipe nobody
+// writes to ends with the deadline or an interrupt.
+func readStdin(ctx context.Context, stdin io.Reader) ([]byte, error) {
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, err := io.ReadAll(io.LimitReader(stdin, maxArgumentBytes+1))
+		done <- result{data, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, withExit(timeoutExit(ctx), fmt.Errorf("read the arguments from standard input: %w", ctx.Err()))
+	case r := <-done:
+		if r.err != nil {
+			return nil, fmt.Errorf("read the arguments from standard input: %w", r.err)
+		}
+		if len(r.data) > maxArgumentBytes {
+			return nil, fmt.Errorf("the arguments on standard input exceed %d MiB", maxArgumentBytes>>20)
+		}
+		return r.data, nil
+	}
 }
 
 // callNode calls one of the node's tools and returns its text, or the

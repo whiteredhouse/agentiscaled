@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	meshnode "github.com/google/agentmesh/export/node"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -21,6 +23,9 @@ const (
 	peerB = "12D3KooWHHzSeKaY8xuZVzkLbKFfvNgPPeKhFBGrMbNzbm5akpqu"
 )
 
+// lastRaw holds the raw arguments of each call to the latest fakeNode.
+var lastRaw map[string][]string
+
 // fakeNode serves the node's remote-tool MCP tools on a socket in a new
 // data directory and records the arguments of each call.
 func fakeNode(t *testing.T, rows []RemoteTool) (dir string, calls map[string][]map[string]any) {
@@ -30,7 +35,9 @@ func fakeNode(t *testing.T, rows []RemoteTool) (dir string, calls map[string][]m
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
+	lastRaw = map[string][]string{}
 	calls = map[string][]map[string]any{}
+	raw := lastRaw
 	server := mcp.NewServer(&mcp.Implementation{Name: "node", Version: "0"}, nil)
 	add := func(name string, answer func(map[string]any) *mcp.CallToolResult) {
 		server.AddTool(&mcp.Tool{Name: name, InputSchema: map[string]any{"type": "object"}}, func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -39,6 +46,7 @@ func fakeNode(t *testing.T, rows []RemoteTool) (dir string, calls map[string][]m
 				return nil, err
 			}
 			calls[name] = append(calls[name], args)
+			raw[name] = append(raw[name], string(req.Params.Arguments))
 			return answer(args), nil
 		})
 	}
@@ -183,5 +191,52 @@ func TestToolRejectsBadInput(t *testing.T) {
 		if err == nil || errors.Is(err, context.Canceled) {
 			t.Errorf("tool %v returned %v", args, err)
 		}
+	}
+}
+
+// Arguments reach the node as written: numbers are not rounded through a
+// float64.
+func TestToolCallKeepsNumbers(t *testing.T) {
+	dir, _ := fakeNode(t, []RemoteTool{{PeerID: peerA, ToolName: "mcp://records/get"}})
+	if _, err := runTool(t, "", "call", "-data-dir", dir, "records/get", `{"id": 9007199254740993, "ratio": 0.10000000000000001}`); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastRaw[callRemoteTool][0]; !strings.Contains(got, `"arguments":{"id":9007199254740993,"ratio":0.10000000000000001}`) {
+		t.Fatalf("call_remote_tool got %s", got)
+	}
+}
+
+// blockingReader is a standard input nobody writes to.
+type blockingReader struct{ done chan struct{} }
+
+func (r blockingReader) Read([]byte) (int, error) {
+	<-r.done
+	return 0, io.EOF
+}
+
+func TestToolCallStdinEndsWithDeadline(t *testing.T) {
+	stdin := blockingReader{make(chan struct{})}
+	defer close(stdin.done)
+	var out bytes.Buffer
+	start := time.Now()
+	err := RunNetwork(context.Background(), []string{"tool", "call", "-timeout", "50ms", "-data-dir", t.TempDir(), "records/get", "-"}, stdin, &out, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "standard input") || ExitCode(err) != exitTimeout || time.Since(start) > 5*time.Second {
+		t.Fatalf("a blocked read returned %v (status %d) after %v", err, ExitCode(err), time.Since(start))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	err = RunNetwork(ctx, []string{"tool", "call", "-data-dir", t.TempDir(), "records/get", "-"}, stdin, &out, io.Discard)
+	if err == nil || !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("an interrupted read returned %v", err)
+	}
+}
+
+func TestToolCallRejectsOversizedStdin(t *testing.T) {
+	stdin := io.MultiReader(strings.NewReader(`{"pr": 42}`), strings.NewReader(strings.Repeat(" ", maxArgumentBytes)), strings.NewReader("garbage"))
+	var out bytes.Buffer
+	err := RunNetwork(context.Background(), []string{"tool", "call", "-data-dir", t.TempDir(), "records/get", "-"}, stdin, &out, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "exceed 16 MiB") {
+		t.Fatalf("oversized arguments returned %v", err)
 	}
 }
