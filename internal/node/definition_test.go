@@ -45,6 +45,7 @@ func writeDefinition(t *testing.T, root, rel, content string) string {
 }
 
 func TestLoadDefinition(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	d, err := loadDefinition(writeDefinition(t, root, ".claude/agents/security-reviewer.md", claudeAgentFile))
 	if err != nil {
@@ -85,6 +86,7 @@ func TestLoadDefinition(t *testing.T) {
 }
 
 func TestDefinitionRemovalIsScopedToTheService(t *testing.T) {
+	t.Parallel()
 	data := t.TempDir()
 	first, err := copyDefinition(data, "reviewer", writeDefinition(t, t.TempDir(), "role.md", claudeAgentFile))
 	if err != nil {
@@ -108,6 +110,7 @@ func TestDefinitionRemovalIsScopedToTheService(t *testing.T) {
 }
 
 func TestDefinitionRoot(t *testing.T) {
+	t.Parallel()
 	for path, want := range map[string]string{
 		"/w/proj/.claude/agents/a.md":  "/w/proj",
 		"/w/proj/.codex/agents/a.toml": "/w/proj",
@@ -122,6 +125,7 @@ func TestDefinitionRoot(t *testing.T) {
 
 // A definition's tools only narrow what the policy allows.
 func TestClaudeTools(t *testing.T) {
+	t.Parallel()
 	readOnly := []string{"Read", "Grep", "Glob"}
 	claudeDef := &agentDefinition{WrittenFor: "claude", Tools: []string{"Read", "Bash", "mcp__docs__search"}}
 	for _, tc := range []struct {
@@ -146,6 +150,7 @@ func TestClaudeTools(t *testing.T) {
 }
 
 func TestClaudeRuntimeDefinition(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	command, record := fakeClaude(t, dir, "ok", false)
 	d, err := loadDefinition(writeDefinition(t, dir, "sec.md", claudeAgentFile))
@@ -195,6 +200,7 @@ func fakeCodexRecorder(t *testing.T, dir string) (command, record string) {
 }
 
 func TestCodexRuntimeDefinition(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	command, record := fakeCodexRecorder(t, dir)
 	d, err := loadDefinition(writeDefinition(t, dir, "docs.toml", codexAgentFile))
@@ -241,6 +247,7 @@ func TestCodexRuntimeDefinition(t *testing.T) {
 }
 
 func TestTOMLStringRoundTrips(t *testing.T) {
+	t.Parallel()
 	for _, s := range []string{"plain", "line\nbreak\ttab", `back\slash "quote"`, "bell\x07 del\x7f", "emoji 🧠 — dash"} {
 		var got struct{ V string }
 		if _, err := toml.Decode("V = "+tomlString(s), &got); err != nil || got.V != s {

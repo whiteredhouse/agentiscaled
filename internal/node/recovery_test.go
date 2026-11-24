@@ -366,6 +366,7 @@ func statusOf(t *testing.T, dir string) string {
 // log gets no further line and the mesh no further request, also after the
 // service starts it again.
 func TestNodeStopsWhenItsNetworkNoLongerAdmitsIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, mesh string
 		status     int
@@ -427,6 +428,7 @@ func TestNodeStopsWhenItsNetworkNoLongerAdmitsIt(t *testing.T) {
 // An outage of the mesh or the control service is not a lost network: the
 // node keeps retrying and never suggests a reset, also once they are back.
 func TestNodeKeepsRetryingThroughAnOutage(t *testing.T) {
+	t.Parallel()
 	mesh := newStandInMesh(t, "gone")
 	control := newStandInControl(t, http.StatusServiceUnavailable, "")
 	dir := shortTempDir(t)
@@ -474,6 +476,7 @@ func TestNodeKeepsRetryingThroughAnOutage(t *testing.T) {
 // node keeps trying; it renews the credential once the mesh answers, and
 // stops only when the mesh refuses it.
 func TestNodeRenewsACredentialItsKeysNoLongerVerify(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, then, want string
 	}{

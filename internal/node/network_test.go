@@ -31,6 +31,7 @@ import (
 // configuration, token included, is in an owner-only file that is gone when
 // the run ends, and may use its tools.
 func TestClaudeRuntimeNetwork(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	record := filepath.Join(dir, "rec")
 	command := filepath.Join(dir, "claude")
@@ -196,6 +197,7 @@ func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
 // the node checks, and which nothing accepts once the task has ended. The
 // agent it calls works at the delegation bound, so without the network.
 func TestHostedAgentCallsAnotherAgent(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	dir := shortTempDir(t)
@@ -501,6 +503,7 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 // No more tasks go out than the bound allows, however many sends run at
 // once, and a send that fails gives its place back.
 func TestSentTasksBound(t *testing.T) {
+	t.Parallel()
 	s := &sentTasks{tasks: map[sentTask]bool{}}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -562,6 +565,7 @@ func TestSentTasksBound(t *testing.T) {
 // agent's process kept for an answer does: each turn's calls carry that
 // turn's token, and between turns and after the task nothing is admitted.
 func TestNetworkGrantSpansTurns(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	network, calls := fakeNodeNetworkServer(t)
@@ -612,6 +616,7 @@ func TestNetworkGrantSpansTurns(t *testing.T) {
 // A call keeps the token of the turn that admitted it, also once a later
 // turn holds the grant; a request made for no turn is not sent.
 func TestGrantTokenIsTheAdmittingTurns(t *testing.T) {
+	t.Parallel()
 	var seen []string
 	rt := grantToken{roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		seen = append(seen, r.Header.Get(api.HeaderMeshAuthentication))
@@ -652,6 +657,7 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 // The service cancels runCtx before the runtime finishes shutting down and
 // releases the grant. Both new requests and an open response follow runCtx.
 func TestNetworkGrantEndsWithRunContext(t *testing.T) {
+	t.Parallel()
 	network, _ := fakeNodeNetworkServer(t)
 	network.node = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		body := ""
@@ -710,6 +716,7 @@ func TestNetworkGrantEndsWithRunContext(t *testing.T) {
 // A turn that gets no token still gets its task's endpoint, whose tools
 // fail until a later turn of the task gets one.
 func TestGrantGivesTheEndpointWithoutAToken(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	network, calls := fakeNodeNetworkServer(t)

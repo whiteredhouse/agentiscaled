@@ -11,6 +11,7 @@ import (
 )
 
 func TestDeliveryLogRecoversFinalRecord(t *testing.T) {
+	t.Parallel()
 	first, _ := json.Marshal(deliveryRecord{testSender, "before-crash", "task-before"})
 	tail, _ := json.Marshal(deliveryRecord{testSender, "complete-tail", "task-tail"})
 	for _, tc := range []struct {
@@ -71,6 +72,7 @@ func TestDeliveryLogRecoversFinalRecord(t *testing.T) {
 }
 
 func TestARequestAfterTornLogIsNotRunTwice(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	initial := newAgentHarnessIn(t, testSender, dir)
 	if err := os.WriteFile(initial.svc.delivered.path, []byte(`{"sender":`), 0o600); err != nil {

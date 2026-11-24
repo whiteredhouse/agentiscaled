@@ -128,6 +128,7 @@ func newFakeACP(t *testing.T, policy agentPolicy, flags ...string) *acpRuntime {
 var ownerPolicy = agentPolicy{DirInstructions: true, DirSkills: true, OwnerConfig: true}
 
 func TestACPRuntimeTurn(t *testing.T) {
+	t.Parallel()
 	for _, status := range []bool{true, false} {
 		t.Run(fmt.Sprintf("status=%v", status), func(t *testing.T) {
 			flags := []string{"-http", "-load"}
@@ -170,6 +171,7 @@ func TestACPRuntimeTurn(t *testing.T) {
 }
 
 func TestACPRuntimeNoNetworkWithoutHTTP(t *testing.T) {
+	t.Parallel()
 	r := newFakeACP(t, ownerPolicy, "-status")
 	res, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "x", Network: &networkAccess{URL: "http://127.0.0.1:1/mcp", Token: "tok"}})
 	if err != nil {
@@ -181,6 +183,7 @@ func TestACPRuntimeNoNetworkWithoutHTTP(t *testing.T) {
 }
 
 func TestACPRuntimeQuestionAndAnswer(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		flags   []string
@@ -230,6 +233,7 @@ func TestACPRuntimeQuestionAndAnswer(t *testing.T) {
 // Once the service admits an answer, a slow token mint must not expire
 // the process that can take it. This agent cannot reload the session.
 func TestACPAdmittedAnswerKeepsProcess(t *testing.T) {
+	t.Parallel()
 	const wait = time.Second
 	h := newAgentHarness(t, testSender)
 	h.svc.answerWait = wait
@@ -260,6 +264,7 @@ func TestACPAdmittedAnswerKeepsProcess(t *testing.T) {
 }
 
 func TestACPRuntimeAnswerAfterProcessEnded(t *testing.T) {
+	t.Parallel()
 	r := newFakeACP(t, ownerPolicy, "-status")
 	q, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "ASK-ME", Task: "task-1"})
 	if err != nil {
@@ -274,6 +279,7 @@ func TestACPRuntimeAnswerAfterProcessEnded(t *testing.T) {
 // Two processes may name their sessions alike: each answer goes to the
 // process of its own task.
 func TestACPRuntimeKeepsProcessesByTask(t *testing.T) {
+	t.Parallel()
 	r := newFakeACP(t, ownerPolicy, "-load", "-status")
 	t.Cleanup(r.releaseAll)
 	dir := t.TempDir()
@@ -300,6 +306,7 @@ func TestACPRuntimeKeepsProcessesByTask(t *testing.T) {
 // A process kept for an answer keeps what it declared at its initialize,
 // also when the agent has declared otherwise since.
 func TestACPRuntimeKeptProcessKeepsItsDeclarations(t *testing.T) {
+	t.Parallel()
 	r := newFakeACP(t, ownerPolicy, "-status")
 	t.Cleanup(r.releaseAll)
 	if _, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "ASK-ME", Task: "task-1"}); err != nil {
@@ -315,6 +322,7 @@ func TestACPRuntimeKeptProcessKeepsItsDeclarations(t *testing.T) {
 // Every caller of releaseAll returns only once the kept processes have
 // stopped, and none is kept from then on.
 func TestACPRuntimeReleaseAllJoins(t *testing.T) {
+	t.Parallel()
 	r := newFakeACP(t, ownerPolicy, "-status")
 	kept := startFake(t, r)
 	if !r.keep("t", "s", kept) {
@@ -361,6 +369,7 @@ func TestACPRuntimeReleaseAllJoins(t *testing.T) {
 }
 
 func TestACPRuntimeKeepsAtMostMaxWaiting(t *testing.T) {
+	t.Parallel()
 	r := newFakeACP(t, ownerPolicy, "-status")
 	t.Cleanup(r.releaseAll)
 	for i := range maxWaiting {
@@ -472,12 +481,14 @@ func TestACPProbeFollowsCaller(t *testing.T) {
 }
 
 func TestACPRuntimeRefusesNewerContract(t *testing.T) {
+	t.Parallel()
 	if _, err := newACPFromLine(t.Context(), fakeACPCommand(t, "-contract", "2"), t.TempDir(), ownerPolicy); err == nil || !strings.Contains(err.Error(), "update agentiscaled") {
 		t.Errorf("newer contract: %v", err)
 	}
 }
 
 func TestACPRuntimeNotSignedIn(t *testing.T) {
+	t.Parallel()
 	var logged tailBuffer
 	previous := log.Writer()
 	log.SetOutput(&logged)
@@ -500,6 +511,7 @@ func TestACPRuntimeNotSignedIn(t *testing.T) {
 }
 
 func TestACPSignInUsesFailedSession(t *testing.T) {
+	t.Parallel()
 	r := &acpRuntime{command: "/opt/agent"}
 	r.info.Meta.Agentiscale = &acpConventions{Login: []string{"other-version", "login"}}
 	s := &acpSession{}
@@ -540,6 +552,7 @@ func TestRuntimeCheckReportsLocalSignIn(t *testing.T) {
 }
 
 func TestACPRuntimeCancel(t *testing.T) {
+	t.Parallel()
 	for _, ignore := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ignore=%v", ignore), func(t *testing.T) {
 			flags := []string{"-status"}
@@ -643,6 +656,7 @@ func TestACPCommandLine(t *testing.T) {
 }
 
 func TestACPRuntimeRejectsOnlyOnce(t *testing.T) {
+	t.Parallel()
 	r := newFakeACP(t, ownerPolicy, "-status", "-reject-always-only")
 	res, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "x"})
 	if err != nil {
@@ -654,6 +668,7 @@ func TestACPRuntimeRejectsOnlyOnce(t *testing.T) {
 }
 
 func TestACPRuntimeResultOverLimit(t *testing.T) {
+	t.Parallel()
 	r := newFakeACP(t, ownerPolicy, "-status", "-big")
 	if _, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "x"}); err == nil || !strings.Contains(err.Error(), "longer than the limit") {
 		t.Errorf("a result over the limit: %v", err)
@@ -661,6 +676,7 @@ func TestACPRuntimeResultOverLimit(t *testing.T) {
 }
 
 func TestACPRuntimeFailureKeepsDiagnosticsLocal(t *testing.T) {
+	t.Parallel()
 	var logged bytes.Buffer
 	log.SetOutput(&logged)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
@@ -675,6 +691,7 @@ func TestACPRuntimeFailureKeepsDiagnosticsLocal(t *testing.T) {
 }
 
 func TestACPRuntimeCancelWhenAgentStopsReading(t *testing.T) {
+	t.Parallel()
 	r := newFakeACP(t, ownerPolicy, "-status", "-stop-reading")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -707,6 +724,7 @@ func TestRuntimeCheckTimesOut(t *testing.T) {
 }
 
 func TestACPRuntimeStdinClosed(t *testing.T) {
+	t.Parallel()
 	r := newFakeACP(t, ownerPolicy, "-status", "-close-stdin")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -718,6 +736,7 @@ func TestACPRuntimeStdinClosed(t *testing.T) {
 }
 
 func TestACPRuntimeFixedTurnReasons(t *testing.T) {
+	t.Parallel()
 	for flag, want := range map[string]string{
 		"-bad-status": "not done or needs_input",
 		"-bad-stop":   "the agent stopped the turn: an unknown reason",
@@ -747,6 +766,7 @@ func TestACPRuntimeRelativeCommand(t *testing.T) {
 }
 
 func TestACPRuntimeCancelsPendingPermissions(t *testing.T) {
+	t.Parallel()
 	// The agent asks for a permission after the cancel and then ignores
 	// the cancel, so the node stops it.
 	r := newFakeACP(t, ownerPolicy, "-status", "-perm-after-cancel", "-ignore-cancel")
@@ -761,6 +781,7 @@ func TestACPRuntimeCancelsPendingPermissions(t *testing.T) {
 }
 
 func TestACPSendDropsCancelledWrites(t *testing.T) {
+	t.Parallel()
 	var written bytes.Buffer
 	var mu sync.Mutex
 	s := &acpSession{out: make(chan acpWrite), dead: make(chan struct{}), broken: make(chan struct{}), done: make(chan struct{}),
@@ -831,6 +852,7 @@ func (k keepingFixture) Run(ctx context.Context, dir string, req taskRequest) (t
 // a progress event before it cannot be published, ends the task: it does
 // not wait, and its runtime lets go of what it keeps for it.
 func TestUnpublishedQuestionEndsTheTask(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, text string
 		refuse     func(a2a.Event) bool
@@ -886,6 +908,7 @@ func TestUnpublishedQuestionEndsTheTask(t *testing.T) {
 // A waiting task that ends without an answer lets go of what its runtime
 // keeps for it, and the node's stop of all of them.
 func TestWaitingTaskReleasesWhatTheRuntimeKeeps(t *testing.T) {
+	t.Parallel()
 	fix := keepingFixture{newFixture(), make(chan string, 4), make(chan struct{})}
 	dir := t.TempDir()
 	svc, err := newAgentService(dir, fix, dir, "helper")

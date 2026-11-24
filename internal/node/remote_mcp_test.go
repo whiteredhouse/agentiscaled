@@ -20,6 +20,7 @@ import (
 // A client of `agentiscaled mcp`, over stdio, finds an MCP tool that a
 // service configured on another node offers, reads its schema and calls it.
 func TestRemoteMCPToolThroughStdio(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("starts a mesh and two nodes")
 	}

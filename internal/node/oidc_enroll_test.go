@@ -61,6 +61,7 @@ func TestEnrollOIDCRetriesWithTheSameToken(t *testing.T) {
 
 // A refusal is final: the token is not sent again.
 func TestEnrollOIDCRefusalIsFinal(t *testing.T) {
+	t.Parallel()
 	var calls int
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -75,6 +76,7 @@ func TestEnrollOIDCRefusalIsFinal(t *testing.T) {
 
 // The token needs the network it joins, and cannot be combined with a code.
 func TestOIDCEnrollmentFlags(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	tokenFile := filepath.Join(dir, "token")
 	if err := os.WriteFile(tokenFile, []byte("GH-TOKEN\n"), 0o600); err != nil {

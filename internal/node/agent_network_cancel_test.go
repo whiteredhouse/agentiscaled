@@ -26,6 +26,7 @@ func (r runtimeInCancelGrace) Run(ctx context.Context, _ string, req taskRequest
 }
 
 func TestCancelledTaskLosesNetworkWhileRuntimeIsStopping(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	network, calls := fakeNodeNetworkServer(t)
 	network.node = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {

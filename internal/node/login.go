@@ -22,6 +22,9 @@ type authConfig struct {
 	issuer   string
 	clientID string
 	audience string
+	// pollUnit is the unit of the provider's poll interval and of the
+	// slow_down step, a second unless a test shortens it.
+	pollUnit time.Duration
 }
 
 // defaultAuth is agentiscale's hosted sign-in: its Kinde issuer, the CLI
@@ -64,9 +67,13 @@ func deviceLogin(ctx context.Context, auth authConfig, out io.Writer) (string, e
 	}
 	fmt.Fprintln(out, "Waiting for you to sign in...")
 
-	interval := time.Duration(code.Interval) * time.Second
+	unit := auth.pollUnit
+	if unit <= 0 {
+		unit = time.Second
+	}
+	interval := time.Duration(code.Interval) * unit
 	if interval <= 0 {
-		interval = 5 * time.Second
+		interval = 5 * unit
 	}
 	deadline := time.Now().Add(time.Duration(code.ExpiresIn) * time.Second)
 	if code.ExpiresIn <= 0 {
@@ -95,7 +102,7 @@ func deviceLogin(ctx context.Context, auth authConfig, out io.Writer) (string, e
 			return tok.AccessToken, nil
 		case errors.As(err, &oauthErr) && oauthErr.Code == "authorization_pending":
 		case errors.As(err, &oauthErr) && oauthErr.Code == "slow_down":
-			interval += 5 * time.Second
+			interval += 5 * unit
 		case errors.As(err, &oauthErr) && oauthErr.Code == "expired_token":
 			return "", errors.New("the sign-in code expired; run 'agentiscaled up' again")
 		case errors.As(err, &oauthErr) && oauthErr.Code == "access_denied":

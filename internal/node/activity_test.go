@@ -20,6 +20,7 @@ import (
 // question counts as waiting until the answer comes, also while another
 // task runs.
 func TestActivityFollowsTheTasks(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	if a := h.svc.activity(); a.Name != "helper" || a.State != activityIdle || a.Since != nil || a.Waiting != 0 {
 		t.Fatalf("before any task: %+v", a)
@@ -60,6 +61,7 @@ func TestActivityFollowsTheTasks(t *testing.T) {
 
 // A question nobody answered in time no longer counts as waiting.
 func TestActivityLeavesOutLapsedQuestions(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	h.svc.answerWait = 50 * time.Millisecond
 	task := h.send(t, "", "double a number", nil)
@@ -76,6 +78,7 @@ func TestActivityLeavesOutLapsedQuestions(t *testing.T) {
 // The owner's local agent API says what the node's agents do, and only
 // on its Unix socket.
 func TestLocalAgentAPIServesActivity(t *testing.T) {
+	t.Parallel()
 	_, _, tasks, dir := localAgentsFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{}, "helper", "second")
 	resp, err := tasks.Local.Get("http://agentiscaled/agents")
 	if err != nil {
@@ -143,6 +146,7 @@ func TestReportActivity(t *testing.T) {
 }
 
 func TestActivityText(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
 	ago := func(d time.Duration) *time.Time { t := now.Add(-d); return &t }
 	activity := map[string]agentActivity{

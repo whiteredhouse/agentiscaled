@@ -28,6 +28,7 @@ func wrapACP(t *testing.T, r *acpRuntime, script string) {
 }
 
 func TestACPShutdownJoinsActiveAndWaitingAgents(t *testing.T) {
+	t.Parallel()
 	r := newFakeACP(t, ownerPolicy, "-status", "-ignore-cancel")
 	wrapACP(t, r, "echo $$ > agent.pid\nexec \"$@\"\n")
 	t.Cleanup(r.releaseAll)
@@ -96,6 +97,7 @@ func TestACPShutdownJoinsActiveAndWaitingAgents(t *testing.T) {
 }
 
 func TestACPCompletingAgentCanSaveAfterClosingStdout(t *testing.T) {
+	t.Parallel()
 	r := newFakeACP(t, ownerPolicy, "-status")
 	// The agent finishes its ACP messages, sees EOF on stdin, and closes
 	// stdout before spending a little time persisting its session.
@@ -111,6 +113,7 @@ func TestACPCompletingAgentCanSaveAfterClosingStdout(t *testing.T) {
 }
 
 func TestACPCloseIsBoundedWithInheritedStderr(t *testing.T) {
+	t.Parallel()
 	if goruntime.GOOS != "linux" {
 		t.Skip("this fixture uses procfs to duplicate the agent's stderr")
 	}
@@ -168,6 +171,7 @@ func askACPQuestion(t *testing.T, r *acpRuntime, dir string) (turnResult, *acpSe
 }
 
 func TestACPLoadsAfterWaitingAgentExitsWithStdoutOpen(t *testing.T) {
+	t.Parallel()
 	if goruntime.GOOS != "linux" {
 		t.Skip("this fixture uses procfs to duplicate the agent's stdout")
 	}
@@ -205,6 +209,7 @@ func TestACPLoadsAfterWaitingAgentExitsWithStdoutOpen(t *testing.T) {
 }
 
 func TestACPShutdownReapsBeforeBlockedAnswerPrompt(t *testing.T) {
+	t.Parallel()
 	r := newFakeACP(t, ownerPolicy, "-status")
 	t.Cleanup(r.releaseAll)
 	dir := t.TempDir()

@@ -102,6 +102,7 @@ func localAgentRole() *api.PolicyRole {
 }
 
 func TestLocalTaskAdapter(t *testing.T) {
+	t.Parallel()
 	n, fix, tasks, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	fi, err := os.Stat(filepath.Join(dir, localAgentSocketName))
 	if err != nil || fi.Mode().Perm() != 0600 {
@@ -137,6 +138,7 @@ func TestLocalTaskAdapter(t *testing.T) {
 // A node with several agents serves each under its own name on the owner's
 // socket, and each task reaches the runtime of the agent it names.
 func TestLocalTasksReachEachAgent(t *testing.T) {
+	t.Parallel()
 	role := &api.PolicyRole{Name: api.RoleNode, AllowedServices: []string{"a2a://helper", "a2a://writer"}, AllowedTargets: []string{"*"}, AllowedPublish: []string{"a2a://helper", "a2a://writer"}}
 	_, fixes, tasks, _ := localAgentsFixture(t, role, time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{}, "helper", "writer")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -164,6 +166,7 @@ func TestLocalTasksReachEachAgent(t *testing.T) {
 }
 
 func TestLocalTaskAuthorization(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"no invocation grant", "no publish grant", "expired", "revoked", "invalid signature", "label floor"} {
 		t.Run(name, func(t *testing.T) {
 			role := localAgentRole()
@@ -209,6 +212,7 @@ func TestLocalTaskAuthorization(t *testing.T) {
 }
 
 func TestLocalAgentSocketDoesNotReplaceLiveOrRegularPath(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(shortTempDir(t), localAgentSocketName)
 	if err := os.WriteFile(path, []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
@@ -232,6 +236,7 @@ func TestLocalAgentSocketDoesNotReplaceLiveOrRegularPath(t *testing.T) {
 }
 
 func TestLocalAgentUnknownTarget(t *testing.T) {
+	t.Parallel()
 	n, _, tasks, _ := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	for _, path := range []string{"/a2a/" + testSender + "/helper", "/a2a/" + n.Host.ID().String() + "/other"} {
 		req, _ := http.NewRequest("POST", "http://agentiscaled"+path, strings.NewReader("{}"))
@@ -261,6 +266,7 @@ func (s spoofLocalIdentity) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func TestTaskAdapterKeepsRemoteMeshPath(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	backend := h.svc.handler("codex", "secret")
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -287,6 +293,7 @@ func TestTaskAdapterKeepsRemoteMeshPath(t *testing.T) {
 }
 
 func TestLocalAgentSocketReplacesOnlyStaleSocket(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(shortTempDir(t), localAgentSocketName)
 	stale, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
@@ -312,6 +319,7 @@ func TestLocalAgentSocketReplacesOnlyStaleSocket(t *testing.T) {
 }
 
 func TestLocalAgentTransportStreamsAndRejectsTCP(t *testing.T) {
+	t.Parallel()
 	n, _, _, authDir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -378,6 +386,7 @@ func TestLocalAgentTransportStreamsAndRejectsTCP(t *testing.T) {
 // A hosted runtime with the owner's MCP configuration can address its own
 // local agent. The active parent must prevent that call from running again.
 func TestLocalAgentRejectsSelfCallWhileRunning(t *testing.T) {
+	t.Parallel()
 	_, fix, tasks, _ := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -412,6 +421,7 @@ func TestLocalAgentRejectsSelfCallWhileRunning(t *testing.T) {
 }
 
 func TestLocalAgentCardUsesOwnerSocketWithoutRunningTask(t *testing.T) {
+	t.Parallel()
 	n, fix, tasks, _ := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	tasks.Local.Transport = spoofLocalIdentity{next: tasks.Local.Transport}
 	for _, id := range []string{"", n.Host.ID().String()} {
@@ -431,6 +441,7 @@ func TestLocalAgentCardUsesOwnerSocketWithoutRunningTask(t *testing.T) {
 }
 
 func TestLocalAgentCardHonorsHTTPMethodAndPathGrant(t *testing.T) {
+	t.Parallel()
 	role := localAgentRole()
 	role.Http = []*api.HTTPGrant{{Service: "a2a://helper", Methods: []string{"GET"}, Paths: []string{"/.well-known/agent-card.json"}}}
 	_, fix, tasks, _ := localAgentFixture(t, role, time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
@@ -449,6 +460,7 @@ func TestLocalAgentCardHonorsHTTPMethodAndPathGrant(t *testing.T) {
 }
 
 func TestLocalAgentRequiresMeshAuthorization(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"allow", "deny", "unavailable", "redirect"} {
 		t.Run(mode, func(t *testing.T) {
 			n, _, tasks, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
@@ -502,6 +514,7 @@ func TestLocalAgentRequiresMeshAuthorization(t *testing.T) {
 }
 
 func TestLocalProviderLabelFloorRequiresAttestedLabels(t *testing.T) {
+	t.Parallel()
 	n, _, tasks, _ := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{EgressRequireLabels: map[string]string{"region": "uk"}})
 	rules, err := api.ParseDatalogRules([]string{`label("region", "uk") <- role("mesh:role:node")`})
 	if err != nil {
@@ -516,6 +529,7 @@ func TestLocalProviderLabelFloorRequiresAttestedLabels(t *testing.T) {
 }
 
 func TestLocalProviderUsesCurrentPublishPolicy(t *testing.T) {
+	t.Parallel()
 	role := localAgentRole()
 	role.AllowedPublish = nil
 	n, _, tasks, _ := localAgentFixture(t, role, time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
@@ -538,6 +552,7 @@ func TestLocalProviderUsesCurrentPublishPolicy(t *testing.T) {
 }
 
 func TestNodeAPIRequiresSocketForHostedAgent(t *testing.T) {
+	t.Parallel()
 	for _, hosted := range []bool{false, true} {
 		t.Run(fmt.Sprint(hosted), func(t *testing.T) {
 			n, _, _, _ := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})

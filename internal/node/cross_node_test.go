@@ -21,6 +21,7 @@ import (
 // tasks. B runs the task at the token's depth and keeps it as the sending
 // task's, refuses a deeper one, and A lets no revoked or expired token out.
 func TestTaskTokensAcrossNodes(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("starts a mesh and two nodes")
 	}

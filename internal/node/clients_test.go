@@ -63,6 +63,7 @@ func TestServesNode(t *testing.T) {
 }
 
 func TestSelectClientsIncludesAServingNode(t *testing.T) {
+	t.Parallel()
 	if got := selectClients(clientsAuto); len(got) == 0 {
 		t.Errorf("auto on a node serving an agent connects %d clients", len(got))
 	}
