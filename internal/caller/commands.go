@@ -37,9 +37,7 @@ func readySocket(ctx context.Context, dataDir string) (string, error) {
 	socket := filepath.Join(dataDir, meshnode.DefaultSocketName)
 	if err := nodeclient.WaitForSocket(ctx, socket, nodeStartWait); err != nil {
 		if errors.Is(err, nodeclient.ErrSocketDenied) {
-			// The words "permission denied" are what the skill tells an
-			// agent to look for before it falls back to the MCP server.
-			return "", fmt.Errorf("cannot connect to agentiscaled at %s: a sandbox may block its socket; use the agentiscale MCP server, or run this command outside the sandbox (%w)", socket, err)
+			return "", fmt.Errorf("cannot connect to agentiscaled at %s: a sandbox may block its socket (%w)", socket, err)
 		}
 		return "", fmt.Errorf("no running agentiscaled at %s: start it first (%w)", socket, err)
 	}
@@ -48,6 +46,12 @@ func readySocket(ctx context.Context, dataDir string) (string, error) {
 
 func openClient(ctx context.Context, dataDir string) (*Client, error) {
 	socket, err := readySocket(ctx, dataDir)
+	if errors.Is(err, nodeclient.ErrSocketDenied) {
+		// The words "permission denied" in err are what the skill tells an
+		// agent to look for before it falls back to the MCP server, which
+		// its client starts outside the sandbox.
+		return nil, fmt.Errorf("%w; use the agentiscale MCP server, or run this command outside the sandbox", err)
+	}
 	if err != nil {
 		return nil, err
 	}
