@@ -57,6 +57,9 @@ var fakeACPBinary = sync.OnceValues(func() (string, error) {
 	if fakeACP.dir == "" {
 		return "", errors.New("TestMain did not set up the fake ACP agent")
 	}
+	if err := readFakeACPSource(); err != nil {
+		return "", err
+	}
 	bin := filepath.Join(fakeACP.dir, "fake-acp-agent")
 	cmd := exec.Command("go", "build", "-o", bin, "./testdata/fakeacp")
 	cmd.Dir, cmd.Env = fakeACP.src, fakeACP.env
@@ -65,6 +68,25 @@ var fakeACPBinary = sync.OnceValues(func() (string, error) {
 	}
 	return bin, nil
 })
+
+// readFakeACPSource reads the fake ACP agent's source from this test
+// process. Only go build reads it otherwise, and go test caches a result
+// against the files the test process itself opens, so without this an
+// edit to the fake would leave a cached pass in place. (Its one module
+// import, internal/checkprompt, this package imports too.)
+func readFakeACPSource() error {
+	dir := filepath.Join(fakeACP.src, "testdata", "fakeacp")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if _, err := os.ReadFile(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // fakeACPCommand is a command line that runs the fake ACP agent with
 // flags, through a script whose path the tests can link or rename.
