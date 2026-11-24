@@ -8,8 +8,14 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request supersedes its running checks. Other events
+# get a group of their own, so every push to main runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  test:
+  vet:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -20,6 +26,14 @@ jobs:
         run: test -z "$(gofmt -l cmd)"
       - name: Vet
         run: go vet ./...
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7.1.0
+        with:
+          go-version-file: go.mod
       - name: Prepare real Codex sandbox tests
         run: |
           # Match the user-namespace prerequisite used by openai/codex-action.
@@ -44,6 +58,15 @@ jobs:
           echo "AGENTISCALE_TEST_CODEX=$install/bin/codex" >> "$GITHUB_ENV"
       - name: Test
         run: go test -race ./...
+
+  test-agentmesh:
+    # The Agent Mesh fork's patched packages, beside the main suite.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7.1.0
+        with:
+          go-version-file: go.mod
       - name: Test the Agent Mesh fork's patched packages
         run: |
           go mod download github.com/google/agentmesh

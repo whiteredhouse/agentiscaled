@@ -13,14 +13,16 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
+
+	"github.com/whiteredhouse/agentiscaled/internal/checkprompt"
 )
 
 // The prompts of runtime check's turns.
 const (
-	checkDoneTask     = "Reply with the single word ready. Do not use any tools."
-	checkQuestionTask = "Before anything else, ask the sender which color they like, as your one question. Remember the word lantern. After they answer, reply with both that word and their color. Do not use any tools."
-	checkAnswer       = "Blue."
-	checkLongTask     = "Count from 1 to 100000, one number per line. Do not stop until you are done."
+	checkDoneTask     = checkprompt.Done
+	checkQuestionTask = checkprompt.Question
+	checkAnswer       = checkprompt.Answer
+	checkLongTask     = checkprompt.Long
 )
 
 // checkCancelAfter is how long the cancelled turn runs before it is
