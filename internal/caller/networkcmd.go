@@ -16,10 +16,14 @@ import (
 	"github.com/whiteredhouse/agentiscaled/internal/nodestate"
 )
 
-const networkUsage = "usage: agentiscaled network agent list [flags]\n       agentiscaled network agent card [flags] AGENT"
+const networkUsage = "usage: agentiscaled network agent list [flags]\n       agentiscaled network agent card [flags] AGENT\n" + toolUsageLines
 
-// RunNetwork lists local and remote agents and reads their current A2A cards.
-func RunNetwork(ctx context.Context, args []string, out, errOut io.Writer) error {
+// RunNetwork lists local and remote agents and reads their current A2A
+// cards, and finds, describes and calls remote MCP tools.
+func RunNetwork(ctx context.Context, args []string, stdin io.Reader, out, errOut io.Writer) error {
+	if len(args) > 0 && args[0] == "tool" {
+		return RunTool(ctx, args[1:], stdin, out, errOut)
+	}
 	if len(args) < 2 || args[0] != "agent" || (args[1] != "list" && args[1] != "card") {
 		if len(args) > 0 && (args[len(args)-1] == "-h" || args[len(args)-1] == "--help") {
 			fmt.Fprintln(errOut, networkUsage)

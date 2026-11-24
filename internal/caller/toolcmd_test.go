@@ -82,7 +82,7 @@ func fakeNode(t *testing.T, rows []RemoteTool) (dir string, calls map[string][]m
 func runTool(t *testing.T, stdin string, args ...string) (string, error) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	err := RunTool(context.Background(), args, strings.NewReader(stdin), &out, &errOut)
+	err := RunNetwork(context.Background(), append([]string{"tool"}, args...), strings.NewReader(stdin), &out, &errOut)
 	return out.String(), err
 }
 

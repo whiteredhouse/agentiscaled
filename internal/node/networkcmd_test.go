@@ -67,7 +67,7 @@ func TestNetworkAgentListIncludesLocalAndRemote(t *testing.T) {
 	list := func() []caller.AgentRow {
 		t.Helper()
 		var out bytes.Buffer
-		if err := caller.RunNetwork(context.Background(), []string{"agent", "list", "-data-dir", dir, "-json"}, &out, io.Discard); err != nil {
+		if err := caller.RunNetwork(context.Background(), []string{"agent", "list", "-data-dir", dir, "-json"}, nil, &out, io.Discard); err != nil {
 			t.Fatal(err)
 		}
 		var result caller.AgentList
@@ -120,7 +120,7 @@ func TestNetworkAgentListReadsLargeLocalCatalog(t *testing.T) {
 				json.NewEncoder(w).Encode(info)
 			})
 			var out bytes.Buffer
-			err := caller.RunNetwork(t.Context(), []string{"agent", "list", "-json", "-data-dir", mesh.dir}, &out, io.Discard)
+			err := caller.RunNetwork(t.Context(), []string{"agent", "list", "-json", "-data-dir", mesh.dir}, nil, &out, io.Discard)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) || out.Len() != 0 {
 					t.Fatalf("oversized catalog: stdout %d bytes, error %v", out.Len(), err)
@@ -152,13 +152,13 @@ func TestNetworkAgentCardFollowsTaskPeerSelection(t *testing.T) {
 	mesh.route(b, helper.url)
 	var out bytes.Buffer
 	args := []string{"agent", "card", "helper", "-data-dir", mesh.dir}
-	if err := caller.RunNetwork(context.Background(), args, &out, io.Discard); err == nil || !strings.Contains(err.Error(), "pick one with -peer") {
+	if err := caller.RunNetwork(context.Background(), args, nil, &out, io.Discard); err == nil || !strings.Contains(err.Error(), "pick one with -peer") {
 		t.Fatalf("ambiguous card: %v", err)
 	}
 	if out.Len() != 0 {
 		t.Fatalf("stdout after ambiguous lookup: %s", &out)
 	}
-	if err := caller.RunNetwork(context.Background(), append(args, "-peer", b), &out, io.Discard); err != nil {
+	if err := caller.RunNetwork(context.Background(), append(args, "-peer", b), nil, &out, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	var card struct{ Name string }
@@ -170,7 +170,7 @@ func TestNetworkAgentCardFollowsTaskPeerSelection(t *testing.T) {
 func TestNetworkAgentCardReadsLocalAgent(t *testing.T) {
 	_, _, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	var out bytes.Buffer
-	if err := caller.RunNetwork(t.Context(), []string{"agent", "card", "helper", "-data-dir", dir}, &out, io.Discard); err != nil {
+	if err := caller.RunNetwork(t.Context(), []string{"agent", "card", "helper", "-data-dir", dir}, nil, &out, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	var card struct{ Name string }
@@ -182,7 +182,7 @@ func TestNetworkAgentCardReadsLocalAgent(t *testing.T) {
 func TestNetworkAgentListOnCallerOnlyNode(t *testing.T) {
 	mesh := newFakeNetwork(t)
 	var out bytes.Buffer
-	if err := caller.RunNetwork(t.Context(), []string{"agent", "list", "-json", "-data-dir", mesh.dir}, &out, io.Discard); err != nil {
+	if err := caller.RunNetwork(t.Context(), []string{"agent", "list", "-json", "-data-dir", mesh.dir}, nil, &out, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.TrimSpace(out.String()); got != `{"agents":[]}` {

@@ -167,17 +167,17 @@ and exits 0 when each task is cancelled or had already ended, else 1. It takes
 
 ## Call a remote MCP tool from the command line
 
-Other nodes of your network can offer MCP services. `agentiscaled tool` finds,
+Other nodes of your network can offer MCP services. `agentiscaled network tool` finds,
 describes and calls their tools through the running node, the same way the
 node's `find_remote_tools`, `describe_remote_tool` and `call_remote_tool` MCP
 tools do:
 
 ```sh
-agentiscaled tool find                                   # every tool on the network
-agentiscaled tool find -service code-reviewer review_pr  # narrow by service or tool name
-agentiscaled tool describe code-reviewer/review_pr       # its input and output schemas
-agentiscaled tool call code-reviewer/review_pr '{"pr": 42}'
-echo '{"pr": 42}' | agentiscaled tool call code-reviewer/review_pr -
+agentiscaled network tool find                                   # every tool on the network
+agentiscaled network tool find -service code-reviewer review_pr  # narrow by service or tool name
+agentiscaled network tool describe code-reviewer/review_pr       # its input and output schemas
+agentiscaled network tool call code-reviewer/review_pr '{"pr": 42}'
+echo '{"pr": 42}' | agentiscaled network tool call code-reviewer/review_pr -
 ```
 
 A tool's full name is `mcp://SERVICE/TOOL`; `SERVICE/TOOL` is short for it.

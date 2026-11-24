@@ -19,23 +19,25 @@ import (
 	"github.com/whiteredhouse/agentiscaled/internal/nodestate"
 )
 
-const toolUsage = `usage: agentiscaled tool find [flags] [NAME]
-       agentiscaled tool describe [flags] TOOL
-       agentiscaled tool call [flags] TOOL [ARGUMENTS|-]`
+const toolUsageLines = `       agentiscaled network tool find [flags] [NAME]
+       agentiscaled network tool describe [flags] TOOL
+       agentiscaled network tool call [flags] TOOL [ARGUMENTS|-]`
+
+var toolUsage = "usage: " + strings.TrimLeft(toolUsageLines, " ")
 
 const (
-	toolFindUsage = `usage: agentiscaled tool find [flags] [NAME]
+	toolFindUsage = `usage: agentiscaled network tool find [flags] [NAME]
 Find the MCP tools that other nodes of your network offer. NAME narrows the
 search to tools with that exact name, such as review_pr.
 `
-	toolDescribeUsage = `usage: agentiscaled tool describe [flags] TOOL
+	toolDescribeUsage = `usage: agentiscaled network tool describe [flags] TOOL
 Print a remote MCP tool's description and input and output schemas as JSON.
-TOOL is a name from tool find, such as mcp://code-reviewer/review_pr;
+TOOL is a name from network tool find, such as mcp://code-reviewer/review_pr;
 code-reviewer/review_pr is short for it.
 `
-	toolCallUsage = `usage: agentiscaled tool call [flags] TOOL [ARGUMENTS|-]
+	toolCallUsage = `usage: agentiscaled network tool call [flags] TOOL [ARGUMENTS|-]
 Call a remote MCP tool and print its result. ARGUMENTS is a JSON object whose
-keys match the tool's input schema (see tool describe); - reads it from
+keys match the tool's input schema (see network tool describe); - reads it from
 standard input, and no ARGUMENTS calls the tool without any.
 `
 )
@@ -57,12 +59,12 @@ type RemoteTool struct {
 	Error       string            `json:"error,omitempty"`
 }
 
-// RemoteToolList is what tool find prints with -json.
+// RemoteToolList is what network tool find prints with -json.
 type RemoteToolList struct {
 	Tools []RemoteTool `json:"tools"`
 }
 
-// RunTool is `agentiscaled tool`: it finds, describes and calls the MCP
+// RunTool is `agentiscaled network tool`: it finds, describes and calls the MCP
 // tools of other nodes through the node's own MCP server.
 func RunTool(ctx context.Context, args []string, stdin io.Reader, out, errOut io.Writer) error {
 	if len(args) == 0 || !slices.Contains([]string{"find", "describe", "call"}, args[0]) {
@@ -73,7 +75,7 @@ func RunTool(ctx context.Context, args []string, stdin io.Reader, out, errOut io
 		return errors.New(toolUsage)
 	}
 	cmd := args[0]
-	fs := flag.NewFlagSet("tool "+cmd, flag.ContinueOnError)
+	fs := flag.NewFlagSet("network tool "+cmd, flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	fs.Usage = func() {
 		fmt.Fprint(errOut, map[string]string{"find": toolFindUsage, "describe": toolDescribeUsage, "call": toolCallUsage}[cmd])
@@ -176,7 +178,7 @@ func toolName(s string) (string, error) {
 		s = api.MCPServicePrefix + s
 	}
 	if _, _, err := api.SplitToolName(s); err != nil {
-		return "", fmt.Errorf("%q is not a tool name such as mcp://code-reviewer/review_pr (see agentiscaled tool find)", s)
+		return "", fmt.Errorf("%q is not a tool name such as mcp://code-reviewer/review_pr (see agentiscaled network tool find)", s)
 	}
 	return s, nil
 }
@@ -303,7 +305,7 @@ func findToolPeer(ctx context.Context, node *mcp.ClientSession, tool string) (st
 	case 1:
 		return peers[0], nil
 	case 0:
-		return "", fmt.Errorf("no node of your network offers %s (see agentiscaled tool find)", tool)
+		return "", fmt.Errorf("no node of your network offers %s (see agentiscaled network tool find)", tool)
 	}
 	slices.Sort(peers)
 	return "", fmt.Errorf("%d nodes offer %s: pick one with -peer (%s)", len(peers), tool, strings.Join(peers, ", "))

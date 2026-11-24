@@ -85,7 +85,7 @@ from discovery until `agentiscaled agent resume`. The stop survives a restart.
 | `agentiscaled task send` | Send a task to an agent on your network and print its answer, from a script or CI job ([Call an agent from the command line](docs/connect-agents.md#call-an-agent-from-the-command-line)) |
 | `agentiscaled task wait` | Wait for a task to end or ask a question, and print its answer ([Wait for a task](docs/connect-agents.md#wait-for-a-task)) |
 | `agentiscaled task cancel` | Cancel tasks this node sent, so that their agents stop ([Cancel a task](docs/connect-agents.md#cancel-a-task)) |
-| `agentiscaled tool find\|describe\|call` | Find, describe and call the MCP tools that other nodes offer ([Call a remote MCP tool](docs/connect-agents.md#call-a-remote-mcp-tool-from-the-command-line)) |
+| `agentiscaled network tool find\|describe\|call` | Find, describe and call the MCP tools that other nodes offer ([Call a remote MCP tool](docs/connect-agents.md#call-a-remote-mcp-tool-from-the-command-line)) |
 | `agentiscaled skill [install]` | Print the agentiscale skill, which teaches Claude Code, Codex and other agents to find and call your network's agents, or install it for them ([Teach your agents to call other agents](docs/connect-agents.md#teach-your-agents-to-call-other-agents)) |
 
 Run `agentiscaled <command> -h` for its flags.
