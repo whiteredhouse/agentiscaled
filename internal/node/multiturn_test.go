@@ -52,6 +52,7 @@ func (h *agentHarness) answer(t *testing.T, id a2a.TaskID, msgID, text string) *
 // The agent asks; the task waits in input-required with the question; the
 // caller's answer on the same task resumes the agent's session.
 func TestTheAgentAsksAndTheSenderAnswers(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	task := h.send(t, "", "double a number", nil)
 	if p := <-h.fix.prompts; p.Session != "" {
@@ -89,6 +90,7 @@ func TestTheAgentAsksAndTheSenderAnswers(t *testing.T) {
 // An answer that cannot be taken now is refused without ending the task,
 // which still waits for one that can.
 func TestAnAnswerWhileBusyIsRefusedAndTheTaskKeepsWaiting(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	task := h.send(t, "", "double a number", nil)
 	<-h.fix.prompts
@@ -127,6 +129,7 @@ func TestAnAnswerWhileBusyIsRefusedAndTheTaskKeepsWaiting(t *testing.T) {
 
 // Only the sender can answer: to another peer the task does not exist.
 func TestOnlyTheSenderCanAnswer(t *testing.T) {
+	t.Parallel()
 	const other = "12D3KooWRBy97UB99e3J6hiPesre1MZeuNQvfan4gBziswrRJsNK"
 	h := newAgentHarness(t, testSender)
 	task := h.send(t, "", "double a number", nil)
@@ -146,6 +149,7 @@ func TestOnlyTheSenderCanAnswer(t *testing.T) {
 }
 
 func TestCancelATaskWaitingForAnAnswer(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	task := h.send(t, "", "double a number", nil)
 	<-h.fix.prompts
@@ -181,6 +185,7 @@ func (u pausedTimeoutUpdater) UpdateTask(ctx context.Context, event *a2a.TaskSta
 }
 
 func TestCancelBetweenWaitExpiryAndTimeoutPublication(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	resume := make(chan struct{})
 	defer close(resume)
@@ -205,6 +210,7 @@ func TestCancelBetweenWaitExpiryAndTimeoutPublication(t *testing.T) {
 }
 
 func TestCancelBeforeTheAdmittedTurnStarts(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		resumed bool
@@ -237,6 +243,7 @@ func TestCancelBeforeTheAdmittedTurnStarts(t *testing.T) {
 }
 
 func TestAnUnansweredQuestionTimesOut(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	h.svc.answerWait = 50 * time.Millisecond
 	task := h.send(t, "", "double a number", nil)
@@ -273,6 +280,7 @@ func (u observedTaskUpdater) UpdateTask(ctx context.Context, event *a2a.TaskStat
 }
 
 func TestAnUnansweredQuestionTimesOutDuringARefusedAnswer(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fix := newFixture()
 	svc, err := newAgentService(dir, fix, dir, "helper")
@@ -324,6 +332,7 @@ func TestAnUnansweredQuestionTimesOutDuringARefusedAnswer(t *testing.T) {
 
 // The agent may ask a few questions, not without end.
 func TestTheAgentAsksAtMostMaxQuestions(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	task := h.send(t, "", "double a number", nil)
 	for i := 0; ; i++ {
@@ -344,6 +353,7 @@ func TestTheAgentAsksAtMostMaxQuestions(t *testing.T) {
 
 // The deadline bounds the task's running time over all its turns.
 func TestTheDeadlineCoversEveryTurn(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	h.svc.deadline = 300 * time.Millisecond
 	task := h.send(t, "", "double a number", nil)
@@ -362,6 +372,7 @@ func TestTheDeadlineCoversEveryTurn(t *testing.T) {
 }
 
 func TestParseTurn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		message string
 		want    turnResult
@@ -384,6 +395,7 @@ func TestParseTurn(t *testing.T) {
 // An answer resumes the Codex session with the options `codex exec resume`
 // takes: the same configuration, without -C, -s and --color.
 func TestCodexRuntimeResumesTheSession(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	command, record := fakeCodexRecorder(t, dir)
 	rt := &codexRuntime{command: command, home: filepath.Join(dir, "agent-codex"), def: &agentDefinition{WrittenFor: "codex", ReadOnly: true, Instructions: "x"},
@@ -413,6 +425,7 @@ func TestCodexRuntimeResumesTheSession(t *testing.T) {
 }
 
 func TestCodexThread(t *testing.T) {
+	t.Parallel()
 	events := []byte("{\"type\":\"thread.started\",\"thread_id\":\"0199a213-81c0-7800-8aa1-bbab2a035a53\"}\n{\"type\":\"turn.started\"}\n")
 	if got := codexThread(events); got != "0199a213-81c0-7800-8aa1-bbab2a035a53" {
 		t.Fatalf("thread %q", got)
@@ -426,6 +439,7 @@ func TestCodexThread(t *testing.T) {
 // next question finds it before its timer does, and publishing it logs no
 // failure.
 func TestAnExpiredWaitTimesOutWhenTheNextQuestionFindsIt(t *testing.T) {
+	t.Parallel()
 	logged := &syncBuffer{}
 	log.SetOutput(logged)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })

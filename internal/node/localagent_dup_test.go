@@ -58,6 +58,7 @@ func TestWarnDuplicateAgent(t *testing.T) {
 // A local socket that accepts but never answers must not hold up a call to
 // another node.
 func TestRemoteCallSkipsStuckLocalSocket(t *testing.T) {
+	t.Parallel()
 	dir := shortTempDir(t)
 	socket := filepath.Join(dir, localAgentSocketName)
 	ln, err := net.Listen("unix", socket)

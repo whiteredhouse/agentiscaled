@@ -11,6 +11,7 @@ import (
 )
 
 func TestCodexOwnerConfigurationKeepsPermissions(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")
 	command := filepath.Join(dir, "codex")

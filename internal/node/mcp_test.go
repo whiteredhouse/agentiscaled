@@ -21,6 +21,7 @@ import (
 // server on a Unix socket through `agentiscaled mcp`, for a session of
 // several requests, with the bridge's shorter descriptions and instructions.
 func TestMCPBridgeReachesTheNodeOverItsSocket(t *testing.T) {
+	t.Parallel()
 	// Unix socket paths are short; t.TempDir can be too long on macOS.
 	dir, err := os.MkdirTemp("", "ais")
 	if err != nil {
@@ -108,6 +109,7 @@ func TestMCPBridgeReachesTheNodeOverItsSocket(t *testing.T) {
 }
 
 func TestMCPNeedsARunningNode(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	if err := caller.RunMCP(ctx, []string{"-data-dir", t.TempDir()}); err == nil {
@@ -119,6 +121,7 @@ func TestMCPNeedsARunningNode(t *testing.T) {
 // opened its socket, and a socket file may be left from before a restart:
 // the wait ends only when the node accepts connections.
 func TestMCPWaitsForTheNodeToStart(t *testing.T) {
+	t.Parallel()
 	dir, err := os.MkdirTemp("", "ais")
 	if err != nil {
 		t.Fatal(err)

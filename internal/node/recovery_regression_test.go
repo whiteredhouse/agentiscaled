@@ -27,6 +27,7 @@ import (
 // An expired Biscuit is refused by /policies, /egress and /revocations,
 // but /refresh can still renew it using proof of possession of the node key.
 func TestNodeRefreshesBeforeHalting(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []struct {
 		name                     string
 		running, expired, outage bool
@@ -180,6 +181,7 @@ func TestResetForegroundNodeWithoutSavedSettings(t *testing.T) {
 }
 
 func TestResetNeedsANode(t *testing.T) {
+	t.Parallel()
 	dir := shortTempDir(t)
 	err := RunReset(context.Background(), []string{"-data-dir", dir}, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "no node set up") {
@@ -278,6 +280,7 @@ func TestRejoinSteps(t *testing.T) {
 // A joined node stays in its network: `up -network` naming another one
 // says how to move it instead of quietly keeping the old network.
 func TestJoinedNodeRefusesAnotherNetwork(t *testing.T) {
+	t.Parallel()
 	dir := shortTempDir(t)
 	network := uuid.NewString()
 	writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", NetworkID: network})

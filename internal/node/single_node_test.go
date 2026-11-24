@@ -46,6 +46,7 @@ func TestUpPreservesHostedAgent(t *testing.T) {
 }
 
 func TestDefaultClientsIncludeHostedNode(t *testing.T) {
+	t.Parallel()
 	if len(selectClients(clientsAuto)) == 0 {
 		t.Fatal("hosting an agent must not disable default local clients")
 	}

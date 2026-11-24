@@ -32,6 +32,7 @@ func testAgentCard() *a2a.AgentCard {
 // The actual MCP bridge reaches the node's exact card route over its Unix
 // socket. A refresh must observe refusal/offline rather than reuse an old card.
 func TestMCPAgentCardTracksServiceAvailability(t *testing.T) {
+	t.Parallel()
 	directory, err := os.MkdirTemp("", "ais-card-")
 	if err != nil {
 		t.Fatal(err)
@@ -123,6 +124,7 @@ func TestMCPAgentCardTracksServiceAvailability(t *testing.T) {
 }
 
 func TestAgentCardRejectsUnsafeTargetsBeforeRequest(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1) }))
 	defer server.Close()
@@ -146,6 +148,7 @@ func TestAgentCardRejectsUnsafeTargetsBeforeRequest(t *testing.T) {
 }
 
 func TestAgentCardRejectsRedirectsAndMalformedResponses(t *testing.T) {
+	t.Parallel()
 	valid, err := json.Marshal(testAgentCard())
 	if err != nil {
 		t.Fatal(err)
@@ -185,6 +188,7 @@ func TestAgentCardRejectsRedirectsAndMalformedResponses(t *testing.T) {
 // from the agent is an error, not a request to another service through the
 // node.
 func TestTaskCallsRejectRedirects(t *testing.T) {
+	t.Parallel()
 	var redirected atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/other-route" {
@@ -230,6 +234,7 @@ func TestTaskCallsRejectRedirects(t *testing.T) {
 }
 
 func TestAgentCardHonorsClientCancellation(t *testing.T) {
+	t.Parallel()
 	started := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(started)

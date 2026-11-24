@@ -34,6 +34,7 @@ func serveDiscoveryFixture(t *testing.T, dir, socket string, handler http.Handle
 }
 
 func TestNetworkAgentListIncludesLocalAndRemote(t *testing.T) {
+	t.Parallel()
 	dir := shortTempDir(t)
 	local, first, second := randomPeer(t), randomPeer(t), randomPeer(t)
 	serveDiscoveryFixture(t, dir, localAgentSocketName, func(w http.ResponseWriter, r *http.Request) {
@@ -101,6 +102,7 @@ func TestNetworkAgentListIncludesLocalAndRemote(t *testing.T) {
 }
 
 func TestNetworkAgentListReadsLargeLocalCatalog(t *testing.T) {
+	t.Parallel()
 	var names []string
 	for i := range 400 {
 		names = append(names, fmt.Sprintf("local-agent-%03d", i))
@@ -144,6 +146,7 @@ func TestNetworkAgentListReadsLargeLocalCatalog(t *testing.T) {
 }
 
 func TestNetworkAgentCardFollowsTaskPeerSelection(t *testing.T) {
+	t.Parallel()
 	mesh := newFakeNetwork(t)
 	helper := newAgentHarness(t, testSender)
 	a, b := randomPeer(t), randomPeer(t)
@@ -168,6 +171,7 @@ func TestNetworkAgentCardFollowsTaskPeerSelection(t *testing.T) {
 }
 
 func TestNetworkAgentCardReadsLocalAgent(t *testing.T) {
+	t.Parallel()
 	_, _, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	var out bytes.Buffer
 	if err := caller.RunNetwork(t.Context(), []string{"agent", "card", "helper", "-data-dir", dir}, nil, &out, io.Discard); err != nil {
@@ -180,6 +184,7 @@ func TestNetworkAgentCardReadsLocalAgent(t *testing.T) {
 }
 
 func TestNetworkAgentListOnCallerOnlyNode(t *testing.T) {
+	t.Parallel()
 	mesh := newFakeNetwork(t)
 	var out bytes.Buffer
 	if err := caller.RunNetwork(t.Context(), []string{"agent", "list", "-json", "-data-dir", mesh.dir}, nil, &out, io.Discard); err != nil {

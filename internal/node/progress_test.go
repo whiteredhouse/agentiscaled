@@ -21,6 +21,7 @@ import (
 )
 
 func TestLineWriterSplitsLinesAcrossWrites(t *testing.T) {
+	t.Parallel()
 	var lines []string
 	w := &lineWriter{line: func(b []byte) { lines = append(lines, string(b)) }}
 	for _, chunk := range []string{"one\ntw", "o\n", "\nthr", "ee"} {
@@ -37,6 +38,7 @@ func TestLineWriterSplitsLinesAcrossWrites(t *testing.T) {
 // A line over the bound, such as a large tool output, is skipped whole and
 // never kept, and the lines after it still come through.
 func TestLineWriterSkipsOverlongLines(t *testing.T) {
+	t.Parallel()
 	var lines []string
 	w := &lineWriter{line: func(b []byte) { lines = append(lines, string(b)) }}
 	big := strings.Repeat("x", 1<<20)
@@ -56,6 +58,7 @@ func TestLineWriterSkipsOverlongLines(t *testing.T) {
 
 // The bound holds for a line whose last chunk comes with its newline.
 func TestLineWriterBoundsLineEndingInChunk(t *testing.T) {
+	t.Parallel()
 	var lines []int
 	w := &lineWriter{line: func(b []byte) { lines = append(lines, len(b)) }}
 	w.Write(make([]byte, maxRuntimeLine))
@@ -69,6 +72,7 @@ func TestLineWriterBoundsLineEndingInChunk(t *testing.T) {
 }
 
 func TestProgressLineIsOneShortLine(t *testing.T) {
+	t.Parallel()
 	if got := progressLine("go test \\\n  ./...\t-run X"); got != "go test \\ ./... -run X" {
 		t.Fatalf("one line: %q", got)
 	}
@@ -79,6 +83,7 @@ func TestProgressLineIsOneShortLine(t *testing.T) {
 }
 
 func TestClaudeProgress(t *testing.T) {
+	t.Parallel()
 	for event, want := range map[string]string{
 		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"GITHUB_TOKEN=ghp_secret go test ./...","description":"Run tests"}}]}}`:                                                                         "Running go",
 		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"curl -H 'Authorization: Bearer sk-secret' https://x"}}]}}`:                                                                                     "Running curl",
@@ -105,6 +110,7 @@ func TestClaudeProgress(t *testing.T) {
 }
 
 func TestCodexProgress(t *testing.T) {
+	t.Parallel()
 	for event, want := range map[string]string{
 		`{"type":"item.started","item":{"id":"1","type":"command_execution","command":"bash -lc 'TOKEN=abc go test ./...'","status":"in_progress"}}`:                         "Running go",
 		`{"type":"item.started","item":{"id":"1","type":"command_execution","command":"/usr/bin/git push https://user:pw@host/repo"}}`:                                       "Running git",
@@ -131,6 +137,7 @@ func TestCodexProgress(t *testing.T) {
 // Codex reports its steps while it runs, and its session from the same
 // stream.
 func TestCodexRuntimeReportsSteps(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	codex := filepath.Join(dir, "codex")
 	script := "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --output-last-message ] && out=$2; shift; done\ncat > /dev/null\n" +
@@ -276,6 +283,7 @@ func merge(a, b map[string]any) map[string]any {
 
 // A failed Codex turn says why: the turn.failed event, not stderr's warnings.
 func TestCodexRuntimeFailureNamesTheTurnError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	codex := filepath.Join(dir, "codex")
 	script := "#!/bin/sh\ncat > /dev/null\necho 'WARN model cache' >&2\n" +
@@ -397,6 +405,7 @@ func TestGetTaskFollowsTheStream(t *testing.T) {
 // Should the agent not stream, get_task reads the task every second, as
 // before.
 func TestGetTaskPollsWithoutAStream(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	proxy := httptest.NewServer(h.svc.handler("codex", "secret"))
 	defer proxy.Close()
@@ -428,6 +437,7 @@ func TestGetTaskPollsWithoutAStream(t *testing.T) {
 
 // A stream that stalls does not hold get_task after the task settled.
 func TestGetTaskOutlivesAStalledStream(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	proxy := httptest.NewServer(h.svc.handler("codex", "secret"))
 	defer proxy.Close()

@@ -18,6 +18,7 @@ import (
 )
 
 func TestWithClients(t *testing.T) {
+	t.Parallel()
 	all := strings.Join(systemClients(), ",")
 	for _, tc := range []struct {
 		saved string

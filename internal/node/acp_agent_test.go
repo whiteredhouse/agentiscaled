@@ -20,6 +20,7 @@ import (
 //
 //	AGENTISCALE_TEST_ACP="claude-agent-acp" go test ./internal/node -run TestACPRealAgent -v
 func TestACPRealAgent(t *testing.T) {
+	t.Parallel()
 	line := os.Getenv("AGENTISCALE_TEST_ACP")
 	if line == "" {
 		t.Skip("set AGENTISCALE_TEST_ACP to an ACP agent's command line to run")

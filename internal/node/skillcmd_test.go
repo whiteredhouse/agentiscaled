@@ -17,6 +17,7 @@ import (
 // TestSkillNamesRealTools keeps the skill in step with the tools and flags it
 // tells agents to use.
 func TestSkillNamesRealTools(t *testing.T) {
+	t.Parallel()
 	// The skill's text is every file of it, references included.
 	var all strings.Builder
 	err := fs.WalkDir(skills.AgentiscaleFiles, ".", func(name string, d fs.DirEntry, err error) error {

@@ -114,6 +114,7 @@ func TestClaudeRuntimeOwnerConfig(t *testing.T) {
 }
 
 func TestClaudeRuntimeFailure(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	command, _ := fakeClaude(t, dir, "something broke", true)
 	_, err := (&claudeRuntime{command: command, config: filepath.Join(dir, "c")}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x"})
@@ -140,6 +141,7 @@ func fakeClaudeCLI(t *testing.T, help string) (command, record string) {
 // A Claude Code without --permission-prompts runs without it; the
 // isolated configuration needs --restricted.
 func TestClaudeRuntimeOlderCLI(t *testing.T) {
+	t.Parallel()
 	owner := agentPolicy{OwnerConfig: true, DirInstructions: true, DirSkills: true}
 	command, record := fakeClaudeCLI(t, "  --restricted  --tools")
 	rt, err := newClaudeRuntime(command, t.TempDir(), owner)
@@ -172,6 +174,7 @@ func TestClaudeRuntimeOlderCLI(t *testing.T) {
 
 // A turn that asks a question names its session, and the answer resumes it.
 func TestClaudeRuntimeAsksAndResumes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	record := filepath.Join(dir, "rec")
 	command := filepath.Join(dir, "claude")

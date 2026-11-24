@@ -67,6 +67,7 @@ func (r *sendRun) wait(t *testing.T) error {
 }
 
 func TestTaskSendCallsALocalAgent(t *testing.T) {
+	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	run := startTaskSend("", "-data-dir", dir, "helper", "Review the changes")
 	if p := <-fix.prompts; p.Text != "Review the changes" {
@@ -89,6 +90,7 @@ func TestTaskSendCallsALocalAgent(t *testing.T) {
 // Flags may follow the agent and message, and the message can come on
 // standard input.
 func TestTaskSendReadsTheMessageFromStandardInput(t *testing.T) {
+	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	run := startTaskSend("a long\nmessage\n", "helper", "-", "-data-dir", dir, "-json")
 	if p := <-fix.prompts; p.Text != "a long\nmessage\n" {
@@ -107,6 +109,7 @@ func TestTaskSendReadsTheMessageFromStandardInput(t *testing.T) {
 // A question ends the call with the command that answers it, which picks
 // the task up where it waits.
 func TestTaskSendAnswersAQuestion(t *testing.T) {
+	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	run := startTaskSend("", "-data-dir", dir, "helper", "double a number")
 	<-fix.prompts
@@ -135,6 +138,7 @@ func TestTaskSendAnswersAQuestion(t *testing.T) {
 
 // Out of time, task send cancels the task, so that the agent stops too.
 func TestTaskSendCancelsOnTimeout(t *testing.T) {
+	t.Parallel()
 	_, fix, tasks, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	run := startTaskSend("", "-data-dir", dir, "-timeout", "1s", "helper", "take forever")
 	<-fix.prompts
@@ -150,6 +154,7 @@ func TestTaskSendCancelsOnTimeout(t *testing.T) {
 }
 
 func TestTaskSendFailsForAnUnknownAgent(t *testing.T) {
+	t.Parallel()
 	net := newFakeNetwork(t)
 	err := startTaskSend("", "-data-dir", net.dir, "nobody", "hi").wait(t)
 	if err == nil || !strings.Contains(err.Error(), "no node of your network offers an agent named nobody") {
@@ -160,6 +165,7 @@ func TestTaskSendFailsForAnUnknownAgent(t *testing.T) {
 // A remote agent is found by name, waiting for it while -wait-agent lasts,
 // and called through the node's mesh route.
 func TestTaskSendFindsARemoteAgent(t *testing.T) {
+	t.Parallel()
 	net := newFakeNetwork(t)
 	h := newAgentHarness(t, testSender)
 	remote := randomPeer(t)
@@ -181,6 +187,7 @@ func TestTaskSendFindsARemoteAgent(t *testing.T) {
 }
 
 func TestTaskSendNeedsAPeerWhenSeveralNodesOfferTheAgent(t *testing.T) {
+	t.Parallel()
 	net := newFakeNetwork(t)
 	a, b := randomPeer(t), randomPeer(t)
 	net.offer(a)
@@ -192,6 +199,7 @@ func TestTaskSendNeedsAPeerWhenSeveralNodesOfferTheAgent(t *testing.T) {
 }
 
 func TestTaskSendUsage(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	for _, args := range [][]string{
 		{"-data-dir", dir},
@@ -300,6 +308,7 @@ func waitFor(t *testing.T, cond func() bool) {
 // A call that ends while the agent has not yet confirmed the task says the
 // task may still run; an answer to a known task cancels it.
 func TestTaskSendStopsWhileTheSendIsInFlight(t *testing.T) {
+	t.Parallel()
 	net := newFakeNetwork(t)
 	remote := randomPeer(t)
 	net.offer(remote)
@@ -346,6 +355,7 @@ func TestTaskSendStopsWhileTheSendIsInFlight(t *testing.T) {
 
 // -wait-agent bounds the search, however short, with several lookups in it.
 func TestTaskSendWaitsForTheAgentOnlyAsLongAsAsked(t *testing.T) {
+	t.Parallel()
 	net := newFakeNetwork(t)
 	start := time.Now()
 	err := startTaskSend("", "-data-dir", net.dir, "-wait-agent", "1s", "helper", "hi").wait(t)
@@ -359,6 +369,7 @@ func TestTaskSendWaitsForTheAgentOnlyAsLongAsAsked(t *testing.T) {
 
 // Ctrl-C ends a wait for a message on standard input that never closes.
 func TestTaskSendStopsReadingStandardInputWhenInterrupted(t *testing.T) {
+	t.Parallel()
 	r, w := io.Pipe()
 	defer w.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -381,6 +392,7 @@ func TestTaskSendStopsReadingStandardInputWhenInterrupted(t *testing.T) {
 // What the agent or network says in an error reaches the terminal without
 // its control sequences.
 func TestTaskSendErrorsAreTerminalSafe(t *testing.T) {
+	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	fix.err = errors.New("boom\x1b]0;owned\x07\x1b[2J")
 	err := startTaskSend("", "-data-dir", dir, "helper", "hi").wait(t)

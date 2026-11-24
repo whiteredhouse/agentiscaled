@@ -11,6 +11,7 @@ import (
 )
 
 func TestACPFinalMessage(t *testing.T) {
+	t.Parallel()
 	const (
 		first = `{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Checking."}}}`
 		tool  = `{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"t","kind":"read"}}`
@@ -67,6 +68,7 @@ func TestACPFinalMessage(t *testing.T) {
 }
 
 func TestACPNegotiatesResponseText(t *testing.T) {
+	t.Parallel()
 	for _, negotiated := range []bool{false, true} {
 		t.Run(fmt.Sprint(negotiated), func(t *testing.T) {
 			script := fmt.Sprintf(`#!/bin/sh
@@ -101,6 +103,7 @@ echo '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","_meta":{"agenti
 }
 
 func TestACPResponseTextLimits(t *testing.T) {
+	t.Parallel()
 	s := &acpSession{}
 	s.messages.append(nil, "streamed")
 	for _, tc := range []struct{ wire, want string }{

@@ -42,6 +42,7 @@ func sendNoWait(t *testing.T, args ...string) string {
 // A task sent without waiting runs on; task wait then prints its steps and
 // its answer.
 func TestTaskWaitFollowsATaskSentWithoutWaiting(t *testing.T) {
+	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	id := sendNoWait(t, "-data-dir", dir, "helper", "Review the changes")
 	if p := <-fix.prompts; p.Text != "Review the changes" {
@@ -72,6 +73,7 @@ func TestTaskWaitFollowsATaskSentWithoutWaiting(t *testing.T) {
 // A question ends the wait with exit status 3 and the command that
 // answers it; after the answer, waiting again gets the result.
 func TestTaskWaitStopsAtAQuestion(t *testing.T) {
+	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	id := sendNoWait(t, "-data-dir", dir, "helper", "double a number")
 	<-fix.prompts
@@ -96,6 +98,7 @@ func TestTaskWaitStopsAtAQuestion(t *testing.T) {
 
 // Out of time, task wait exits with status 4 and leaves the task running.
 func TestTaskWaitTimesOutWithoutStoppingTheTask(t *testing.T) {
+	t.Parallel()
 	_, fix, tasks, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	id := sendNoWait(t, "-data-dir", dir, "helper", "take a while")
 	<-fix.prompts
@@ -120,6 +123,7 @@ func TestTaskWaitTimesOutWithoutStoppingTheTask(t *testing.T) {
 
 // A task that fails ends the wait with exit status 2.
 func TestTaskWaitReportsAFailedTask(t *testing.T) {
+	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	fix.err = errors.New("the runtime crashed")
 	id := sendNoWait(t, "-data-dir", dir, "helper", "do it")
@@ -131,6 +135,7 @@ func TestTaskWaitReportsAFailedTask(t *testing.T) {
 }
 
 func TestTaskWaitFailsForAnUnknownTask(t *testing.T) {
+	t.Parallel()
 	_, _, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	err := startTaskWait("-data-dir", dir, "helper", "0f9a7c52-0000-4000-8000-000000000000").wait(t)
 	if caller.ExitCode(err) != 1 || !strings.Contains(err.Error(), "task 0f9a7c52-0000-4000-8000-000000000000 not found at helper") {
@@ -139,6 +144,7 @@ func TestTaskWaitFailsForAnUnknownTask(t *testing.T) {
 }
 
 func TestTaskWaitUsage(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	for _, args := range [][]string{
 		{"-data-dir", dir},
@@ -158,6 +164,7 @@ func TestTaskWaitUsage(t *testing.T) {
 // task send says with its exit status how the task ended, as task wait
 // does.
 func TestTaskSendExitStatus(t *testing.T) {
+	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	run := startTaskSend("", "-data-dir", dir, "helper", "double a number")
 	<-fix.prompts
@@ -175,6 +182,7 @@ func TestTaskSendExitStatus(t *testing.T) {
 // -timeout includes waiting for the node: with none running, the command
 // gives up when it passes, with the timeout's exit status.
 func TestTaskTimeoutCoversWaitingForTheNode(t *testing.T) {
+	t.Parallel()
 	dir := shortTempDir(t)
 	for name, run := range map[string]*sendRun{
 		"wait": startTaskWait("-data-dir", dir, "-timeout", "200ms", "helper", "abc"),
@@ -194,6 +202,7 @@ func TestTaskTimeoutCoversWaitingForTheNode(t *testing.T) {
 // A wait that times out at once still reports the task and how to wait
 // again, as JSON with -json.
 func TestTaskWaitReportsTheTaskWhenTimingOutEarly(t *testing.T) {
+	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	id := sendNoWait(t, "-data-dir", dir, "helper", "take a while")
 	<-fix.prompts

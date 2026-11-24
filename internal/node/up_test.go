@@ -21,6 +21,7 @@ import (
 )
 
 func TestStatusWithoutSavedSettings(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		readyCode int
@@ -119,7 +120,7 @@ func newFakeIdP(t *testing.T, polls ...string) *fakeIdP {
 }
 
 func (f *fakeIdP) config() authConfig {
-	return authConfig{issuer: f.srv.URL, clientID: "CLIENT", audience: "https://control.test"}
+	return authConfig{issuer: f.srv.URL, clientID: "CLIENT", audience: "https://control.test", pollUnit: time.Millisecond}
 }
 
 // The device flow asks for the control service's audience,
@@ -222,6 +223,7 @@ func TestEnrollSignedInWaitsForTheNetwork(t *testing.T) {
 }
 
 func TestSettingsRoundTrip(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	want := settings{Control: "https://c", BindAddr: "", Listen: "/ip4/0.0.0.0/tcp/1", LogLevel: "info",
 		Agents:      []agentConfig{{Runtime: "codex", Name: "codex", Dir: "/repo", Command: "/bin/codex", Description: "Answers questions", Env: []string{"CODEX_HOME=/codex"}}, {Runtime: "claude", Name: "writer", Dir: "/docs", OwnConfig: true}},
@@ -253,6 +255,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 // The LaunchAgent runs `agentiscaled run` for its data directory,
 // keeps it alive, starts it at login, and survives odd characters in paths.
 func TestLaunchdPlist(t *testing.T) {
+	t.Parallel()
 	spec := serviceSpec{exe: "/opt/homebrew/bin/agentiscaled", dataDir: "/Users/a/Library/Application Support/agentiscale & <x>", path: "/opt/homebrew/bin:/usr/bin"}
 	var plist struct {
 		Dict struct {
@@ -333,6 +336,7 @@ func TestSystemdService(t *testing.T) {
 // A service installed from Homebrew starts Homebrew's stable
 // link, so `brew upgrade` moves it to the new version.
 func TestStablePathFollowsHomebrewLinks(t *testing.T) {
+	t.Parallel()
 	for _, versioned := range [][]string{
 		{"Cellar", "agentiscaled", "0.1.0", "bin"}, // formula
 		{"Caskroom", "agentiscaled", "0.1.0"},      // cask
@@ -371,6 +375,7 @@ func TestStablePathFollowsHomebrewLinks(t *testing.T) {
 }
 
 func TestShellQuote(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]string{
 		"/usr/bin/agentiscaled":                            "/usr/bin/agentiscaled",
 		"/Users/a/Library/Application Support/agentiscale": "'/Users/a/Library/Application Support/agentiscale'",
@@ -421,6 +426,7 @@ func TestServiceStateSaysWhetherItRuns(t *testing.T) {
 // A network whose account is scheduled for deletion refuses enrollment, and
 // up points to the console, where the account is restored.
 func TestEnrollPointsToConsoleWhenDeletionIsScheduled(t *testing.T) {
+	t.Parallel()
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"error":"network's account is scheduled for deletion; restore the account to add nodes"}`))

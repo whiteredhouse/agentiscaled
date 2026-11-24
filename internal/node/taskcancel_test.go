@@ -28,6 +28,7 @@ func startTaskCancel(args ...string) *sendRun {
 // task cancel stops a running task, leaves an ended one as it is, and
 // skips an empty ID, so that a cleanup step can pass every ID it may have.
 func TestTaskCancelStopsRunningTasks(t *testing.T) {
+	t.Parallel()
 	_, fix, tasks, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	done := sendNoWait(t, "-data-dir", dir, "helper", "quick")
 	<-fix.prompts
@@ -69,6 +70,7 @@ func TestTaskCancelStopsRunningTasks(t *testing.T) {
 // A task the agent does not know fails the command, after the others are
 // cancelled.
 func TestTaskCancelReportsAnUnknownTask(t *testing.T) {
+	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	running := sendNoWait(t, "-data-dir", dir, "helper", "take forever")
 	<-fix.prompts
@@ -84,6 +86,7 @@ func TestTaskCancelReportsAnUnknownTask(t *testing.T) {
 }
 
 func TestTaskCancelUsage(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	for _, args := range [][]string{
 		{"-data-dir", dir},
@@ -106,6 +109,7 @@ func TestTaskCancelUsage(t *testing.T) {
 // one task fail only those: the other tasks are still cancelled, and -json
 // says why each failed.
 func TestTaskCancelGoesOnPastBadTasks(t *testing.T) {
+	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	running := sendNoWait(t, "-data-dir", dir, "helper", "take forever")
 	<-fix.prompts
@@ -130,6 +134,7 @@ func TestTaskCancelGoesOnPastBadTasks(t *testing.T) {
 }
 
 func TestTaskCancelIsNotHeldUpByASlowAnswer(t *testing.T) {
+	t.Parallel()
 	net := newFakeNetwork(t)
 	h := newAgentHarness(t, testSender)
 	remote := randomPeer(t)
@@ -168,6 +173,7 @@ func TestTaskCancelIsNotHeldUpByASlowAnswer(t *testing.T) {
 
 // A task waiting for an answer is cancelled too, freeing its agent.
 func TestTaskCancelStopsATaskThatAsks(t *testing.T) {
+	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	id := sendNoWait(t, "-data-dir", dir, "helper", "double a number")
 	<-fix.prompts
@@ -192,6 +198,7 @@ func TestTaskCancelStopsATaskThatAsks(t *testing.T) {
 
 // After --, a value that starts with a dash is a task ID that fails alone.
 func TestTaskCancelTakesDashedValuesAfterDoubleDash(t *testing.T) {
+	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	running := sendNoWait(t, "-data-dir", dir, "helper", "take forever")
 	<-fix.prompts
@@ -208,6 +215,7 @@ func TestTaskCancelTakesDashedValuesAfterDoubleDash(t *testing.T) {
 // When the cancel fails and so does reading the task, the cancel's error
 // is reported, with the read's.
 func TestTaskCancelKeepsTheCancelError(t *testing.T) {
+	t.Parallel()
 	net := newFakeNetwork(t)
 	remote := randomPeer(t)
 	net.offer(remote)

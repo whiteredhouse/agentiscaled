@@ -40,6 +40,7 @@ func mcpSessionRequest(t *testing.T, bearer, session, message string) *http.Requ
 // Answers arrive over ACP stdio, so resuming a turn need not send any MCP
 // traffic. The same MCP session must last across consecutive answer waits.
 func TestNetworkSessionSurvivesTwoAnswerWaits(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		const task = "waiting-task"
 		network, g := newTestNetworkGrant(t, task)
@@ -82,6 +83,7 @@ func TestNetworkSessionSurvivesTwoAnswerWaits(t *testing.T) {
 }
 
 func TestNetworkClosesSessionInitializingWhenGrantEnds(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		const task = "initializing-task"
 		network, g := newTestNetworkGrant(t, task)
@@ -123,6 +125,7 @@ func TestNetworkClosesSessionInitializingWhenGrantEnds(t *testing.T) {
 }
 
 func TestNetworkForgetInterruptsIncompleteHandshake(t *testing.T) {
+	t.Parallel()
 	const task = "streaming-initialize"
 	network, g := newTestNetworkGrant(t, task)
 	handled := make(chan struct{})

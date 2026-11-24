@@ -10,6 +10,7 @@ import (
 )
 
 func TestACPOffersProbeInTheirWorkspaceAndKeepSeparateProfiles(t *testing.T) {
+	t.Parallel()
 	data := t.TempDir()
 	legacy := filepath.Join(data, "acp", "sh")
 	if err := os.MkdirAll(legacy, 0o700); err != nil {

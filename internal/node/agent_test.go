@@ -191,6 +191,7 @@ func terminal(task *a2a.Task) string {
 }
 
 func TestTaskCompletes(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	task := h.send(t, "", "Review the uncommitted changes", nil)
 	req := <-h.fix.prompts
@@ -207,6 +208,7 @@ func TestTaskCompletes(t *testing.T) {
 }
 
 func TestRuntimeFailureIsATerminalState(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	h.fix.err = errors.New("codex exited 1")
 	task := h.send(t, "", "review", nil)
@@ -217,6 +219,7 @@ func TestRuntimeFailureIsATerminalState(t *testing.T) {
 }
 
 func TestTaskTimesOut(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	h.svc.deadline = 100 * time.Millisecond
 	task := h.send(t, "", "review", nil)
@@ -227,6 +230,7 @@ func TestTaskTimesOut(t *testing.T) {
 }
 
 func TestCancelReportsWhetherTheTaskHadBegun(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	task := h.send(t, "", "review", nil)
 	<-h.fix.prompts
@@ -247,6 +251,7 @@ func TestCancelReportsWhetherTheTaskHadBegun(t *testing.T) {
 }
 
 func TestOneTaskAtATime(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	first := h.send(t, "", "review", nil)
 	<-h.fix.prompts
@@ -260,6 +265,7 @@ func TestOneTaskAtATime(t *testing.T) {
 }
 
 func TestARetriedMessageIsNotRunTwice(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	first := h.send(t, "m-1", "review", nil)
 	<-h.fix.prompts
@@ -282,6 +288,7 @@ func TestARetriedMessageIsNotRunTwice(t *testing.T) {
 // that names a deeper task is refused, and one whose depth cannot be read
 // does not authenticate.
 func TestRefusedRequests(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	tooDeep := h.asTask(t, testSender, fmt.Sprintf("agentiscale-task/%d/t-1", maxDelegationDepth+1))
 	res, err := tooDeep.SendMessage(context.Background(), &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("review")), Config: &a2a.SendMessageConfig{ReturnImmediately: true}})
@@ -316,6 +323,7 @@ func TestRefusedRequests(t *testing.T) {
 }
 
 func TestSenderOf(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		peer, task string
 		want       taskSender
@@ -348,6 +356,7 @@ func TestSenderOf(t *testing.T) {
 // A request the node did not stamp with an authenticated sender did not come
 // through the mesh, and is refused before it becomes a task.
 func TestARequestWithoutASenderIsRefused(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, "")
 	_, err := h.client.SendMessage(context.Background(), &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("review"))})
 	if !errors.Is(err, a2a.ErrUnauthenticated) {
@@ -358,6 +367,7 @@ func TestARequestWithoutASenderIsRefused(t *testing.T) {
 // Another peer of the network that learns a task ID can neither read the
 // task's result nor cancel it.
 func TestTasksBelongToTheirSender(t *testing.T) {
+	t.Parallel()
 	const other = "12D3KooWRBy97UB99e3J6hiPesre1MZeuNQvfan4gBziswrRJsNK"
 	h := newAgentHarness(t, testSender)
 	task := h.send(t, "", "review", nil)
@@ -387,6 +397,7 @@ func TestTasksBelongToTheirSender(t *testing.T) {
 // the node's, nor another task's on the same node, and the hosted agent's
 // token does not reach the node's tasks.
 func TestTasksBelongToTheTaskThatSentThem(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	ctx := context.Background()
 	mine := h.asTask(t, testSender, "agentiscale-task/1/t-1")
@@ -425,6 +436,7 @@ func TestTasksBelongToTheTaskThatSentThem(t *testing.T) {
 // IDs belong to their sender, so another peer's message with the same ID
 // still runs.
 func TestARetryAfterARestartIsNotRunTwice(t *testing.T) {
+	t.Parallel()
 	const other = "12D3KooWRBy97UB99e3J6hiPesre1MZeuNQvfan4gBziswrRJsNK"
 	dir := t.TempDir()
 	h := newAgentHarnessIn(t, testSender, dir)
@@ -492,6 +504,7 @@ func TestOwnerStopCancelsAndRefuses(t *testing.T) {
 // Only the node, holding the backend credential, can reach the agent: another
 // local process cannot call it directly and claim a sender.
 func TestAgentNeedsTheNodeCredential(t *testing.T) {
+	t.Parallel()
 	h := newAgentHarness(t, testSender)
 	for _, token := range []string{"", "wrong"} {
 		if code := get(t, h.url+"/.well-known/agent-card.json", token); code != http.StatusUnauthorized {
@@ -506,6 +519,7 @@ func TestAgentNeedsTheNodeCredential(t *testing.T) {
 }
 
 func TestCodexRuntimeIsReadOnlyAndUnconfigured(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")
 	codex := filepath.Join(dir, "codex")
@@ -556,6 +570,7 @@ func TestCodexRuntimeIsReadOnlyAndUnconfigured(t *testing.T) {
 // With the owner's policy on, the checkout's instruction files and skills
 // load as in any Codex run in it; the rest of the isolation stays.
 func TestCodexRuntimePolicyLoadsTheCheckoutsGuidance(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")
 	codex := filepath.Join(dir, "codex")
@@ -640,6 +655,7 @@ func waitIdle(t *testing.T, s *agentService) {
 // A failed run reports the lines that say why, not only its last line,
 // which for Codex is the token count.
 func TestFailureLinesKeepTheError(t *testing.T) {
+	t.Parallel()
 	out := "OpenAI Codex v0.144.1\nworkdir: /repo\nERROR: stream disconnected\nthinking\ntokens used\n45,312\n"
 	if got := failureLines(out, 3); got != "ERROR: stream disconnected" {
 		t.Fatalf("got %q", got)
@@ -707,6 +723,7 @@ func TestCodexInstallDirStaysNarrow(t *testing.T) {
 // agent's commands read the agent directory, and the data directory holds the
 // node's key and the agent's sign-in.
 func TestAgentDirKeepsApartFromTheDataDir(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	other := t.TempDir()
 	link := filepath.Join(other, "repo-link")
@@ -733,6 +750,7 @@ func TestAgentDirKeepsApartFromTheDataDir(t *testing.T) {
 // A generated API token is readable by its owner only, even when an empty
 // token file with looser permissions was there before.
 func TestGeneratedAPITokenIsPrivate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "api-token")
 	if err := os.WriteFile(path, nil, 0o644); err != nil {
@@ -808,6 +826,7 @@ func TestCodexAPIKeyWithTheOwnersConfig(t *testing.T) {
 
 // The owner's description replaces the runtime's on the card.
 func TestCardDescription(t *testing.T) {
+	t.Parallel()
 	s := &agentService{rt: &fixture{}}
 	if got := s.card("codex").Description; got != "fixture" {
 		t.Errorf("runtime's description: %q", got)
@@ -838,6 +857,7 @@ func TestNewAgentsRefusesClashes(t *testing.T) {
 // Each agent keeps its own state, such as its delivery record, in a
 // directory of its own under the node's.
 func TestAgentsKeepDeliveriesApart(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	seen := map[string]bool{}
 	for _, name := range []string{"helper", "writer", "Helper", "other/../helper"} {

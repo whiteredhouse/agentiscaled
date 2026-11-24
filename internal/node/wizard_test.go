@@ -20,6 +20,7 @@ func testWizard(input string) (*wizard, *bytes.Buffer) {
 }
 
 func TestChooseClients(t *testing.T) {
+	t.Parallel()
 	both := []string{"claude-desktop", "codex"}
 	for _, tc := range []struct {
 		input string
