@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"slices"
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -100,20 +99,26 @@ func toolResult(out Task, err error) (*mcp.CallToolResult, Task, error) {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, out, nil
 }
 
-// NodeTools are the node's own MCP tools that the bridge passes on to
-// clients: the node's connection and the discovery of A2A agents. The node's
-// other tools (find_remote_tools, describe_remote_tool, call_remote_tool) and
-// its instructions are about remote MCP and inference services, which
-// agentiscale does not offer; leaving them out keeps them out of every
-// client's context.
-var NodeTools = []string{"get_mesh_info", "list_local_services", "discover_remote_services"}
+// nodeToolDescriptions replaces the descriptions of the node's tools that
+// the bridge passes on with shorter ones; their input schemas stay as the
+// node serves them. Tools not named here keep the node's description.
+var nodeToolDescriptions = map[string]string{
+	"discover_remote_services": "Find services on other nodes of your network by type (a2a, mcp or inference), or one service by name.",
+	"find_remote_tools":        "Find MCP tools that services on other nodes offer: each with its peer_id, namespaced tool_name (mcp://service/tool) and description. Narrow by peer_id, service_name or tool_name.",
+	"describe_remote_tool":     "Read a remote MCP tool's description and input schema, by the peer_id and namespaced tool_name that find_remote_tools returned. Do this before call_remote_tool.",
+	"call_remote_tool":         "Call a remote MCP tool by peer_id and namespaced tool_name, with arguments matching its input schema.",
+}
 
-// BridgeInstructions are the bridge's server instructions.
-const BridgeInstructions = Instructions + ` get_mesh_info reports this node's connection to the network.`
+// BridgeInstructions are the bridge's server instructions. They replace the
+// node's own, which also cover the node's HTTP API, its tokens and its
+// diagnostics, none of which a client of this server uses.
+const BridgeInstructions = Instructions + `
 
-// BridgeMCP serves an MCP server on the client transport that offers the
-// node's NodeTools, reached over Streamable HTTP on its Unix socket, plus the
-// A2A task tools, until the client closes.
+MCP tools that services on other nodes offer: find them with find_remote_tools, read one's input schema with describe_remote_tool, then call it with call_remote_tool, giving its peer_id, its namespaced tool_name (mcp://service/tool) and arguments matching that schema. get_mesh_info reports this node's connection to the network.`
+
+// BridgeMCP serves an MCP server on the client transport that offers every
+// tool of the node's MCP server, reached over Streamable HTTP on its Unix
+// socket, plus the A2A task tools, until the client closes.
 func BridgeMCP(ctx context.Context, client mcp.Transport, socket string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -135,8 +140,8 @@ func BridgeMCP(ctx context.Context, client mcp.Transport, socket string) error {
 			return fmt.Errorf("list the node's tools: %w", err)
 		}
 		for _, tool := range page.Tools {
-			if !slices.Contains(NodeTools, tool.Name) {
-				continue
+			if d, ok := nodeToolDescriptions[tool.Name]; ok {
+				tool.Description = d
 			}
 			name := tool.Name
 			server.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

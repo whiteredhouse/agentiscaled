@@ -34,8 +34,9 @@ Open Settings, Developer, Edit Config, which opens
 ```
 
 Quit and reopen Claude Desktop. The `agentiscale` server's tools
-(`get_mesh_info`, `list_local_services`, `discover_remote_services`, and the
-A2A agent tools `get_agent_card`, `send_task`, `get_task` and `cancel_task`) then appear in a new chat. Ask it to "show my agentiscale mesh info" to check the connection.
+(`get_mesh_info`, `discover_remote_services`, `find_remote_tools`,
+`describe_remote_tool`, `call_remote_tool`, `list_local_services`, and the A2A
+agent tools `get_agent_card`, `send_task`, `get_task` and `cancel_task`) then appear in a new chat. Ask it to "show my agentiscale mesh info" to check the connection.
 
 ## Codex CLI
 
@@ -58,9 +59,7 @@ args = ["mcp"]
 The node also serves MCP at `http://127.0.0.1:8080/mcp` (its `-bind-addr`),
 with the header `X-Mesh-Authentication: Bearer <token>`, where the token is in
 `<data-dir>/api-token`. Prefer `agentiscaled mcp`, which keeps the token out of
-client configuration files. That endpoint is the node's own server: it lacks
-the A2A agent tools and offers the node's remote MCP tools, which
-`agentiscaled mcp` leaves out.
+client configuration files.
 
 ## Call an agent from the command line
 

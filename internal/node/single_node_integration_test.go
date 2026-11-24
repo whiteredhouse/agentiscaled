@@ -125,7 +125,7 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 				t.Error("MCP bridge did not stop")
 			}
 		}()
-		// The real node's tool list, trimmed to what a client needs.
+		// The real node's tools, plus the bridge's A2A task tools.
 		tools, err := session.ListTools(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -134,7 +134,7 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 		for _, tool := range tools.Tools {
 			names = append(names, tool.Name)
 		}
-		if want := []string{"cancel_task", "discover_remote_services", "get_agent_card", "get_mesh_info", "get_task", "list_local_services", "send_task"}; !slices.Equal(names, want) {
+		if want := []string{"call_remote_tool", "cancel_task", "describe_remote_tool", "discover_remote_services", "find_remote_tools", "get_agent_card", "get_mesh_info", "get_task", "list_local_services", "send_task"}; !slices.Equal(names, want) {
 			t.Fatalf("tools: %v, want %v", names, want)
 		}
 		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "discover_remote_services", Arguments: map[string]any{"type": "a2a", "name": "helper"}})

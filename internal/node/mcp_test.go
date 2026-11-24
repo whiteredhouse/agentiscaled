@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,10 +17,9 @@ import (
 	"github.com/whiteredhouse/agentiscaled/internal/nodeclient"
 )
 
-// A client speaking MCP over stdio reaches the node's network tools on a
-// Streamable HTTP server on a Unix socket through `agentiscaled mcp`, for a
-// session of several requests, and sees none of the node's other tools or
-// instructions.
+// A client speaking MCP over stdio reaches the tools of a Streamable HTTP
+// server on a Unix socket through `agentiscaled mcp`, for a session of
+// several requests, with the bridge's shorter descriptions and instructions.
 func TestMCPBridgeReachesTheNodeOverItsSocket(t *testing.T) {
 	// Unix socket paths are short; t.TempDir can be too long on macOS.
 	dir, err := os.MkdirTemp("", "ais")
@@ -73,9 +73,14 @@ func TestMCPBridgeReachesTheNodeOverItsSocket(t *testing.T) {
 	for _, tool := range tools.Tools {
 		names = append(names, tool.Name)
 	}
-	// The node's network tool, plus the A2A task tools the bridge adds.
-	if want := []string{"cancel_task", "get_agent_card", "get_mesh_info", "get_task", "send_task"}; !slices.Equal(names, want) {
+	// The node's tools, plus the A2A task tools the bridge adds.
+	if want := []string{"cancel_task", "find_remote_tools", "get_agent_card", "get_mesh_info", "get_task", "send_task"}; !slices.Equal(names, want) {
 		t.Fatalf("tools: %v, want %v", names, want)
+	}
+	for _, tool := range tools.Tools {
+		if tool.Name == "find_remote_tools" && !strings.Contains(tool.Description, "mcp://service/tool") {
+			t.Fatalf("find_remote_tools kept the node's description: %q", tool.Description)
+		}
 	}
 	if got := session.InitializeResult().Instructions; got != caller.BridgeInstructions {
 		t.Fatalf("instructions: %q", got)
