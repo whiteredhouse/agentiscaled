@@ -26,6 +26,9 @@ const usage = `agentiscaled is the agentiscale node.
 Use the network:
   network agent list         discover agents on this node and its network peers
   network agent card AGENT   read a discovered agent's current A2A card
+  network tool find|describe|call
+                             find, describe and call MCP tools that other
+                             nodes offer
   task     send a task to an agent, wait for it to finish, or cancel it
            (send, wait, cancel)
   mcp      serve the node's MCP tools on stdio for agent clients
@@ -55,7 +58,7 @@ func main() {
 		var err error
 		switch cmd, args := os.Args[1], os.Args[2:]; cmd {
 		case "network":
-			err = caller.RunNetwork(ctx, args, os.Stdout, os.Stderr)
+			err = caller.RunNetwork(ctx, args, os.Stdin, os.Stdout, os.Stderr)
 		case "mcp":
 			// Standard output carries MCP messages; errors go to standard error.
 			err = caller.RunMCP(ctx, args)
