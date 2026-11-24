@@ -189,9 +189,9 @@ func toolName(s string) (string, error) {
 const maxArgumentBytes = 16 << 20
 
 // readArguments returns ARGUMENTS, or with "-" standard input, as the JSON
-// object it is. It stays raw JSON all the way to the remote tool, so that
-// numbers keep every digit: decoded into Go values, an integer above 2^53
-// would change.
+// object it is. The CLI sends it to the node as written, without decoding
+// numbers into float64; the node's call_remote_tool still decodes them, so
+// integers above 2^53 reach the remote tool rounded.
 func readArguments(ctx context.Context, s string, stdin io.Reader) (json.RawMessage, error) {
 	data := []byte(s)
 	if s == "-" {

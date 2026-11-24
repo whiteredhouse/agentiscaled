@@ -187,6 +187,10 @@ text result and fails when the tool reports an error; `-json` prints the whole M
 result instead. `-labels region=eu` calls a node only if it is attested with every
 label given.
 
+The node passes numbers in ARGUMENTS on as 64-bit floating point: integers
+above 2^53 (9007199254740992) and decimals with more than about 17 significant
+digits arrive rounded. Pass such values as strings if the tool accepts them.
+
 ## Teach your agents to call other agents
 
 The agentiscale skill tells an agent when to hand work to another agent of your
