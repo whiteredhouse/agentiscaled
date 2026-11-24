@@ -44,6 +44,10 @@ If you have none of these, say so and point the person to
 `agentiscaled up` (join this machine) or `agentiscaled client connect` (connect
 this app). Do not use the `a2a` CLI or write A2A or HTTP requests by hand.
 
+Other nodes can also offer MCP tools. The shell's `agentiscaled network tool`
+commands and the `agentiscale` server's remote tools reach them; the same
+references cover them.
+
 If you read this skill with `agentiscaled skill`, read a reference with
 `agentiscaled skill print references/cli.md` (or `references/mcp.md`).
 

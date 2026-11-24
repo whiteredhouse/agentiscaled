@@ -36,3 +36,16 @@ card, or ask the person which one they mean.
 
 `cancel_task` stops a task you no longer need, for example when the person
 changes their mind.
+
+**Remote MCP tools.** Only the `agentiscale` server has these. Other nodes can
+also offer MCP services; use them only when the person asks for one or a task
+needs a tool that only another node has.
+
+1. `find_remote_tools` lists them, narrowed by `service_name`, `tool_name` or
+   `peer_id`. Each row has a `peer_id` and a full `tool_name` such as
+   `mcp://code-reviewer/review_pr`.
+2. `describe_remote_tool` with that `peer_id` and `tool_name` returns its input
+   schema. Read it before you call.
+3. `call_remote_tool` with the same `peer_id` and `tool_name`, and `arguments`
+   as a JSON object matching the schema. Pass integers above 2^53 as strings if
+   the tool accepts them: the node rounds them.
