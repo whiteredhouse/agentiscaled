@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"io/fs"
 	"regexp"
 	"strings"
 	"testing"
@@ -16,7 +17,20 @@ import (
 // TestSkillNamesRealTools keeps the skill in step with the tools and flags it
 // tells agents to use.
 func TestSkillNamesRealTools(t *testing.T) {
-	text := string(skills.Agentiscale)
+	// The skill's text is every file of it, references included.
+	var all strings.Builder
+	err := fs.WalkDir(skills.AgentiscaleFiles, ".", func(name string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := fs.ReadFile(skills.AgentiscaleFiles, name)
+		all.Write(b)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := all.String()
 	server := mcp.NewServer(&mcp.Implementation{Name: "test"}, nil)
 	caller.AddTools(server, &caller.Client{})
 	ct, st := mcp.NewInMemoryTransports()
@@ -40,7 +54,7 @@ func TestSkillNamesRealTools(t *testing.T) {
 	}
 	for _, name := range names {
 		if !strings.Contains(text, "`"+name+"`") {
-			t.Errorf("SKILL.md does not name %s", name)
+			t.Errorf("the skill does not name %s", name)
 		}
 	}
 	// The servers' own instructions name the discovery tools the skill
@@ -66,7 +80,7 @@ func TestSkillNamesRealTools(t *testing.T) {
 	}
 	for _, m := range regexp.MustCompile("`(?:agentiscaled task send )?-([a-z-]+)").FindAllStringSubmatch(text, -1) {
 		if !runTaskSendFlags[m[1]] {
-			t.Errorf("SKILL.md names task send flag -%s, which does not exist", m[1])
+			t.Errorf("the skill names task send flag -%s, which does not exist", m[1])
 		}
 	}
 }

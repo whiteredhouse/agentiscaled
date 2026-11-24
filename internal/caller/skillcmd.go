@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -16,13 +18,14 @@ import (
 	"github.com/whiteredhouse/agentiscaled/skills"
 )
 
-const skillUsage = `usage: agentiscaled skill [print]
+const skillUsage = `usage: agentiscaled skill [print [FILE]]
        agentiscaled skill install [-dir DIR] [RUNTIME...]
 
 The agentiscale skill teaches an agent when and how to find and call the other
 agents of your network. print (the default) writes its SKILL.md to standard
-output. install writes it where each RUNTIME (claude, codex; both when none
-is named) loads skills:
+output, or with FILE one of the references it links to, such as
+references/cli.md. install writes all its files where each RUNTIME (claude,
+codex; both when none is named) loads skills:
 
   claude  $CLAUDE_CONFIG_DIR/skills/agentiscale, by default ~/.claude/skills/agentiscale
   codex   ~/.agents/skills/agentiscale
@@ -54,11 +57,19 @@ func RunSkill(args []string, out, errOut io.Writer) error {
 	}
 	switch sub {
 	case "print":
-		if len(pos) != 0 || *dir != "" {
+		if len(pos) > 1 || *dir != "" {
 			fs.Usage()
-			return errors.New("skill print takes no arguments")
+			return errors.New("skill print takes at most one file")
 		}
-		_, err := out.Write(skills.Agentiscale)
+		if len(pos) == 0 {
+			_, err := out.Write(skills.Agentiscale)
+			return err
+		}
+		b, err := iofs.ReadFile(skills.AgentiscaleFiles, path.Clean(pos[0]))
+		if err != nil {
+			return fmt.Errorf("the agentiscale skill has no file %s", pos[0])
+		}
+		_, err = out.Write(b)
 		return err
 	case "install":
 		return installSkill(pos, *dir, out)
@@ -91,7 +102,7 @@ func installSkill(names []string, project string, out io.Writer) error {
 		}
 	}
 	for _, dir := range dirs {
-		done, err := installSkillFile(dir)
+		done, err := installSkillFiles(dir)
 		if err != nil {
 			return err
 		}
@@ -136,41 +147,97 @@ func skillDir(runtime, project string) (string, error) {
 	return filepath.Join(root, "skills", skills.AgentiscaleName), nil
 }
 
-// installSkillFile writes SKILL.md into dir, replacing it in one step, and says
-// what it did.
-func installSkillFile(dir string) (string, error) {
-	path := filepath.Join(dir, "SKILL.md")
-	old, err := os.ReadFile(path)
-	switch {
-	case err == nil && bytes.Equal(old, skills.Agentiscale):
-		return "unchanged", nil
-	case err != nil && !errors.Is(err, os.ErrNotExist):
+// installSkillFiles writes every file of the skill into dir, each replaced in
+// one step, and says what it did: installed when dir had no SKILL.md,
+// unchanged when every file was already current, updated otherwise.
+func installSkillFiles(dir string) (string, error) {
+	switch _, err := os.Stat(filepath.Join(dir, "SKILL.md")); {
+	case errors.Is(err, os.ErrNotExist):
+		if err := writeSkillFiles(dir); err != nil {
+			return "", err
+		}
+		return "installed", nil
+	case err != nil:
 		return "", err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	tmp, err := os.CreateTemp(dir, ".SKILL.md.*")
+	changed := false
+	err := iofs.WalkDir(skills.AgentiscaleFiles, ".", func(name string, d iofs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		want, err := iofs.ReadFile(skills.AgentiscaleFiles, name)
+		if err != nil {
+			return err
+		}
+		have, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(name)))
+		switch {
+		case err == nil && bytes.Equal(have, want):
+		case err == nil || errors.Is(err, os.ErrNotExist):
+			changed = true
+		default:
+			return err
+		}
+		return nil
+	})
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(skills.Agentiscale); err != nil {
-		tmp.Close()
+	if !changed {
+		return "unchanged", nil
+	}
+	if err := writeSkillFiles(dir); err != nil {
 		return "", err
+	}
+	return "updated", nil
+}
+
+// writeSkillFiles writes every file of the skill under dir. SKILL.md goes
+// last, so that a SKILL.md never links to a reference not yet written.
+func writeSkillFiles(dir string) error {
+	var names []string
+	err := iofs.WalkDir(skills.AgentiscaleFiles, ".", func(name string, d iofs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && name != "SKILL.md" {
+			names = append(names, name)
+		}
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	for _, name := range append(names, "SKILL.md") {
+		b, err := iofs.ReadFile(skills.AgentiscaleFiles, name)
+		if err != nil {
+			return err
+		}
+		if err := writeFileAtomic(filepath.Join(dir, filepath.FromSlash(name)), b); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeFileAtomic writes b to path through a temporary file in its
+// directory, so that a reader sees the old file or the new one.
+func writeFileAtomic(path string, b []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
 	}
 	if err := tmp.Chmod(0o644); err != nil {
 		tmp.Close()
-		return "", err
+		return err
 	}
 	if err := tmp.Close(); err != nil {
-		return "", err
+		return err
 	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return "", err
-	}
-	if old != nil {
-		return "updated", nil
-	}
-	return "installed", nil
+	return os.Rename(tmp.Name(), path)
 }
