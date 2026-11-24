@@ -246,9 +246,13 @@ is no second sign-in, node or service. `agent list` shows the agents this machin
 offers and, while the node runs, what each is doing: `idle`, `busy` with a task, or
 `waiting for an answer` to a question it asked its caller (see [Connect agents](connect-agents.md)), with how long. `agent remove <name>` stops offering one, leaving its directory as it
 is; `agent add` and `agent remove` restart the node's background service. `up` keeps the offered agents as
-they are; it takes no agent flags. `status`, `down`, `reset` and `tasks` address
-this same node, and `task stop` stops the tasks of all its agents, and `status` shows whether tasks are stopped. Reset keeps its
-agents' configuration and runtime sign-ins.
+they are; it takes no agent flags. `status`, `down` and `reset` address
+this same node. Reset keeps its agents' configuration and runtime sign-ins.
+
+`agentiscaled agent stop` cancels running work for every agent hosted on this
+node and refuses new tasks. The node stays online, and the stop survives a
+restart. Use `agentiscaled agent status` to check whether task execution is
+enabled and `agentiscaled agent resume` to allow new tasks again.
 
 Agent questions, runtime login and validation finish before `up` or `agent add` stops an existing
 service. If a later enrollment, save or startup step fails, agentiscaled attempts to restore
