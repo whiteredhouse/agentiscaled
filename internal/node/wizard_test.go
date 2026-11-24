@@ -1,0 +1,301 @@
+package node
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	goruntime "runtime"
+	"strings"
+	"testing"
+)
+
+func testWizard(input string) (*wizard, *bytes.Buffer) {
+	var out bytes.Buffer
+	return &wizard{in: bufio.NewReader(strings.NewReader(input)), out: &out}, &out
+}
+
+func TestChooseClients(t *testing.T) {
+	both := []string{"claude-desktop", "codex"}
+	for _, tc := range []struct {
+		input string
+		want  string
+	}{
+		{"\n\n", "claude-desktop,codex"},
+		{"", "claude-desktop,codex"}, // no answer is every default
+		{"n\ny\n", "codex"},
+		{"no\nNO\n", "none"},
+		{"maybe\ny\n\n", "claude-desktop,codex"},
+		{"y\n", "claude-desktop,codex"},
+	} {
+		w, out := testWizard(tc.input)
+		got, err := w.chooseClients(both)
+		if err != nil || got != tc.want {
+			t.Errorf("input %q: got %q, %v, want %q\n%s", tc.input, got, err, tc.want, out)
+		}
+	}
+	w, out := testWizard("")
+	if got, _ := w.chooseClients(nil); got != clientsAuto || out.Len() != 0 {
+		t.Errorf("no installed client: %q, asked %q", got, out)
+	}
+}
+
+func TestOfferAgent(t *testing.T) {
+	withDefaultDataDir(t)
+	t.Setenv("XDG_DATA_HOME", "")
+	dir := filepath.Join(t.TempDir(), "My Project")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []string{"", "\n", "n\n"} {
+		w, _ := testWizard(input)
+		if o, err := w.offerAgent(); o != nil || err != nil {
+			t.Errorf("input %q: offered %+v, %v", input, o, err)
+		}
+	}
+	w, out := testWizard("y\n\n\n/does/not/exist\n" + dir + "\n")
+	o, err := w.offerAgent()
+	if err != nil || o == nil {
+		t.Fatalf("%+v, %v\n%s", o, err, out)
+	}
+	wantDir := defaultDataDir()
+	if o.runtime != "codex" || o.agentDir != dir || o.dataDir != wantDir || o.policy != (agentPolicy{DirInstructions: true, DirSkills: true, OwnerConfig: true}) {
+		t.Errorf("offer %+v, want data dir %s and the policy on", o, wantDir)
+	}
+	if !strings.Contains(out.String(), "/does/not/exist is not a directory") {
+		t.Errorf("output:\n%s", out)
+	}
+	w, _ = testWizard("y\n\nAnswers questions about the code\n" + dir + "\nn\ny\nn\n")
+	if o, err := w.offerAgent(); err != nil || o == nil || o.policy != (agentPolicy{DirInstructions: true}) || o.description != "Answers questions about the code" {
+		t.Errorf("own config and skills turned off: offered %+v, %v", o, err)
+	}
+	w, _ = testWizard("y\n")
+	if o, err := w.offerAgent(); o != nil || err != nil {
+		t.Errorf("no directory: offered %+v, %v", o, err)
+	}
+	for _, c := range []struct{ input, name string }{
+		{"y\n\n\n\n", "codex"},
+		{"y\nBad Name\nhelper\n\n\n", "helper"},
+		{"y\ncodex-helper\n\n\n", "codex-helper"},
+		{"y\n" + strings.Repeat("a", 64) + "\n" + strings.Repeat("a", 63) + "\n\n\n", strings.Repeat("a", 63)},
+	} {
+		w, out = testWizard(c.input)
+		o, err = w.offerAgent()
+		ownDir := filepath.Join(userDataDir(), "agentiscaled", "workspaces", c.name)
+		if err != nil || o == nil || o.name != c.name || o.agentDir != ownDir || o.dataDir != defaultDataDir() {
+			t.Fatalf("input %q: offered %+v, %v\n%s", c.input, o, err, out)
+		}
+		for _, dataDir := range []string{defaultDataDir(), o.dataDir} {
+			if err := agentDirApart(ownDir, dataDir); err != nil {
+				t.Errorf("the agent's own directory and a node's: %v", err)
+			}
+		}
+		if fi, err := os.Stat(ownDir); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+			t.Errorf("the agent's own directory: %v, %v", fi, err)
+		}
+		if !strings.Contains(out.String(), "Directory the agent works in ["+homeRelative(ownDir)+"]: ") {
+			t.Errorf("output:\n%s", out)
+		}
+	}
+	if !strings.HasPrefix(homeRelative(defaultAgentDir("codex")), "~/") || homeRelative("/elsewhere") != "/elsewhere" {
+		t.Errorf("home-relative default %s", homeRelative(defaultAgentDir("codex")))
+	}
+	if !strings.Contains(out.String(), "Name of the agent in your network [codex]: ") {
+		t.Errorf("output:\n%s", out)
+	}
+}
+
+func TestSetUpAgentSignsInOnce(t *testing.T) {
+	withDefaultDataDir(t)
+	offer := o(t)
+	var ran [][]string
+	old := runAttached
+	runAttached = func(_ context.Context, cmd *exec.Cmd) error {
+		ran = append(ran, cmd.Args)
+		if cmd.Args[len(cmd.Args)-1] == "login" {
+			if !contains(cmd.Env, "CODEX_HOME="+agentProfileDir(offer.dataDir, offer.name)) {
+				t.Errorf("login env lacks the agent's CODEX_HOME")
+			}
+		}
+		return nil
+	}
+	t.Cleanup(func() { runAttached = old })
+	w, out := testWizard("")
+	if err := w.prepareAgent(context.Background(), offer); err != nil {
+		t.Fatal(err)
+	}
+	if len(ran) != 1 || ran[0][len(ran[0])-1] != "login" {
+		t.Errorf("ran %q\n%s", ran, out)
+	}
+
+	// Signed in already: preparation launches no command.
+	if err := os.WriteFile(filepath.Join(agentProfileDir(offer.dataDir, offer.name), "auth.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ran = nil
+	if err := w.prepareAgent(context.Background(), offer); err != nil {
+		t.Fatal(err)
+	}
+	if len(ran) != 0 {
+		t.Errorf("signed-in runtime started another command: %q", ran)
+	}
+
+}
+
+func o(t *testing.T) *agentOffer {
+	dir := filepath.Join(os.Getenv("HOME"), "repo")
+	return &agentOffer{runtime: "codex", name: "helper", agentDir: dir, dataDir: defaultDataDir(), policy: agentPolicy{DirInstructions: true, DirSkills: true}} // the agent's own config
+}
+
+// With the owner's configuration, preparation signs in to their own Codex.
+func TestSetUpAgentWithTheOwnersConfig(t *testing.T) {
+	withDefaultDataDir(t)
+	t.Setenv("CODEX_HOME", filepath.Join(os.Getenv("HOME"), "owner-codex"))
+	t.Setenv("CODEX_API_KEY", "")
+	var ran []*exec.Cmd
+	old := runAttached
+	runAttached = func(_ context.Context, cmd *exec.Cmd) error {
+		ran = append(ran, cmd)
+		return nil
+	}
+	t.Cleanup(func() { runAttached = old })
+	offer := o(t)
+	offer.policy.OwnerConfig = true
+	w, out := testWizard("")
+	if err := w.prepareAgent(context.Background(), offer); err != nil {
+		t.Fatal(err)
+	}
+	if len(ran) != 1 || strings.Join(ran[0].Args, " ") != "codex login" || ran[0].Env != nil {
+		t.Errorf("ran %v\n%s", ran, out)
+	}
+
+	if err := os.MkdirAll(os.Getenv("CODEX_HOME"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ran = nil
+	if err := w.prepareAgent(context.Background(), offer); err != nil || len(ran) != 0 {
+		t.Errorf("signed in already: ran %v, %v", ran, err)
+	}
+}
+
+func TestUserDataDir(t *testing.T) {
+	if goruntime.GOOS == "darwin" || goruntime.GOOS == "windows" {
+		t.Skip("the configuration directory is the data directory here")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for xdg, want := range map[string]string{
+		"":              filepath.Join(home, ".local", "share"),
+		"relative/data": filepath.Join(home, ".local", "share"),
+		"/srv/data":     "/srv/data",
+	} {
+		t.Setenv("XDG_DATA_HOME", xdg)
+		if got := userDataDir(); got != want {
+			t.Errorf("XDG_DATA_HOME=%q: %s, want %s", xdg, got, want)
+		}
+	}
+}
+
+func TestWizardOfferOverridesSavedAnswers(t *testing.T) {
+	for _, defaults := range []bool{true, false} {
+		t.Run(fmt.Sprintf("defaults=%v", defaults), func(t *testing.T) {
+			dir := withDefaultDataDir(t)
+			workspace := t.TempDir()
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			mesh := newStandInMesh(t, "fine")
+			pid := seedNode(t, dir, mesh.srv.URL, mesh.key)
+			bin := t.TempDir()
+			command := filepath.Join(bin, "codex")
+			write(t, command, "#!/bin/sh\necho codex-cli-test\n")
+			if err := os.Chmod(command, 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("CODEX_HOME", t.TempDir())
+			write(t, filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"), "{}")
+			writeSettings(t, dir, settings{Control: "https://control.test", Listen: "/ip4/127.0.0.1/tcp/0", LogLevel: "info", PeerID: pid, NetworkID: "saved-network", MeshURL: mesh.srv.URL})
+			input := "y\n\n\n" + workspace + "\n\n\n\n"
+			if !defaults {
+				input = "y\nnew-helper\nNew description\n" + workspace + "\nn\nn\nn\n"
+			}
+			w, _ := testWizard(input)
+			offer, err := w.offerAgent()
+			if err != nil || offer == nil {
+				t.Fatalf("offer: %+v %v", offer, err)
+			}
+			if !offer.policy.OwnerConfig {
+				write(t, filepath.Join(agentProfileDir(dir, offer.name), "auth.json"), "{}")
+			}
+			if offer.dataDir != dir {
+				t.Fatalf("did not reuse agent node: %q, want %q", offer.dataDir, dir)
+			}
+			stdin, err := os.CreateTemp(t.TempDir(), "wizard-input")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { stdin.Close() })
+			if _, err := stdin.WriteString(input); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stdin.Seek(0, 0); err != nil {
+				t.Fatal(err)
+			}
+			oldStdin, oldInteractive, oldRun := os.Stdin, interactive, runAttached
+			os.Stdin, interactive = stdin, func() bool { return true }
+			runAttached = func(context.Context, *exec.Cmd) error {
+				t.Fatal("configured runtime must not launch login or another node")
+				return nil
+			}
+			t.Cleanup(func() { os.Stdin, interactive, runAttached = oldStdin, oldInteractive, oldRun })
+			if err := RunUp(context.Background(), []string{"-foreground", "-clients", "none"}, io.Discard); err != nil {
+				t.Fatal(err)
+			}
+			got, err := loadSettings(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Agents) != 1 {
+				t.Fatalf("saved agents: %+v", got.Agents)
+			}
+			if a := got.Agents[0]; got.PeerID != pid || a.Name != offer.name || a.Description != offer.description || a.policy() != offer.policy {
+				t.Fatalf("saved answers: %+v; want name=%q description=%q policy=%+v", a, offer.name, offer.description, offer.policy)
+			}
+		})
+	}
+}
+
+// The wizard offers only the agent CLIs it finds, and asks which one when
+// it finds several.
+func TestOfferAgentDetectsRuntimes(t *testing.T) {
+	withDefaultDataDir(t)
+	dir := t.TempDir()
+	old := installedRuntimes
+	t.Cleanup(func() { installedRuntimes = old })
+
+	installedRuntimes = func() []string { return nil }
+	w, out := testWizard("y\n")
+	if o, err := w.offerAgent(); o != nil || err != nil || !strings.Contains(out.String(), "No agent CLI") {
+		t.Errorf("none installed: offered %+v, %v\n%s", o, err, out)
+	}
+
+	installedRuntimes = func() []string { return []string{"codex", "claude"} }
+	w, out = testWizard("y\nnope\nclaude\n\n\n" + dir + "\n")
+	o, err := w.offerAgent()
+	if err != nil || o == nil || o.runtime != "claude" || o.name != "claude" {
+		t.Fatalf("offered %+v, %v\n%s", o, err, out)
+	}
+	for _, want := range []string{"Found: codex, claude", "Which one (codex, claude) [codex]", "Pick one of codex, claude."} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+}

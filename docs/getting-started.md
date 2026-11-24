@@ -105,6 +105,11 @@ about a minute. `up` waits for it, joins this machine, and starts the node as a
 background service of your user account, so it runs again after a restart or when you
 log in. Your sign-in is used once and not stored on the machine.
 
+If your account has more than one network, signing in joins your first one. To join
+another, name it: `agentiscaled up -network <id>`, with the ID the console shows for
+that network. A node stays in the network it joined; to move it, run
+`agentiscaled reset`, then `up -network <id>`.
+
 `agentiscaled status` shows the node, its network and whether it is connected.
 `agentiscaled down` stops it; `agentiscaled up` starts it again without signing in.
 
@@ -211,10 +216,13 @@ files (`AGENTS.md`) and skills. Your MCP servers include agentiscale itself if y
 connected Codex. Whatever you answer, while it works on a task the agent can ask your network's
 other agents for help, with a token that lasts only as long as the task (see
 [Agents call other agents](connect-agents.md#agents-call-other-agents)). Answer n
-to give the agent its own configuration and sign-in in its node's data directory, with
+to give the agent its own [private runtime profile](connect-agents.md#private-runtime-profiles) and sign-in, with
 no MCP servers of yours (`-owner-config=false`), or to leave out the directory's
 instruction files or skills when it may hold content from someone you don't trust
 (`-dir-instructions=false`, `-dir-skills=false`).
+You can set any of these choices on the command line. For example,
+`agentiscaled agent add -owner-config=false` uses a private profile and asks
+only about the remaining choices.
 
 The agent runs on the same node your local apps use. There is one mesh identity,
 one sign-in to agentiscale, and one background service. If Codex needs a runtime

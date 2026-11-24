@@ -252,16 +252,18 @@ terminal does, for at most 10 seconds) and adds the variables it lacks, such as 
 `GITHUB_TOKEN` that an MCP server's `env_vars` passes on. Variables your shell does not
 set go in `<data-dir>/agent.env`, one `NAME=value` per line, readable only by you
 (`chmod 600`); they win over both. agentiscaled never writes either. The node's log
-says how many variables came from each. With `-owner-config=false` it instead runs with its own
-`CODEX_HOME` and `HOME` (`<data-dir>/codex`) and `--ignore-user-config`, and signs in
-separately (`CODEX_HOME=<data-dir>/codex codex login`; `agent add` tells you): none of your
-own Codex skills, plugins, settings or MCP servers exist for it (it reaches the
-network's other agents only as described in [Agents call other agents](#agents-call-other-agents)),
-and it gets none of the API keys or tokens in node B's
-environment (`CODEX_API_KEY` included), only `PATH`, locale, proxy and CA settings
-(`CODEX_CA_CERTIFICATE`, `SSL_CERT_FILE`). The directory's `AGENTS.md` files and
-skills load as in any Codex run in it. For a directory whose content may come from
-someone you don't trust, `-dir-instructions=false` passes `-c project_doc_max_bytes=0` so no
+says how many variables came from each.
+
+With `-owner-config=false`, Codex uses the service's [private profile](#private-runtime-profiles)
+as `CODEX_HOME` and the `home` subdirectory as `HOME`. It runs with
+`--ignore-user-config`, so the owner's Codex skills, plugins, settings and MCP servers
+are excluded. The node supplies the MCP server for [calls to other agents](#agents-call-other-agents).
+Codex inherits basic process, locale, proxy and CA settings such as `PATH`,
+`CODEX_CA_CERTIFICATE` and `SSL_CERT_FILE`. The node excludes credential
+variables such as `CODEX_API_KEY` and `GITHUB_TOKEN`. The directory's
+`AGENTS.md` files and skills load as in any Codex run in it. For a directory
+whose content may come from someone you don't trust, `-dir-instructions=false`
+passes `-c project_doc_max_bytes=0` so no
 `AGENTS.md` is loaded, and `-dir-skills=false` turns off every skill in or
 above the directory (`.agents/skills`, `.codex/skills`), the machine's
 `/etc/codex/skills` and Codex's bundled skills. Commands Codex
@@ -273,7 +275,7 @@ minimal system files and the Codex install, with its sign-in directory denied.
 It cannot write files. The adapter does not force that profile onto your own
 configuration.
 To check this on your machine without signing in:
-`AGENTISCALE_TEST_CODEX=$(command -v codex) go test ./cmd/agentiscaled -run 'TestCodexAgainstAHostileCheckout|TestCodexOwnerWorkspaceWrite' -v`.
+`AGENTISCALE_TEST_CODEX=$(command -v codex) go test ./internal/node -run 'TestCodexAgainstAHostileCheckout|TestCodexOwnerWorkspaceWrite' -v`.
 
 ### Claude Code as the agent
 
@@ -283,14 +285,66 @@ never reads or stores that sign-in. With your configuration (the default) it run
 your own Claude Code does: your sign-in, settings, permissions, skills, plugins and
 MCP servers. Nothing can prompt for approval, so anything that would prompt is
 denied (`--permission-prompts none`, or the print mode's own denial on a Claude Code
-too old for that flag). With `-owner-config=false` it uses its own `CLAUDE_CONFIG_DIR`
-(`<data-dir>/claude`, signed in with `CLAUDE_CONFIG_DIR=<data-dir>/claude claude auth login`)
+too old for that flag). With `-owner-config=false` it uses the service's
+[private profile](#private-runtime-profiles) as `CLAUDE_CONFIG_DIR`
 and runs `--restricted` (a Claude Code without it is refused: update it with `claude update`) with only the Read, Grep and Glob tools, confined to the
-agent's directory, no MCP servers but the network's own (see
-[Agents call other agents](#agents-call-other-agents)), and none of your credentials from the environment
-(`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`). `-dir-instructions=false`
-stops `CLAUDE.md` files from loading. `-dir-skills=false` turns off every
-skill and command of the run, since Claude Code cannot turn off only the directory's.
+agent's directory, and only the node's MCP server for
+[calls to other agents](#agents-call-other-agents). The node excludes Claude
+sign-in variables such as `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN`.
+`-dir-instructions=false` stops `CLAUDE.md` files from loading. `-dir-skills=false`
+turns off every skill and command of the run, since Claude Code cannot turn off only the directory's.
+
+### Other agents (ACP)
+
+`agent add acp` offers any agent that speaks the
+[Agent Client Protocol](https://agentclientprotocol.com) on stdio. Give its command
+line, split at spaces:
+
+```sh
+agentiscaled agent add acp -command "my-agent acp" -dir ~/work/my-project
+```
+
+The agent takes its name from the program (`my-agent`) unless `-name` says
+otherwise. Each task runs the command in the agent's directory, and its process
+stays open while the task waits for an answer to the agent's question. The node
+answers every permission request the agent makes with a rejection, and shows only
+fixed summaries of its steps. The agent declares which of `-owner-config=false`,
+`-dir-instructions=false` and `-dir-skills=false` it enforces, and `agent add`
+refuses one it does not. With `-owner-config=false`, each named service has its
+own sign-in, even when several agents use the same launcher. If a caller reports
+that the agent needs to sign in, check the node log for the local login command.
+Vendors can check their agents with `agentiscaled runtime check -command "my-agent acp"`.
+For the capabilities the check exercises and how to enable calls to other agents,
+see [Add agentiscale support to your agent](add-agentiscale-support.md).
+
+### Private runtime profiles
+
+With `-owner-config=false`, each named service gets its own profile at
+`<data-dir>/agents/<service-key>/profile`. For example, an agent added with
+`-name reviewer` uses `<data-dir>/agents/reviewer/profile`. The service key is
+the name used by `agent add`. The node encodes names from saved settings or
+foreground flags when they contain other characters, such as a dot. Two
+services using the same runtime can sign in to different accounts. If you
+switch runtimes under the same service name, the new runtime uses the same
+profile and can read the files already there.
+
+All three runtimes inherit the node's proxy settings, including any credentials
+in a proxy URL.
+
+If you're upgrading from `<data-dir>/codex`, `<data-dir>/claude` or an older ACP
+profile under `<data-dir>/acp` or `<data-dir>/acp-agents`, sign in once for
+each service that needs credentials. The new profiles start empty. Interactive
+`agent add` shows and runs `codex login` or `claude auth login` with the
+service's profile path. For ACP, check the node log for the agent's sign-in
+instructions.
+
+On upgrade, a saved or foreground service with an encoded name such as
+`review.dev` starts a fresh delivery history in its new state directory,
+regardless of `-owner-config`. A task with a message ID delivered before the
+upgrade can run again. If this service has a configured definition, restore
+its trusted `definition.md` or `definition.toml` in
+`<data-dir>/agents/<service-key>/` before starting it. Services named through
+`agent add` keep their existing definition and delivery-history paths.
 
 ### Give an agent a subagent's role
 
@@ -312,7 +366,7 @@ the project the file is in (`~/work/my-project`); `-name`, `-description` and
 `codex exec`.
 
 `agent add` copies the file into the agent's own state in the node's data
-directory (`<data-dir>/agents/<name>/definition.md` or `.toml`), which the
+directory (`<data-dir>/agents/<service-key>/definition.md` or `.toml`), which the
 agent's directory may not overlap, so no task can change the agent's role and
 no edit, branch switch or delete in the project changes it unseen. The node
 runs the agent with that copy, and `agent list` shows its path. To take a
@@ -367,7 +421,7 @@ own agentiscale MCP server, if your configuration has it; those calls carry your
 rights and count as a person's (depth zero), so use `-owner-config=false` where that
 must not happen.
 A repeated message ID from the same node is refused instead of run
-again, also after node B restarts (`<data-dir>/agents/<name>/tasks-delivered.jsonl`). Incomplete
+again, also after node B restarts (`<data-dir>/agents/<service-key>/tasks-delivered.jsonl`). Incomplete
 final log writes are repaired before new tasks start. A malformed completed
 record prevents the service from starting because its duplicate history cannot
 be trusted. Preserve that file and restore a verified complete copy or reconcile its
@@ -421,16 +475,18 @@ agents. Each turn of a task gets its own Agent Mesh token, which the node mints
 from its own credential (`/oauth/token` on its local API) and seals: it allows only
 A2A calls (`a2a://*`), names the node, so it works only through it, and expires
 when the task's running time is up. The agent's run reaches it as one more MCP
-server, `agentiscale-network`, on a loopback port of the node, with the token as
-its bearer credential: `--mcp-config` in a file only you can read, outside the
+server, `agentiscale-network`, on a loopback port of the node, with a bearer
+credential of its own: a secret of that server's, the same over the task's turns,
+which is no credential anywhere else and whose tools run only while a turn runs. The server holds the turn's token and makes the calls with it: `--mcp-config` in a file only you can read, outside the
 agent's directory, with its tools allowed, for Claude Code; `-c mcp_servers.agentiscale-network.*`
-with the token in `AGENTISCALE_NETWORK_TOKEN`, which the commands Codex runs do not
+with the bearer in `AGENTISCALE_NETWORK_TOKEN`, which the commands Codex runs do not
 get, and its tools approved, for Codex. Neither run asks before it uses them: the
-token is what bounds them. It has `list_agents`, `get_agent_card`, `send_task`, `get_task` and
+turn's token is what bounds them. It has `list_agents`, `get_agent_card`, `send_task`, `get_task` and
 `cancel_task`. Every call goes to the node with the token, and the node checks it
 (signature, expiry, revocation, the A2A-only rule) and sends it on in place of its
 own credential. When the turn ends, the node revokes the token and the MCP server
-refuses it.
+runs no tool call until the task's next turn, if any, and refuses the bearer once
+the task ends.
 
 With `-owner-config=false` this server is the run's only way into the network: the
 run has no MCP server of yours and cannot reach the node's socket or credential in

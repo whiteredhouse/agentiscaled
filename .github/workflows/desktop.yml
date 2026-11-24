@@ -1,0 +1,53 @@
+name: Claude Desktop on macOS
+
+# Installs and launches the real, signed Claude Desktop app (the version in
+# qa/desktop/pins.json) on a clean macOS runner and checks it can be driven
+# through Accessibility. See qa/desktop/README.md.
+on:
+  pull_request:
+    paths: ['qa/desktop/**', '.github/workflows/desktop.yml']
+  push:
+    branches: [main]
+    paths: ['qa/desktop/**', '.github/workflows/desktop.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  desktop:
+    name: Signed Claude Desktop app
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Unit tests
+        run: python3 -I -m unittest discover -s qa/desktop -p 'test_*.py' -v
+      - name: Compile the Accessibility controller
+        run: >-
+          xcrun clang -fobjc-arc -Wall -Wextra -Werror
+          -framework AppKit -framework ApplicationServices -lproc
+          qa/desktop/native_ui.m -o "$RUNNER_TEMP/desktop-ui"
+      - name: Install, launch and inspect Claude Desktop
+        run: >-
+          python3 -I qa/desktop/preflight.py --pins qa/desktop/pins.json --out reports/desktop
+          --ui-driver "$RUNNER_TEMP/desktop-ui"
+      - name: Show the report
+        if: always()
+        run: cat reports/desktop/preflight.json || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: desktop-preflight-${{ github.run_attempt }}
+          path: reports/desktop/preflight.json
+          retention-days: 14
+          if-no-files-found: warn
