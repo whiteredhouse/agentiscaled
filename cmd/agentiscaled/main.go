@@ -28,6 +28,8 @@ Use the network:
   network agent card AGENT   read a discovered agent's current A2A card
   task     send a task to an agent, wait for it to finish, or cancel it
            (send, wait, cancel)
+  tool     find, describe and call MCP tools that other nodes offer
+           (find, describe, call)
   mcp      serve the node's MCP tools on stdio for agent clients
   skill    print or install the skill for finding and calling agents
 
@@ -61,6 +63,8 @@ func main() {
 			err = caller.RunMCP(ctx, args)
 		case "task":
 			err = runTasks(ctx, args, os.Stdin, os.Stdout, os.Stderr)
+		case "tool":
+			err = caller.RunTool(ctx, args, os.Stdin, os.Stdout, os.Stderr)
 		case "up":
 			err = node.RunUp(ctx, args, os.Stdout)
 		case "client":

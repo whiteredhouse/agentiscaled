@@ -165,6 +165,28 @@ and exits 0 when each task is cancelled or had already ended, else 1. It takes
 | 3 | The agent asks a question (input required); answer it with `task send -task`. |
 | 4 | `-timeout` passed first. `task send` has cancelled the task; after `task wait` it still runs. |
 
+## Call a remote MCP tool from the command line
+
+Other nodes of your network can offer MCP services. `agentiscaled tool` finds,
+describes and calls their tools through the running node, the same way the
+node's `find_remote_tools`, `describe_remote_tool` and `call_remote_tool` MCP
+tools do:
+
+```sh
+agentiscaled tool find                                   # every tool on the network
+agentiscaled tool find -service code-reviewer review_pr  # narrow by service or tool name
+agentiscaled tool describe code-reviewer/review_pr       # its input and output schemas
+agentiscaled tool call code-reviewer/review_pr '{"pr": 42}'
+echo '{"pr": 42}' | agentiscaled tool call code-reviewer/review_pr -
+```
+
+A tool's full name is `mcp://SERVICE/TOOL`; `SERVICE/TOOL` is short for it.
+`describe` and `call` find the node that offers the tool. When several do, they
+list their peer IDs so you can choose one with `-peer`. `call` prints the tool's
+text result and fails when the tool reports an error; `-json` prints the whole MCP
+result instead. `-labels region=eu` calls a node only if it is attested with every
+label given.
+
 ## Teach your agents to call other agents
 
 The agentiscale skill tells an agent when to hand work to another agent of your
