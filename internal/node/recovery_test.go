@@ -37,10 +37,6 @@ import (
 func TestMain(m *testing.M) {
 	// Tests see only Codex installed, whatever this machine has.
 	installedRuntimes = func() []string { return []string{"codex"} }
-	if os.Getenv("AGENTISCALE_FAKE_ACP") == "1" {
-		fakeACPAgent(os.Args[1:])
-		os.Exit(0)
-	}
 	if os.Getenv("AGENTISCALED_TEST_MCP") == "1" {
 		if err := caller.RunMCP(context.Background(), os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -58,7 +54,11 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if fakeACPDir != "" {
+		os.RemoveAll(fakeACPDir)
+	}
+	os.Exit(code)
 }
 
 // standInMesh answers a node's pulls from its network's mesh the way a mesh
