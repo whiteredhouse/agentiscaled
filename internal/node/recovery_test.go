@@ -41,6 +41,13 @@ func TestMain(m *testing.M) {
 		fakeACPAgent(os.Args[1:])
 		os.Exit(0)
 	}
+	if os.Getenv("AGENTISCALED_TEST_MCP") == "1" {
+		if err := caller.RunMCP(context.Background(), os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if os.Getenv("AGENTISCALED_TEST_MAIN") == "1" {
 		watchPoll, watchCheckAfter, watchCheckEvery = 50*time.Millisecond, 300*time.Millisecond, 500*time.Millisecond
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

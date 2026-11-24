@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,7 +19,7 @@ import (
 
 // A client speaking MCP over stdio reaches the tools of a Streamable HTTP
 // server on a Unix socket through `agentiscaled mcp`, for a session of
-// several requests.
+// several requests, with the bridge's shorter descriptions and instructions.
 func TestMCPBridgeReachesTheNodeOverItsSocket(t *testing.T) {
 	// Unix socket paths are short; t.TempDir can be too long on macOS.
 	dir, err := os.MkdirTemp("", "ais")
@@ -30,13 +29,16 @@ func TestMCPBridgeReachesTheNodeOverItsSocket(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "node.sock")
 
-	server := mcp.NewServer(&mcp.Implementation{Name: "node", Version: "test"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "node", Version: "test"}, &mcp.ServerOptions{Instructions: "Use find_remote_tools for remote MCP tools."})
 	type echoIn struct {
 		Text string `json:"text"`
 	}
-	mcp.AddTool(server, &mcp.Tool{Name: "echo", Description: "echo"}, func(_ context.Context, _ *mcp.CallToolRequest, in echoIn) (*mcp.CallToolResult, any, error) {
+	echo := func(_ context.Context, _ *mcp.CallToolRequest, in echoIn) (*mcp.CallToolResult, any, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: in.Text}}}, nil, nil
-	})
+	}
+	// One of the node's network tools, and one of its remote MCP tools.
+	mcp.AddTool(server, &mcp.Tool{Name: "get_mesh_info", Description: "echo"}, echo)
+	mcp.AddTool(server, &mcp.Tool{Name: "find_remote_tools", Description: "echo"}, echo)
 	ln, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
@@ -72,11 +74,19 @@ func TestMCPBridgeReachesTheNodeOverItsSocket(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	// The node's tools, plus the A2A task tools the bridge adds.
-	if want := []string{"cancel_task", "echo", "get_agent_card", "get_task", "send_task"}; !slices.Equal(names, want) {
+	if want := []string{"cancel_task", "find_remote_tools", "get_agent_card", "get_mesh_info", "get_task", "send_task"}; !slices.Equal(names, want) {
 		t.Fatalf("tools: %v, want %v", names, want)
 	}
+	for _, tool := range tools.Tools {
+		if tool.Name == "find_remote_tools" && !strings.Contains(tool.Description, "mcp://service/tool") {
+			t.Fatalf("find_remote_tools kept the node's description: %q", tool.Description)
+		}
+	}
+	if got := session.InitializeResult().Instructions; got != caller.BridgeInstructions {
+		t.Fatalf("instructions: %q", got)
+	}
 	for _, text := range []string{"one", "two"} {
-		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "echo", Arguments: map[string]any{"text": text}})
+		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "get_mesh_info", Arguments: map[string]any{"text": text}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -146,26 +156,5 @@ func TestMCPWaitsForTheNodeToStart(t *testing.T) {
 	}
 	if err := nodeclient.WaitForSocket(context.Background(), filepath.Join(dir, "none.sock"), 300*time.Millisecond); err == nil {
 		t.Fatal("no node: want an error")
-	}
-}
-
-// The node's instructions send clients to the a2a CLI for A2A agents; the
-// bridge drops that paragraph for its own tools. The paragraph must still
-// start the way the bridge looks for, in the fork it builds against.
-func TestTheBridgeReplacesTheNodesA2AGuide(t *testing.T) {
-	dir, err := exec.Command("go", "list", "-m", "-f", "{{if .Replace}}{{.Replace.Dir}}{{else}}{{.Dir}}{{end}}", "github.com/google/agentmesh").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	src, err := os.ReadFile(filepath.Join(strings.TrimSpace(string(dir)), "internal", "node", "mcp.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(src), "\n\n"+caller.NodeA2AGuide) {
-		t.Fatalf("the node's instructions no longer have a paragraph starting %q", caller.NodeA2AGuide)
-	}
-	in := "Intro.\n\n" + caller.NodeA2AGuide + " are NOT called via call_remote_tool: use the a2a CLI.\n\nAuth."
-	if got := caller.WithoutA2AGuide(in); got != "Intro.\n\nAuth." {
-		t.Fatalf("got %q", got)
 	}
 }
