@@ -43,7 +43,9 @@ needs a tool that only another node has.
 
 1. `find_remote_tools` lists them, narrowed by `service_name`, `tool_name` or
    `peer_id`. Each row has a `peer_id` and a full `tool_name` such as
-   `mcp://code-reviewer/review_pr`.
+   `mcp://code-reviewer/review_pr`. A row with `error` and no `tool_name` is
+   a node whose tools could not be read: skip it, and use only rows with a
+   `tool_name`.
 2. `describe_remote_tool` with that `peer_id` and `tool_name` returns its input
    schema. Read it before you call.
 3. `call_remote_tool` with the same `peer_id` and `tool_name`, and `arguments`

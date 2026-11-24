@@ -64,5 +64,9 @@ echo '{"key": "value"}' | agentiscaled network tool call SERVICE/TOOL -
   When several nodes offer the tool, pass `-peer <peer ID>` from `find`.
 - The arguments are a JSON object whose keys match the input schema. Pass
   integers above 2^53 as strings if the tool accepts them: the node rounds them.
-- `call` prints the tool's result and exits with status 1 when the tool reports
-  an error. Give a long call `-timeout`.
+- `call` prints the tool's result on standard output. When the tool reports an
+  error, the error goes to standard error and the exit status is 1; with
+  `-json`, the whole MCP result, error included, is on standard output. Give a
+  long call `-timeout`.
+- In `find`, a row marked `unavailable` (with `-json`, one with `error` and no
+  `tool_name`) is a node whose tools could not be read, not a tool.
