@@ -499,9 +499,8 @@ allows new work. `agentiscaled agent status` reports whether task execution is
 enabled or when it was stopped. Each command accepts `-data-dir DIR` to select
 the node's data directory.
 
-The old spellings `task stop`, `task resume` and `task status` remain available
-as deprecated aliases for at least one release. Update scripts to use the
-corresponding `agent` commands.
+The old spellings `task stop`, `task resume` and `task status` are gone: they
+fail and name the `agent` command to use instead.
 
 ### Agents call other agents
 
