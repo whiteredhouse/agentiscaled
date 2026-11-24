@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/whiteredhouse/agentiscaled/internal/caller"
@@ -11,7 +12,7 @@ import (
 
 func runTasks(ctx context.Context, args []string, stdin io.Reader, out, errOut io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: agentiscaled task send|wait|cancel|stop|resume|status [-data-dir DIR]")
+		return errors.New("usage: agentiscaled task send|wait|cancel")
 	}
 	switch args[0] {
 	case "send":
@@ -20,6 +21,8 @@ func runTasks(ctx context.Context, args []string, stdin io.Reader, out, errOut i
 		return caller.RunTaskWait(ctx, args[1:], out, errOut)
 	case "cancel":
 		return caller.RunTaskCancel(ctx, args[1:], out, errOut)
+	case "stop", "resume", "status":
+		return node.RunLegacyTaskControl(args, out, errOut)
 	}
-	return node.RunTaskControl(args, out)
+	return fmt.Errorf("unknown task command %q: use send, wait or cancel", args[0])
 }

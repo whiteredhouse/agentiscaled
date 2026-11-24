@@ -463,10 +463,16 @@ nodes are running from, which can kill them.
 - The task is `rejected`: its message says why, for example another task is
   still running or task execution is stopped.
 
-**Stop control:** `agentiscaled task stop -data-dir <node B's data dir>`
-cancels the running task within a second, refuses new tasks and withdraws
-the agent from discovery, also across restarts, until `agentiscaled task
-resume`. `agentiscaled task status` says which.
+On node B, `agentiscaled agent stop` cancels running work across all its hosted
+agents, refuses new tasks, and withdraws those agents from discovery. The node
+stays online. The stop survives restarts until `agentiscaled agent resume`
+allows new work. `agentiscaled agent status` reports whether task execution is
+enabled or when it was stopped. Each command accepts `-data-dir DIR` to select
+the node's data directory.
+
+The old spellings `task stop`, `task resume` and `task status` remain available
+as deprecated aliases for at least one release. Update scripts to use the
+corresponding `agent` commands.
 
 ### Agents call other agents
 
