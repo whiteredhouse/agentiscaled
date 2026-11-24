@@ -25,26 +25,46 @@ import (
 	"github.com/whiteredhouse/agentiscaled/internal/caller"
 )
 
+// fakeACP is where TestMain sets up the fake ACP agent's build, before
+// any test changes the directory or the environment (TMPDIR, HOME) that
+// go build would otherwise pick up.
+var fakeACP struct {
+	dir string   // the build's output directory, removed after the tests
+	src string   // the package directory, where go build runs
+	env []string // the environment go build runs with
+}
+
+// setUpFakeACP makes the fake ACP agent's output directory and notes the
+// package directory and environment its build will use.
+func setUpFakeACP() (cleanup func(), err error) {
+	src, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	dir, err := os.MkdirTemp("", "fake-acp")
+	if err != nil {
+		return nil, err
+	}
+	fakeACP.dir, fakeACP.src, fakeACP.env = dir, src, os.Environ()
+	return func() { os.RemoveAll(dir) }, nil
+}
+
 // fakeACPBinary is testdata/fakeacp, built once for the package's tests.
 // It is its own small program, not this test binary run again: under
 // -race the test binary takes over a second just to start, and the acp
 // tests start an agent for nearly every turn.
 var fakeACPBinary = sync.OnceValues(func() (string, error) {
-	dir, err := os.MkdirTemp("", "fake-acp")
-	if err != nil {
-		return "", err
+	if fakeACP.dir == "" {
+		return "", errors.New("TestMain did not set up the fake ACP agent")
 	}
-	fakeACPDir = dir
-	bin := filepath.Join(dir, "fake-acp-agent")
-	out, err := exec.Command("go", "build", "-o", bin, "./testdata/fakeacp").CombinedOutput()
-	if err != nil {
+	bin := filepath.Join(fakeACP.dir, "fake-acp-agent")
+	cmd := exec.Command("go", "build", "-o", bin, "./testdata/fakeacp")
+	cmd.Dir, cmd.Env = fakeACP.src, fakeACP.env
+	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("build the fake ACP agent: %v\n%s", err, out)
 	}
 	return bin, nil
 })
-
-// fakeACPDir holds the built fake ACP agent; TestMain removes it.
-var fakeACPDir string
 
 // fakeACPCommand is a command line that runs the fake ACP agent with
 // flags, through a script whose path the tests can link or rename.

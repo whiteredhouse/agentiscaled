@@ -54,10 +54,13 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
-	code := m.Run()
-	if fakeACPDir != "" {
-		os.RemoveAll(fakeACPDir)
+	cleanup, err := setUpFakeACP()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "set up the fake ACP agent:", err)
+		os.Exit(1)
 	}
+	code := m.Run()
+	cleanup()
 	os.Exit(code)
 }
 

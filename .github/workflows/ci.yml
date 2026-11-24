@@ -8,10 +8,10 @@ on:
 permissions:
   contents: read
 
-# A new push to a pull request supersedes its running checks; main keeps
-# every run.
+# A new push to a pull request supersedes its running checks. Other events
+# get a group of their own, so every push to main runs.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
