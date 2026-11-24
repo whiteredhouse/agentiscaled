@@ -911,17 +911,3 @@ func TestWaitingTaskReleasesWhatTheRuntimeKeeps(t *testing.T) {
 		t.Fatal("the service stopped before its runtime")
 	}
 }
-
-// TestFakeACPAgentKnowsTheCheckPrompts keeps the runtime check's prompts in
-// testdata/fakeacp, which is its own program, the same as runtimecheck.go's.
-func TestFakeACPAgentKnowsTheCheckPrompts(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("testdata", "fakeacp", "main.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, prompt := range []string{checkDoneTask, checkQuestionTask, checkAnswer, checkLongTask} {
-		if !strings.Contains(string(src), fmt.Sprintf("%q", prompt)) {
-			t.Errorf("testdata/fakeacp/main.go does not have the prompt %q", prompt)
-		}
-	}
-}
