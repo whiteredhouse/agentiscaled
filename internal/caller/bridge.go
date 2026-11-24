@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"strings"
+	"slices"
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -100,26 +100,20 @@ func toolResult(out Task, err error) (*mcp.CallToolResult, Task, error) {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, out, nil
 }
 
-// NodeA2AGuide starts the paragraph of the node's instructions that sends
-// clients to the a2a CLI for A2A agents; the bridge's send_task replaces it.
-const NodeA2AGuide = "A2A agents ('a2a://...')"
+// NodeTools are the node's own MCP tools that the bridge passes on to
+// clients: the node's connection and the discovery of A2A agents. The node's
+// other tools (find_remote_tools, describe_remote_tool, call_remote_tool) and
+// its instructions are about remote MCP and inference services, which
+// agentiscale does not offer; leaving them out keeps them out of every
+// client's context.
+var NodeTools = []string{"get_mesh_info", "list_local_services", "discover_remote_services"}
 
-// WithoutA2AGuide drops that paragraph from the node's instructions, so that a
-// client is not told both to install the a2a CLI and not to use it.
-func WithoutA2AGuide(instructions string) string {
-	paras := strings.Split(instructions, "\n\n")
-	kept := paras[:0]
-	for _, p := range paras {
-		if !strings.HasPrefix(p, NodeA2AGuide) {
-			kept = append(kept, p)
-		}
-	}
-	return strings.Join(kept, "\n\n")
-}
+// BridgeInstructions are the bridge's server instructions.
+const BridgeInstructions = Instructions + ` get_mesh_info reports this node's connection to the network.`
 
-// BridgeMCP serves an MCP server on the client transport that offers every
-// tool of the node's MCP server, reached over Streamable HTTP on its Unix
-// socket, plus the A2A task tools, until the client closes.
+// BridgeMCP serves an MCP server on the client transport that offers the
+// node's NodeTools, reached over Streamable HTTP on its Unix socket, plus the
+// A2A task tools, until the client closes.
 func BridgeMCP(ctx context.Context, client mcp.Transport, socket string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -132,12 +126,8 @@ func BridgeMCP(ctx context.Context, client mcp.Transport, socket string) error {
 	}
 	defer node.Close()
 
-	instructions := Instructions
-	if init := node.InitializeResult(); init != nil {
-		instructions = WithoutA2AGuide(init.Instructions) + "\n\n" + instructions
-	}
 	server := mcp.NewServer(&mcp.Implementation{Name: "agentiscale", Version: "0.1.0"},
-		&mcp.ServerOptions{Instructions: instructions})
+		&mcp.ServerOptions{Instructions: BridgeInstructions})
 	var cursor string
 	for {
 		page, err := node.ListTools(ctx, &mcp.ListToolsParams{Cursor: cursor})
@@ -145,6 +135,9 @@ func BridgeMCP(ctx context.Context, client mcp.Transport, socket string) error {
 			return fmt.Errorf("list the node's tools: %w", err)
 		}
 		for _, tool := range page.Tools {
+			if !slices.Contains(NodeTools, tool.Name) {
+				continue
+			}
 			name := tool.Name
 			server.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return node.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: req.Params.Arguments})
