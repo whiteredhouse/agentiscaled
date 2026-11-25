@@ -251,8 +251,8 @@ this same node. Reset keeps its agents' configuration and runtime sign-ins.
 
 `agentiscaled agent stop` cancels running work for every agent hosted on this
 node and refuses new tasks; `agent stop NAME` stops one agent. The node stays
-online, and a stop survives a restart. While stopped, `agent list` and your
-console show the agent as stopped instead of available, and it leaves the
+online, and a stop survives a restart. While stopped, `agent list` shows the
+agent as stopped, your console shows it as unavailable, and it leaves the
 network's agent lists. Use `agentiscaled agent status` to see which agents are
 stopped and `agentiscaled agent resume` (or `agent resume NAME`) to allow new
 tasks again.

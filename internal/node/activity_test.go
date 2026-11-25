@@ -147,8 +147,8 @@ func TestReportActivity(t *testing.T) {
 }
 
 // While the owner has stopped the agent, alone or with the node, it reports
-// stopped since the earlier stop, also to the catalog, and not once
-// resumed. Stopped is apart from its activity.
+// stopped since the earlier stop, and no state to the catalog (unavailable
+// in the console); idle again once resumed.
 func TestActivityShowsStop(t *testing.T) {
 	t.Parallel()
 	h := newAgentHarness(t, testSender)
@@ -176,7 +176,7 @@ func TestActivityShowsStop(t *testing.T) {
 	if !a.Stopped || !a.StoppedSince.Equal(nodeAt) {
 		t.Fatalf("agent and node stopped, want the earlier: %+v", a)
 	}
-	if st := a.serviceStatus(); st.State != api.ServiceState_SERVICE_STATE_IDLE || !st.Paused || !st.PausedSince.AsTime().Equal(nodeAt) {
+	if st := a.serviceStatus(); st.State != api.ServiceState_SERVICE_STATE_UNSPECIFIED || st.Since != nil {
 		t.Fatalf("stopped status: %v", st)
 	}
 	for _, f := range []string{h.svc.stopFile, h.svc.agentStopFile} {
@@ -187,7 +187,7 @@ func TestActivityShowsStop(t *testing.T) {
 	if a := h.svc.activity(); a.Stopped || a.StoppedSince != nil {
 		t.Fatalf("resumed: %+v", a)
 	}
-	if st := h.svc.activity().serviceStatus(); st.Paused || st.PausedSince != nil {
+	if st := h.svc.activity().serviceStatus(); st.State != api.ServiceState_SERVICE_STATE_IDLE {
 		t.Fatalf("resumed status: %v", st)
 	}
 }

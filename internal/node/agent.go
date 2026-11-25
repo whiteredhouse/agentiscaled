@@ -836,10 +836,11 @@ func (a agentActivity) serviceStatus() *api.ServiceStatus {
 		st.State = api.ServiceState_SERVICE_STATE_BUSY
 	}
 	if a.Stopped {
-		st.Paused = true
-		if a.StoppedSince != nil {
-			st.PausedSince = timestamppb.New(*a.StoppedSince)
-		}
+		// A stopped agent takes no tasks, which Agent Mesh's states have no
+		// word for: it reports no state, and the console shows it as
+		// unavailable. Never sent otherwise.
+		st.State = api.ServiceState_SERVICE_STATE_UNSPECIFIED
+		st.Since = nil
 	}
 	if a.Since != nil {
 		st.Since = timestamppb.New(*a.Since)
