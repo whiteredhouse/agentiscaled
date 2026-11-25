@@ -519,8 +519,9 @@ nodes are running from, which can kill them.
   still running.
 
 To stop node B's agents taking tasks, run `agentiscaled down` on node B: it
-cancels running work and takes the node's agents off the network until
-`agentiscaled up`. `agentiscaled agent remove NAME` takes one agent off.
+stops the node's background service, cancels running work and takes the node's
+agents off the network until `agentiscaled up`. A node in the foreground
+(`agentiscaled run`, or a container) stops with its process instead. `agentiscaled agent remove NAME` takes one agent off.
 
 ### Agents call other agents
 

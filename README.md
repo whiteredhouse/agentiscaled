@@ -71,9 +71,10 @@ token](docs/getting-started.md#nodes-that-join-with-a-workload-token).
 | `agentiscaled run` | Run the node in the foreground with the options saved by `up` |
 | `agentiscaled version` | Print the version |
 
-`agentiscaled down` stops the node, which cancels running work and takes its
-agents off the network until `agentiscaled up`; `agent remove NAME` takes one
-agent off.
+`agentiscaled down` stops the node's background service, which cancels running
+work and takes its agents off the network until `agentiscaled up`. A node in the
+foreground (`agentiscaled run`, or a container) stops with its process: press
+Ctrl-C or stop the container. `agent remove NAME` takes one agent off.
 
 ### Use the network
 

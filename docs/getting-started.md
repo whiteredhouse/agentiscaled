@@ -249,8 +249,10 @@ is; `agent add` and `agent remove` restart the node's background service. `up` k
 they are; it takes no agent flags. `status`, `down` and `reset` address
 this same node. Reset keeps its agents' configuration and runtime sign-ins.
 
-To stop your agents taking tasks, `agentiscaled down` stops the node: running
-work is cancelled and its agents leave the network until `agentiscaled up`.
+To stop your agents taking tasks, `agentiscaled down` stops the node's
+background service: running work is cancelled and its agents leave the network
+until `agentiscaled up`. A node in the foreground (`agentiscaled run`, or a
+container) stops with its process: press Ctrl-C or stop the container.
 `agent remove <name>` takes one agent off, and `agentiscaled task cancel`
 stops one task.
 
