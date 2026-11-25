@@ -410,8 +410,11 @@ func activityText(activity map[string]agentActivity, running bool, name string, 
 		return "not served yet"
 	}
 	var parts []string
-	if a.State == activityBusy {
+	switch a.State {
+	case activityBusy:
 		parts = append(parts, "busy"+sinceText(a.Since, now))
+	case activityStopped:
+		parts = append(parts, "stopped"+sinceText(a.Since, now))
 	}
 	switch {
 	case a.Waiting == 1:

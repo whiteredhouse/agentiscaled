@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -145,6 +146,36 @@ func TestReportActivity(t *testing.T) {
 	}
 }
 
+// While the owner has stopped task execution the agent reports stopped,
+// since the stop, also to the catalog, and idle again once resumed.
+func TestActivityShowsStop(t *testing.T) {
+	t.Parallel()
+	h := newAgentHarness(t, testSender)
+	if err := os.MkdirAll(filepath.Dir(h.svc.stopFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(h.svc.stopFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stoppedAt := time.Now().Add(-7 * time.Minute)
+	if err := os.Chtimes(h.svc.stopFile, stoppedAt, stoppedAt); err != nil {
+		t.Fatal(err)
+	}
+	a := h.svc.activity()
+	if a.State != activityStopped || a.Since == nil || !a.Since.Equal(stoppedAt) {
+		t.Fatalf("stopped: %+v", a)
+	}
+	if st := a.serviceStatus(); st.State != api.ServiceState_SERVICE_STATE_STOPPED || !st.Since.AsTime().Equal(stoppedAt) {
+		t.Fatalf("stopped status: %v", st)
+	}
+	if err := os.Remove(h.svc.stopFile); err != nil {
+		t.Fatal(err)
+	}
+	if a := h.svc.activity(); a.State != activityIdle || a.Since != nil {
+		t.Fatalf("resumed: %+v", a)
+	}
+}
+
 func TestActivityText(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
@@ -154,6 +185,7 @@ func TestActivityText(t *testing.T) {
 		"busy":    {Name: "busy", State: activityBusy, Since: ago(3*time.Minute + 20*time.Second)},
 		"asked":   {Name: "asked", State: activityIdle, Waiting: 1, WaitingSince: ago(42 * time.Second)},
 		"both":    {Name: "both", State: activityBusy, Since: ago(5 * time.Second), Waiting: 2, WaitingSince: ago(2*time.Hour + 5*time.Minute)},
+		"stopped": {Name: "stopped", State: activityStopped, Since: ago(10 * time.Minute), Waiting: 1, WaitingSince: ago(time.Hour)},
 		"unknown": {Name: "unknown", State: "something new"},
 	}
 	for name, want := range map[string]string{
@@ -161,6 +193,7 @@ func TestActivityText(t *testing.T) {
 		"busy":    "busy (3m)",
 		"asked":   "waiting for an answer (42s)",
 		"both":    "busy (5s), waiting for 2 answers (2h5m)",
+		"stopped": "stopped (10m), waiting for an answer (1h0m)",
 		"unknown": "idle",
 		"added":   "not served yet",
 	} {

@@ -388,8 +388,18 @@ func (d *deliveries) record(sender, messageID string, task a2a.TaskID) error {
 }
 
 func (s *agentService) stopped() bool {
-	_, err := os.Stat(s.stopFile)
-	return err == nil
+	_, ok := s.stoppedSince()
+	return ok
+}
+
+// stoppedSince says whether the owner has stopped task execution, and
+// since when.
+func (s *agentService) stoppedSince() (time.Time, bool) {
+	fi, err := os.Stat(s.stopFile)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return fi.ModTime(), true
 }
 
 // Execute runs one turn of a task: a new task, or the caller's answer on a
@@ -771,11 +781,12 @@ func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, from taskSender, f
 // list` shows it.
 type agentActivity struct {
 	Name string `json:"name"`
-	// State is busy while a turn of a task runs and idle otherwise.
-	// Whether the owner has stopped task execution holds for all of the
-	// node's agents, which `agentiscaled status` says.
+	// State is stopped while the owner has stopped task execution
+	// (`agentiscaled agent stop`, for all of the node's agents), busy while
+	// a turn of a task runs and idle otherwise.
 	State string `json:"state"`
-	// Since is when the running turn began.
+	// Since is when the running turn began, or when the owner stopped
+	// task execution.
 	Since *time.Time `json:"since,omitempty"`
 	// Waiting counts the tasks whose agent asked the caller a question and
 	// waits for the answer, and WaitingSince is when the longest waiting
@@ -785,8 +796,9 @@ type agentActivity struct {
 }
 
 const (
-	activityIdle = "idle"
-	activityBusy = "busy"
+	activityIdle    = "idle"
+	activityBusy    = "busy"
+	activityStopped = "stopped"
 )
 
 // activity says what the agent is doing now.
@@ -794,7 +806,12 @@ func (s *agentService) activity() agentActivity {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a := agentActivity{Name: s.name, State: activityIdle}
-	if s.current != nil {
+	if at, ok := s.stoppedSince(); ok {
+		// The agent refuses new tasks, and a turn still running ends
+		// within moments.
+		a.State = activityStopped
+		a.Since = &at
+	} else if s.current != nil {
 		a.State = activityBusy
 		started := s.current.started
 		a.Since = &started
@@ -817,8 +834,11 @@ func (s *agentService) activity() agentActivity {
 // which the owner's console shows. It carries no task content.
 func (a agentActivity) serviceStatus() *api.ServiceStatus {
 	st := &api.ServiceStatus{State: api.ServiceState_SERVICE_STATE_IDLE, InputRequired: uint32(a.Waiting)}
-	if a.State == activityBusy {
+	switch a.State {
+	case activityBusy:
 		st.State = api.ServiceState_SERVICE_STATE_BUSY
+	case activityStopped:
+		st.State = api.ServiceState_SERVICE_STATE_STOPPED
 	}
 	if a.Since != nil {
 		st.Since = timestamppb.New(*a.Since)
