@@ -73,6 +73,15 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 		}
 		info := localAgentInfo{PeerID: node.Host.ID().String(), Services: names}
 		if r.Method == http.MethodGet && r.URL.Path == "/info" {
+			// Stopped agents stay routable, so a task sent to one gets the
+			// owner's refusal, but listings leave them out.
+			if activity != nil {
+				for _, a := range activity() {
+					if a.Stopped {
+						info.Stopped = append(info.Stopped, a.Name)
+					}
+				}
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(info)
 			return

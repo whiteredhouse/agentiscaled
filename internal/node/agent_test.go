@@ -485,7 +485,7 @@ func TestOwnerStopCancelsAndRefuses(t *testing.T) {
 	}
 	waitIdle(t, h.svc)
 	refused := h.await(t, h.send(t, "", "review", nil).ID, a2a.TaskStateRejected)
-	if !strings.Contains(statusText(refused), "stopped task execution") {
+	if !strings.Contains(statusText(refused), "owner has stopped this agent") {
 		t.Fatalf("refused: %q", statusText(refused))
 	}
 	// A stopped agent is not ready: its card is withheld.

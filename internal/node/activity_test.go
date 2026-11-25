@@ -146,33 +146,49 @@ func TestReportActivity(t *testing.T) {
 	}
 }
 
-// While the owner has stopped task execution the agent reports stopped,
-// since the stop, also to the catalog, and idle again once resumed.
+// While the owner has stopped the agent, alone or with the node, it reports
+// stopped since the earlier stop, also to the catalog, and not once
+// resumed. Stopped is apart from its activity.
 func TestActivityShowsStop(t *testing.T) {
 	t.Parallel()
 	h := newAgentHarness(t, testSender)
-	if err := os.MkdirAll(filepath.Dir(h.svc.stopFile), 0o700); err != nil {
-		t.Fatal(err)
+	stop := func(path string, ago time.Duration) time.Time {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		at := time.Now().Add(-ago).Truncate(time.Second)
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+		return at
 	}
-	if err := os.WriteFile(h.svc.stopFile, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	stoppedAt := time.Now().Add(-7 * time.Minute)
-	if err := os.Chtimes(h.svc.stopFile, stoppedAt, stoppedAt); err != nil {
-		t.Fatal(err)
-	}
+	agentAt := stop(h.svc.agentStopFile, 3*time.Minute)
 	a := h.svc.activity()
-	if a.State != activityStopped || a.Since == nil || !a.Since.Equal(stoppedAt) {
-		t.Fatalf("stopped: %+v", a)
+	if a.State != activityIdle || !a.Stopped || a.StoppedSince == nil || !a.StoppedSince.Equal(agentAt) {
+		t.Fatalf("agent stopped: %+v", a)
 	}
-	if st := a.serviceStatus(); st.State != api.ServiceState_SERVICE_STATE_STOPPED || !st.Since.AsTime().Equal(stoppedAt) {
+	nodeAt := stop(h.svc.stopFile, 7*time.Minute)
+	a = h.svc.activity()
+	if !a.Stopped || !a.StoppedSince.Equal(nodeAt) {
+		t.Fatalf("agent and node stopped, want the earlier: %+v", a)
+	}
+	if st := a.serviceStatus(); st.State != api.ServiceState_SERVICE_STATE_IDLE || !st.Paused || !st.PausedSince.AsTime().Equal(nodeAt) {
 		t.Fatalf("stopped status: %v", st)
 	}
-	if err := os.Remove(h.svc.stopFile); err != nil {
-		t.Fatal(err)
+	for _, f := range []string{h.svc.stopFile, h.svc.agentStopFile} {
+		if err := os.Remove(f); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if a := h.svc.activity(); a.State != activityIdle || a.Since != nil {
+	if a := h.svc.activity(); a.Stopped || a.StoppedSince != nil {
 		t.Fatalf("resumed: %+v", a)
+	}
+	if st := h.svc.activity().serviceStatus(); st.Paused || st.PausedSince != nil {
+		t.Fatalf("resumed status: %v", st)
 	}
 }
 
@@ -185,7 +201,7 @@ func TestActivityText(t *testing.T) {
 		"busy":    {Name: "busy", State: activityBusy, Since: ago(3*time.Minute + 20*time.Second)},
 		"asked":   {Name: "asked", State: activityIdle, Waiting: 1, WaitingSince: ago(42 * time.Second)},
 		"both":    {Name: "both", State: activityBusy, Since: ago(5 * time.Second), Waiting: 2, WaitingSince: ago(2*time.Hour + 5*time.Minute)},
-		"stopped": {Name: "stopped", State: activityStopped, Since: ago(10 * time.Minute), Waiting: 1, WaitingSince: ago(time.Hour)},
+		"stopped": {Name: "stopped", State: activityBusy, Since: ago(5 * time.Second), Stopped: true, StoppedSince: ago(10 * time.Minute), Waiting: 1, WaitingSince: ago(time.Hour)},
 		"unknown": {Name: "unknown", State: "something new"},
 	}
 	for name, want := range map[string]string{
@@ -193,7 +209,7 @@ func TestActivityText(t *testing.T) {
 		"busy":    "busy (3m)",
 		"asked":   "waiting for an answer (42s)",
 		"both":    "busy (5s), waiting for 2 answers (2h5m)",
-		"stopped": "stopped (10m), waiting for an answer (1h0m)",
+		"stopped": "stopped (10m), busy (5s), waiting for an answer (1h0m)",
 		"unknown": "idle",
 		"added":   "not served yet",
 	} {

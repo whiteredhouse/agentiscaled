@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/whiteredhouse/agentiscaled/internal/nodeclient"
+	"github.com/whiteredhouse/agentiscaled/internal/nodestate"
 )
 
 const agentUsage = `usage: agentiscaled agent add|remove|list|stop|resume|status
@@ -25,9 +26,9 @@ const agentUsage = `usage: agentiscaled agent add|remove|list|stop|resume|status
                                               (-definition FILE gives it a subagent's role)
   remove [NAME]                               stop offering an agent
   list                                        show the agents this machine offers
-  stop                                        cancel running tasks and refuse new ones for all agents on this node
-  resume                                      allow all agents on this node to take tasks again
-  status                                      show whether task execution is enabled or stopped for all agents on this node
+  stop [NAME]                                 cancel running tasks and refuse new ones, for one agent or all agents on this node
+  resume [NAME]                               let the agent, or all agents on this node, take tasks again
+  status                                      show which agents on this node are stopped
 
 Run 'agentiscaled agent add -h' for its flags.`
 
@@ -50,43 +51,116 @@ func RunAgent(ctx context.Context, args []string, out io.Writer) error {
 	return fmt.Errorf("unknown agent command %q\n%s", args[0], agentUsage)
 }
 
-// runAgentControl manages the persistent stop marker shared by every agent
-// on this node.
+// runAgentControl manages the owner's persistent stop markers: one for every
+// agent on this node, and one per agent. An agent is stopped while either
+// exists.
 func runAgentControl(args []string, out, errOut io.Writer) error {
 	command := args[0]
 	fs := flag.NewFlagSet("agent "+command, flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node whose agents are controlled")
-	if err := fs.Parse(args[1:]); err != nil {
+	rest, err := parseInterleaved(fs, args[1:])
+	if err != nil {
 		return err
 	}
-	if fs.NArg() > 0 {
-		return fmt.Errorf("agent %s applies to all agents on this node and takes no positional arguments", command)
+	if len(rest) > 1 || (command == "status" && len(rest) > 0) {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(rest, " "))
 	}
-	path := stopFilePath(*dataDir)
+	name := ""
+	if len(rest) == 1 {
+		name = rest[0]
+	}
+	var names []string
+	if s, err := loadSettings(*dataDir); err == nil {
+		for _, a := range s.Agents {
+			names = append(names, a.Name)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("load settings: %w", err)
+	}
+	if name != "" && !slices.Contains(names, name) {
+		return fmt.Errorf("no agent %q on this node; agentiscaled agent list shows them", name)
+	}
+	nodeFile := stopFilePath(*dataDir)
+	agentFile := func(name string) string {
+		return nodestate.AgentStopFilePath(agentStateDir(*dataDir, name))
+	}
+	stamp := []byte(time.Now().UTC().Format(time.RFC3339) + "\n")
 	switch command {
 	case "stop":
-		if err := os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600); err != nil {
+		if name == "" {
+			if err := os.WriteFile(nodeFile, stamp, 0o600); err != nil {
+				return err
+			}
+			fmt.Fprintln(out, "stopped all agents on this node: running tasks are cancelled and new tasks are refused")
+			return nil
+		}
+		if err := os.MkdirAll(agentStateDir(*dataDir, name), 0o700); err != nil {
 			return err
 		}
-		fmt.Fprintln(out, "task execution stopped for all agents on this node: running tasks are cancelled and new tasks are refused")
+		if err := os.WriteFile(agentFile(name), stamp, 0o600); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "stopped %s: its running task is cancelled and new tasks are refused\n", name)
 	case "resume":
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if name == "" {
+			if err := os.Remove(nodeFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			fmt.Fprintln(out, "resumed all agents on this node")
+			// A stop of one agent is its own; resuming the node leaves it.
+			for _, n := range names {
+				if _, ok := nodestate.StoppedSince(agentFile(n)); ok {
+					fmt.Fprintf(out, "%s stays stopped: agentiscaled agent resume %s\n", n, n)
+				}
+			}
+			return nil
+		}
+		if err := os.Remove(agentFile(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		fmt.Fprintln(out, "task execution resumed for all agents on this node")
+		if _, ok := nodestate.StoppedSince(nodeFile); ok {
+			fmt.Fprintf(out, "resumed %s, but all agents on this node stay stopped: agentiscaled agent resume\n", name)
+			return nil
+		}
+		fmt.Fprintf(out, "resumed %s\n", name)
 	case "status":
-		b, err := os.ReadFile(path)
-		switch {
-		case err == nil:
-			fmt.Fprintf(out, "Task execution stopped since %s", b)
-		case !errors.Is(err, os.ErrNotExist):
+		since, stopped, err := readStopMarker(nodeFile)
+		if err != nil {
 			return err
-		default:
-			fmt.Fprintln(out, "Task execution enabled")
 		}
+		var lines []string
+		if stopped {
+			lines = append(lines, "All agents stopped since "+since)
+		}
+		for _, n := range names {
+			since, stopped, err := readStopMarker(agentFile(n))
+			if err != nil {
+				return err
+			}
+			if stopped {
+				lines = append(lines, n+" stopped since "+since)
+			}
+		}
+		if len(lines) == 0 {
+			lines = append(lines, "Task execution enabled")
+		}
+		fmt.Fprintln(out, strings.Join(lines, "\n"))
 	}
 	return nil
+}
+
+// readStopMarker says whether the stop marker at path exists and the time
+// it records.
+func readStopMarker(path string) (string, bool, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return strings.TrimSpace(string(b)), true, nil
 }
 
 func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {
@@ -410,11 +484,11 @@ func activityText(activity map[string]agentActivity, running bool, name string, 
 		return "not served yet"
 	}
 	var parts []string
-	switch a.State {
-	case activityBusy:
+	if a.Stopped {
+		parts = append(parts, "stopped"+sinceText(a.StoppedSince, now))
+	}
+	if a.State == activityBusy {
 		parts = append(parts, "busy"+sinceText(a.Since, now))
-	case activityStopped:
-		parts = append(parts, "stopped"+sinceText(a.Since, now))
 	}
 	switch {
 	case a.Waiting == 1:

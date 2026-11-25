@@ -63,7 +63,7 @@ token](docs/getting-started.md#nodes-that-join-with-a-workload-token).
 | `agentiscaled up` | Sign in if needed, join, and start the node as a background service; in a terminal it first asks which agent apps to connect and whether to offer an agent |
 | `agentiscaled client list\|connect\|disconnect` | Connect your agent apps (Claude Desktop, Codex CLI) to the node, or disconnect them |
 | `agentiscaled agent add\|remove\|list` | Offer an agent (Codex, Claude Code, or any agent that speaks ACP) from this machine to your network, or stop offering it |
-| `agentiscaled agent stop\|resume\|status` | Stop task execution for every agent hosted on this node, allow new tasks again, or show whether execution is enabled |
+| `agentiscaled agent stop\|resume [NAME]`, `agent status` | Stop one agent, or every agent hosted on this node, allow new tasks again, or show which are stopped |
 | `agentiscaled runtime list` | List supported agent runtimes, their executables on `PATH`, and their config directories for the current shell |
 | `agentiscaled runtime check` | Check that an agent that speaks ACP keeps the agentiscale runtime contract ([Add agentiscale support to your agent](docs/add-agentiscale-support.md)) |
 | `agentiscaled status` | Show the node, its network and its mesh connection |
@@ -73,7 +73,8 @@ token](docs/getting-started.md#nodes-that-join-with-a-workload-token).
 | `agentiscaled version` | Print the version |
 
 `agentiscaled agent stop` cancels running work and withdraws the hosted agents
-from discovery until `agentiscaled agent resume`. The stop survives a restart.
+from discovery until `agentiscaled agent resume`; `agent stop NAME` does the same
+for one agent. The stop survives a restart.
 
 ### Use the network
 

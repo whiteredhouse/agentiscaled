@@ -213,9 +213,10 @@ type agentService struct {
 	description string
 	deadline    time.Duration
 	answerWait  time.Duration
-	// stopFile exists while the owner has stopped task execution
-	// (`agentiscaled agent stop`).
-	stopFile string
+	// stopFile exists while the owner has stopped task execution for
+	// every agent on the node (`agentiscaled agent stop`), agentStopFile
+	// while for this agent only (`agentiscaled agent stop NAME`).
+	stopFile, agentStopFile string
 	// life ends when the node stops, and with it any task still running.
 	life context.Context
 	// name is the agent's service name, and network, when set, opens the
@@ -269,7 +270,8 @@ var (
 )
 
 // newAgentService keeps the named agent's delivery history in its service
-// directory. All agents on the node share the owner's stop file.
+// directory. All agents on the node share the owner's node-wide stop file;
+// each has its own beside its state.
 func newAgentService(dir string, rt runtime, dataDir, name string) (*agentService, error) {
 	state := agentStateDir(dataDir, name)
 	if err := os.MkdirAll(state, 0o700); err != nil {
@@ -279,7 +281,7 @@ func newAgentService(dir string, rt runtime, dataDir, name string) (*agentServic
 	if err != nil {
 		return nil, err
 	}
-	return &agentService{dir: dir, rt: rt, name: name, deadline: taskDeadline, answerWait: defaultAnswerWait, stopFile: stopFilePath(dataDir), life: context.Background(), delivered: delivered, waiting: map[a2a.TaskID]*waitingTask{}}, nil
+	return &agentService{dir: dir, rt: rt, name: name, deadline: taskDeadline, answerWait: defaultAnswerWait, stopFile: stopFilePath(dataDir), agentStopFile: nodestate.AgentStopFilePath(state), life: context.Background(), delivered: delivered, waiting: map[a2a.TaskID]*waitingTask{}}, nil
 }
 
 // deliveries records the requests that started a task, keyed by the sender
@@ -392,14 +394,10 @@ func (s *agentService) stopped() bool {
 	return ok
 }
 
-// stoppedSince says whether the owner has stopped task execution, and
-// since when.
+// stoppedSince says whether the owner has stopped this agent, alone or with
+// every agent on the node, and since when.
 func (s *agentService) stoppedSince() (time.Time, bool) {
-	fi, err := os.Stat(s.stopFile)
-	if err != nil {
-		return time.Time{}, false
-	}
-	return fi.ModTime(), true
+	return nodestate.StoppedSince(s.stopFile, s.agentStopFile)
 }
 
 // Execute runs one turn of a task: a new task, or the caller's answer on a
@@ -545,7 +543,7 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 			// Cancel has already ended the task.
 			return
 		case errors.Is(cause, errStoppedByOwner):
-			end(a2a.TaskStateCanceled, "cancelled", "cancelled: the owner stopped task execution on this node", map[string]any{metaExecutionBegun: true})
+			end(a2a.TaskStateCanceled, "cancelled", "cancelled: the owner stopped this agent", map[string]any{metaExecutionBegun: true})
 			return
 		case errors.Is(cause, context.Canceled):
 			end(a2a.TaskStateCanceled, "cancelled", "cancelled: the node is shutting down", map[string]any{metaExecutionBegun: true})
@@ -757,7 +755,7 @@ func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, from taskSender, f
 		return nil, prior, fmt.Sprintf("refused: message %s was already delivered as task %s", execCtx.Message.ID, first), map[string]any{metaDuplicateOf: string(first)}
 	}
 	if s.stopped() {
-		return nil, prior, "refused: the owner has stopped task execution on this node", nil
+		return nil, prior, "refused: the owner has stopped this agent", nil
 	}
 	if s.current != nil {
 		return nil, prior, "refused: a task is already running; try again when it ends", nil
@@ -781,13 +779,16 @@ func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, from taskSender, f
 // list` shows it.
 type agentActivity struct {
 	Name string `json:"name"`
-	// State is stopped while the owner has stopped task execution
-	// (`agentiscaled agent stop`, for all of the node's agents), busy while
-	// a turn of a task runs and idle otherwise.
+	// State is busy while a turn of a task runs and idle otherwise.
 	State string `json:"state"`
-	// Since is when the running turn began, or when the owner stopped
-	// task execution.
+	// Since is when the running turn began.
 	Since *time.Time `json:"since,omitempty"`
+	// Stopped is whether the owner stopped the agent (`agent stop`, for it
+	// or for every agent on the node): it refuses new tasks until resumed.
+	// It is the owner's setting, apart from what the agent is doing; a
+	// turn still ending stays busy for a moment.
+	Stopped      bool       `json:"stopped,omitempty"`
+	StoppedSince *time.Time `json:"stopped_since,omitempty"`
 	// Waiting counts the tasks whose agent asked the caller a question and
 	// waits for the answer, and WaitingSince is when the longest waiting
 	// one asked.
@@ -796,9 +797,8 @@ type agentActivity struct {
 }
 
 const (
-	activityIdle    = "idle"
-	activityBusy    = "busy"
-	activityStopped = "stopped"
+	activityIdle = "idle"
+	activityBusy = "busy"
 )
 
 // activity says what the agent is doing now.
@@ -807,11 +807,9 @@ func (s *agentService) activity() agentActivity {
 	defer s.mu.Unlock()
 	a := agentActivity{Name: s.name, State: activityIdle}
 	if at, ok := s.stoppedSince(); ok {
-		// The agent refuses new tasks, and a turn still running ends
-		// within moments.
-		a.State = activityStopped
-		a.Since = &at
-	} else if s.current != nil {
+		a.Stopped, a.StoppedSince = true, &at
+	}
+	if s.current != nil {
 		a.State = activityBusy
 		started := s.current.started
 		a.Since = &started
@@ -834,11 +832,14 @@ func (s *agentService) activity() agentActivity {
 // which the owner's console shows. It carries no task content.
 func (a agentActivity) serviceStatus() *api.ServiceStatus {
 	st := &api.ServiceStatus{State: api.ServiceState_SERVICE_STATE_IDLE, InputRequired: uint32(a.Waiting)}
-	switch a.State {
-	case activityBusy:
+	if a.State == activityBusy {
 		st.State = api.ServiceState_SERVICE_STATE_BUSY
-	case activityStopped:
-		st.State = api.ServiceState_SERVICE_STATE_STOPPED
+	}
+	if a.Stopped {
+		st.Paused = true
+		if a.StoppedSince != nil {
+			st.PausedSince = timestamppb.New(*a.StoppedSince)
+		}
 	}
 	if a.Since != nil {
 		st.Since = timestamppb.New(*a.Since)
@@ -964,7 +965,7 @@ func (s *agentService) handler(name, token string) http.Handler {
 			// While stopped the agent is not ready, so the node stops
 			// advertising it.
 			if s.stopped() {
-				http.Error(w, "task execution is stopped on this node", http.StatusServiceUnavailable)
+				http.Error(w, "the owner has stopped this agent", http.StatusServiceUnavailable)
 				return
 			}
 			cardHandler.ServeHTTP(w, r)

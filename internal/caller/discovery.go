@@ -41,7 +41,7 @@ func ListedAgents(info LocalInfo, self string, providers []*api.DiscoveredProvid
 		}
 	}
 	for _, name := range info.Services {
-		if name != self {
+		if name != self && !slices.Contains(info.Stopped, name) {
 			add(AgentRow{Service: name})
 		}
 	}

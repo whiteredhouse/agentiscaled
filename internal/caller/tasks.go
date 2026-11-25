@@ -82,6 +82,9 @@ type Task struct {
 type LocalInfo struct {
 	PeerID   string   `json:"peer_id"`
 	Services []string `json:"services"`
+	// Stopped are the services whose owner stopped them: they refuse new
+	// tasks, so agent listings leave them out.
+	Stopped []string `json:"stopped,omitempty"`
 }
 
 func (t *Client) TaskClient(ctx context.Context, target Target) (*a2aclient.Client, error) {

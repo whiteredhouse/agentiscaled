@@ -68,5 +68,28 @@ func CheckHalt(dir string) error {
 	return nil
 }
 
-// StopFilePath is shared by the node's hosted agents and its owner commands.
+// StopFilePath is shared by the node's hosted agents and its owner commands:
+// while it exists, every agent on the node refuses new tasks.
 func StopFilePath(dir string) string { return filepath.Join(dir, "tasks-stopped") }
+
+// AgentStopFilePath stops one agent, given its state directory
+// (<data-dir>/agents/<name>).
+func AgentStopFilePath(agentDir string) string { return filepath.Join(agentDir, "tasks-stopped") }
+
+// StoppedSince says whether either stop file exists, and since the earlier
+// of the two.
+func StoppedSince(files ...string) (time.Time, bool) {
+	var since time.Time
+	stopped := false
+	for _, f := range files {
+		fi, err := os.Stat(f)
+		if err != nil {
+			continue
+		}
+		if !stopped || fi.ModTime().Before(since) {
+			since = fi.ModTime()
+		}
+		stopped = true
+	}
+	return since, stopped
+}
