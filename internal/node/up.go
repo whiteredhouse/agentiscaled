@@ -687,14 +687,6 @@ func printSavedNodeStatus(out io.Writer, dir string, s settings) bool {
 	for _, a := range s.Agents {
 		fmt.Fprintf(out, "Agent:    %s (%s) in %s\n", a.Name, a.Runtime, a.Dir)
 	}
-	// The owner's stop holds for all of the node's agents.
-	if b, err := os.ReadFile(stopFilePath(dir)); err == nil {
-		fmt.Fprintf(out, "Tasks:    stopped since %s; 'agentiscaled agent resume' takes them again\n", strings.TrimSpace(string(b)))
-	} else if !errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintf(out, "Tasks:    cannot read task execution status: %v\n", err)
-	} else if len(s.Agents) > 0 {
-		fmt.Fprintln(out, "Tasks:    accepted")
-	}
 	if svc := newService(dir); svc != nil {
 		state, serviceRuns := svc.state()
 		fmt.Fprintf(out, "Service:  %s, %s\n", svc.name(), state)

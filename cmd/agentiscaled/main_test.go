@@ -43,19 +43,3 @@ func TestSingularCommandGroups(t *testing.T) {
 		})
 	}
 }
-
-// The owner's controls moved from task to agent: the old spellings fail and
-// name the new command, without touching the node.
-func TestTaskControlsMovedToAgent(t *testing.T) {
-	t.Setenv("AGENTISCALED_TEST_MAIN", "1")
-	dataDir := t.TempDir()
-	for _, command := range []string{"stop", "resume", "status"} {
-		out, err := exec.Command(os.Args[0], "task", command, "-data-dir", dataDir).CombinedOutput()
-		if err == nil || !strings.Contains(string(out), "task "+command+" is now 'agentiscaled agent "+command+"'") {
-			t.Errorf("task %s: %v\n%s", command, err, out)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(dataDir, "tasks-stopped")); !os.IsNotExist(err) {
-		t.Fatalf("task stop wrote the stop marker: %v", err)
-	}
-}

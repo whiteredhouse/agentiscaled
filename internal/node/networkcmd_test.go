@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -19,7 +18,6 @@ import (
 	"github.com/google/agentmesh/api"
 	meshnode "github.com/google/agentmesh/export/node"
 	"github.com/whiteredhouse/agentiscaled/internal/caller"
-	"github.com/whiteredhouse/agentiscaled/internal/nodestate"
 )
 
 func serveDiscoveryFixture(t *testing.T, dir, socket string, handler http.HandlerFunc) {
@@ -91,13 +89,6 @@ func TestNetworkAgentListIncludesLocalAndRemote(t *testing.T) {
 	}
 	if len(got) != 128 {
 		t.Fatalf("got %d agents, want 128", len(got))
-	}
-	if err := os.WriteFile(nodestate.StopFilePath(dir), []byte("2026-11-23T10:00:00Z\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	got = list()
-	if len(got) != 127 || slices.Contains(got, caller.AgentRow{Service: "helper"}) {
-		t.Errorf("network list after stopping local agents: %d rows", len(got))
 	}
 }
 

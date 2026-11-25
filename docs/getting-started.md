@@ -249,10 +249,12 @@ is; `agent add` and `agent remove` restart the node's background service. `up` k
 they are; it takes no agent flags. `status`, `down` and `reset` address
 this same node. Reset keeps its agents' configuration and runtime sign-ins.
 
-`agentiscaled agent stop` cancels running work for every agent hosted on this
-node and refuses new tasks. The node stays online, and the stop survives a
-restart. Use `agentiscaled agent status` to check whether task execution is
-enabled and `agentiscaled agent resume` to allow new tasks again.
+To stop your agents taking tasks, `agentiscaled down` stops the node's
+background service: running work is cancelled and its agents leave the network
+until `agentiscaled up`. A node in the foreground (`agentiscaled run`, or a
+container) stops with its process: press Ctrl-C or stop the container.
+`agent remove <name>` takes one agent off, and `agentiscaled task cancel`
+stops one task.
 
 Agent questions, runtime login and validation finish before `up` or `agent add` stops an existing
 service. If a later enrollment, save or startup step fails, agentiscaled attempts to restore
