@@ -472,35 +472,6 @@ func TestARetryAfterARestartIsNotRunTwice(t *testing.T) {
 	_ = res
 }
 
-func TestOwnerStopCancelsAndRefuses(t *testing.T) {
-	h := newAgentHarness(t, testSender)
-	task := h.send(t, "", "review", nil)
-	<-h.fix.prompts
-	if err := RunAgent(context.Background(), []string{"stop", "-data-dir", h.dir}, new(strings.Builder)); err != nil {
-		t.Fatal(err)
-	}
-	stopped := h.await(t, task.ID, a2a.TaskStateCanceled)
-	if !strings.Contains(statusText(stopped), "owner stopped") {
-		t.Fatalf("stopped: %q", statusText(stopped))
-	}
-	waitIdle(t, h.svc)
-	refused := h.await(t, h.send(t, "", "review", nil).ID, a2a.TaskStateRejected)
-	if !strings.Contains(statusText(refused), "stopped task execution") {
-		t.Fatalf("refused: %q", statusText(refused))
-	}
-	// A stopped agent is not ready: its card is withheld.
-	if code := get(t, h.url+"/.well-known/agent-card.json", "secret"); code != http.StatusServiceUnavailable {
-		t.Fatalf("card while stopped: %d", code)
-	}
-
-	if err := RunAgent(context.Background(), []string{"resume", "-data-dir", h.dir}, new(strings.Builder)); err != nil {
-		t.Fatal(err)
-	}
-	if code := get(t, h.url+"/.well-known/agent-card.json", "secret"); code != http.StatusOK {
-		t.Fatalf("card after resume: %d", code)
-	}
-}
-
 // Only the node, holding the backend credential, can reach the agent: another
 // local process cannot call it directly and claim a sender.
 func TestAgentNeedsTheNodeCredential(t *testing.T) {

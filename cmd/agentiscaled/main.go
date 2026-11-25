@@ -38,8 +38,7 @@ Run this node:
   up       sign in, join this machine to your network and keep the node running
   down     stop the background service and keep the node's identity
   status   show the node's service, network and mesh connection
-  agent    offer and manage local agents (add, remove, list) and control task
-           execution for all agents on this node (stop, resume, status)
+  agent    offer and manage local agents (add, remove, list)
   runtime  list runtimes and check an agent's runtime support
   client   connect or disconnect agent clients such as Claude Desktop and Codex CLI
   run      run the node in the foreground with its saved settings

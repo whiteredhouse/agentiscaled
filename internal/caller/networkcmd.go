@@ -122,11 +122,6 @@ func listNetworkAgents(ctx context.Context, client *Client, dir string) (AgentLi
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return AgentList{}, fmt.Errorf("list this node's agents: %w", err)
 	}
-	if _, err := os.Stat(nodestate.StopFilePath(dir)); err == nil {
-		info.Services = nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return AgentList{}, fmt.Errorf("read this node's execution status: %w", err)
-	}
 	providers, err := readDiscovery(ctx, client.Mesh, client.BaseURL, "")
 	if err != nil {
 		return AgentList{}, fmt.Errorf("discover the network's agents: %w", err)

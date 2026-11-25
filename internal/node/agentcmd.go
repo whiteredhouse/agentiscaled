@@ -19,15 +19,12 @@ import (
 	"github.com/whiteredhouse/agentiscaled/internal/nodeclient"
 )
 
-const agentUsage = `usage: agentiscaled agent add|remove|list|stop|resume|status
+const agentUsage = `usage: agentiscaled agent add|remove|list
 
   add [RUNTIME] [-dir DIR] [-name NAME] ...  offer an agent from this machine to your network
                                               (-definition FILE gives it a subagent's role)
   remove [NAME]                               stop offering an agent
   list                                        show the agents this machine offers
-  stop                                        cancel running tasks and refuse new ones for all agents on this node
-  resume                                      allow all agents on this node to take tasks again
-  status                                      show whether task execution is enabled or stopped for all agents on this node
 
 Run 'agentiscaled agent add -h' for its flags.`
 
@@ -44,49 +41,8 @@ func RunAgent(ctx context.Context, args []string, out io.Writer) error {
 		return runAgentRemove(args[1:], out)
 	case "list":
 		return runAgentList(args[1:], out)
-	case "stop", "resume", "status":
-		return runAgentControl(args, out, os.Stderr)
 	}
 	return fmt.Errorf("unknown agent command %q\n%s", args[0], agentUsage)
-}
-
-// runAgentControl manages the persistent stop marker shared by every agent
-// on this node.
-func runAgentControl(args []string, out, errOut io.Writer) error {
-	command := args[0]
-	fs := flag.NewFlagSet("agent "+command, flag.ContinueOnError)
-	fs.SetOutput(errOut)
-	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node whose agents are controlled")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
-	}
-	if fs.NArg() > 0 {
-		return fmt.Errorf("agent %s applies to all agents on this node and takes no positional arguments", command)
-	}
-	path := stopFilePath(*dataDir)
-	switch command {
-	case "stop":
-		if err := os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600); err != nil {
-			return err
-		}
-		fmt.Fprintln(out, "task execution stopped for all agents on this node: running tasks are cancelled and new tasks are refused")
-	case "resume":
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		fmt.Fprintln(out, "task execution resumed for all agents on this node")
-	case "status":
-		b, err := os.ReadFile(path)
-		switch {
-		case err == nil:
-			fmt.Fprintf(out, "Task execution stopped since %s", b)
-		case !errors.Is(err, os.ErrNotExist):
-			return err
-		default:
-			fmt.Fprintln(out, "Task execution enabled")
-		}
-	}
-	return nil
 }
 
 func runAgentAdd(ctx context.Context, args []string, out io.Writer) error {

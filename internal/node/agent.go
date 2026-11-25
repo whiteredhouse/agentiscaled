@@ -213,9 +213,6 @@ type agentService struct {
 	description string
 	deadline    time.Duration
 	answerWait  time.Duration
-	// stopFile exists while the owner has stopped task execution
-	// (`agentiscaled agent stop`).
-	stopFile string
 	// life ends when the node stops, and with it any task still running.
 	life context.Context
 	// name is the agent's service name, and network, when set, opens the
@@ -265,7 +262,6 @@ type waitingTask struct {
 
 var (
 	errCancelledByCaller = errors.New("cancelled by the caller")
-	errStoppedByOwner    = errors.New("stopped by the owner")
 )
 
 // newAgentService keeps the named agent's delivery history in its service
@@ -279,7 +275,7 @@ func newAgentService(dir string, rt runtime, dataDir, name string) (*agentServic
 	if err != nil {
 		return nil, err
 	}
-	return &agentService{dir: dir, rt: rt, name: name, deadline: taskDeadline, answerWait: defaultAnswerWait, stopFile: stopFilePath(dataDir), life: context.Background(), delivered: delivered, waiting: map[a2a.TaskID]*waitingTask{}}, nil
+	return &agentService{dir: dir, rt: rt, name: name, deadline: taskDeadline, answerWait: defaultAnswerWait, life: context.Background(), delivered: delivered, waiting: map[a2a.TaskID]*waitingTask{}}, nil
 }
 
 // deliveries records the requests that started a task, keyed by the sender
@@ -387,11 +383,6 @@ func (d *deliveries) record(sender, messageID string, task a2a.TaskID) error {
 	return nil
 }
 
-func (s *agentService) stopped() bool {
-	_, err := os.Stat(s.stopFile)
-	return err == nil
-}
-
 // Execute runs one turn of a task: a new task, or the caller's answer on a
 // task whose agent asked a question (input-required), which carries on in
 // the runtime's session of the turn before.
@@ -457,7 +448,6 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		}
 		runCtx, stopDeadline := context.WithTimeoutCause(runCtx, s.deadline-prior.used, context.DeadlineExceeded)
 		defer stopDeadline()
-		go s.watchStop(runCtx, cancel)
 
 		s.mu.Lock()
 		run.begun = true
@@ -533,9 +523,6 @@ func (s *agentService) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		switch cause := context.Cause(runCtx); {
 		case errors.Is(cause, errCancelledByCaller):
 			// Cancel has already ended the task.
-			return
-		case errors.Is(cause, errStoppedByOwner):
-			end(a2a.TaskStateCanceled, "cancelled", "cancelled: the owner stopped task execution on this node", map[string]any{metaExecutionBegun: true})
 			return
 		case errors.Is(cause, context.Canceled):
 			end(a2a.TaskStateCanceled, "cancelled", "cancelled: the node is shutting down", map[string]any{metaExecutionBegun: true})
@@ -746,9 +733,6 @@ func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, from taskSender, f
 	if first, ok := s.delivered.first(sender, execCtx.Message.ID); ok {
 		return nil, prior, fmt.Sprintf("refused: message %s was already delivered as task %s", execCtx.Message.ID, first), map[string]any{metaDuplicateOf: string(first)}
 	}
-	if s.stopped() {
-		return nil, prior, "refused: the owner has stopped task execution on this node", nil
-	}
 	if s.current != nil {
 		return nil, prior, "refused: a task is already running; try again when it ends", nil
 	}
@@ -772,8 +756,6 @@ func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, from taskSender, f
 type agentActivity struct {
 	Name string `json:"name"`
 	// State is busy while a turn of a task runs and idle otherwise.
-	// Whether the owner has stopped task execution holds for all of the
-	// node's agents, which `agentiscaled status` says.
 	State string `json:"state"`
 	// Since is when the running turn began.
 	Since *time.Time `json:"since,omitempty"`
@@ -858,23 +840,6 @@ func (s *agentService) finish(run *agentRun) {
 	}
 }
 
-// watchStop ends the run when the owner stops task execution.
-func (s *agentService) watchStop(ctx context.Context, cancel context.CancelCauseFunc) {
-	t := time.NewTicker(500 * time.Millisecond)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			if s.stopped() {
-				cancel(errStoppedByOwner)
-				return
-			}
-		}
-	}
-}
-
 func (s *agentService) Cancel(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 	return func(yield func(a2a.Event, error) bool) {
 		s.mu.Lock()
@@ -941,12 +906,6 @@ func (s *agentService) handler(name, token string) http.Handler {
 			return
 		}
 		if r.Method == http.MethodGet && (r.URL.Path == "/.well-known/agent-card.json" || r.URL.Path == "/") {
-			// While stopped the agent is not ready, so the node stops
-			// advertising it.
-			if s.stopped() {
-				http.Error(w, "task execution is stopped on this node", http.StatusServiceUnavailable)
-				return
-			}
 			cardHandler.ServeHTTP(w, r)
 			return
 		}
@@ -1052,8 +1011,6 @@ func serveAgent(ctx context.Context, s *agentService, name string) (string, <-ch
 	}()
 	return fmt.Sprintf("http://:%s@%s", token, ln.Addr()), stopped, nil
 }
-
-func stopFilePath(dataDir string) string { return nodestate.StopFilePath(dataDir) }
 
 func messageText(m *a2a.Message) string { return caller.MessageText(m) }
 

@@ -516,17 +516,11 @@ nodes are running from, which can kill them.
   out of usage. Wait for the time it names, or sign the agent in with another
   account.
 - The task is `rejected`: its message says why, for example another task is
-  still running or task execution is stopped.
+  still running.
 
-On node B, `agentiscaled agent stop` cancels running work across all its hosted
-agents, refuses new tasks, and withdraws those agents from discovery. The node
-stays online. The stop survives restarts until `agentiscaled agent resume`
-allows new work. `agentiscaled agent status` reports whether task execution is
-enabled or when it was stopped. Each command accepts `-data-dir DIR` to select
-the node's data directory.
-
-The old spellings `task stop`, `task resume` and `task status` are gone: they
-fail and name the `agent` command to use instead.
+To stop node B's agents taking tasks, run `agentiscaled down` on node B: it
+cancels running work and takes the node's agents off the network until
+`agentiscaled up`. `agentiscaled agent remove NAME` takes one agent off.
 
 ### Agents call other agents
 
