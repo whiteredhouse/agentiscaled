@@ -439,7 +439,7 @@ func TestCodexThread(t *testing.T) {
 // next question finds it before its timer does, and publishing it logs no
 // failure.
 func TestAnExpiredWaitTimesOutWhenTheNextQuestionFindsIt(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it captures the process-wide log.
 	logged := &syncBuffer{}
 	log.SetOutput(logged)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
