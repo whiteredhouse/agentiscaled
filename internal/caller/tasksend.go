@@ -21,15 +21,20 @@ import (
 )
 
 const taskSendUsage = `usage: agentiscaled task send [flags] AGENT [MESSAGE]
+       agentiscaled task send [flags] -task TASK [MESSAGE]
 
 Sends MESSAGE to AGENT on your network through this machine's running node,
 prints the agent's steps on standard error while it works, and prints its
 answer on standard output. Without MESSAGE, or with -, the message is read
-from standard input. With -no-wait it prints the task's ID and returns at
-once; agentiscaled task wait follows the task from there.
+from standard input. With -no-wait it prints the task's reference and
+returns at once; agentiscaled task wait follows the task from there.
 
 AGENT is an agent this node hosts, or one another node of your network
-offers; give -peer when several nodes offer an agent of that name.
+offers; give -peer when several nodes offer an agent of that name. A new
+task passes over an agent that is draining when another of the name is not.
+
+With -task, MESSAGE answers the question of task TASK: the reference
+(PEER/AGENT/TASK-ID) that task send printed, which names the agent too.
 ` + taskExitCodes + `
 Flags:
 `
@@ -49,9 +54,12 @@ var findEvery = 2 * time.Second
 const cancelTimeout = 10 * time.Second
 
 type taskSendOptions struct {
-	dataDir   string
-	peer      string
+	dataDir string
+	peer    string
+	// taskID is -task, the reference of the task MESSAGE answers, and
+	// answer is what it says.
 	taskID    string
+	answer    TaskRef
 	timeout   time.Duration
 	waitAgent time.Duration
 	json      bool
@@ -59,6 +67,9 @@ type taskSendOptions struct {
 	// terminal is set when standard output is a terminal, which the
 	// answer must not drive.
 	terminal bool
+	// ref is the reference of the task the command reports on, once it
+	// is known.
+	ref string
 }
 
 // RunTaskSend is `agentiscaled task send`: it calls an agent from a script or
@@ -73,22 +84,38 @@ func RunTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 	}
 	fs.StringVar(&o.dataDir, "data-dir", nodestate.DefaultDataDir(), "Data directory of the running node that sends the task")
 	fs.StringVar(&o.peer, "peer", "", "Peer ID of the node that offers AGENT, when several do")
-	fs.StringVar(&o.taskID, "task", "", "ID of a task waiting for your answer (input required): MESSAGE answers its question")
+	fs.StringVar(&o.taskID, "task", "", "Reference (PEER/AGENT/TASK-ID) of a task waiting for your answer (input required): MESSAGE answers its question")
 	fs.DurationVar(&o.timeout, "timeout", DefaultTaskDeadline, "Give up and cancel the task after this long")
 	fs.DurationVar(&o.waitAgent, "wait-agent", 0, "Keep looking this long for a remote AGENT that is not on the network yet, such as one that is joining")
-	fs.BoolVar(&o.json, "json", false, "Print the task's ID, state and result as JSON instead of the answer alone")
-	fs.BoolVar(&o.noWait, "no-wait", false, "Print the task's ID once the agent has it and return, leaving the task to run; follow it with agentiscaled task wait")
+	fs.BoolVar(&o.json, "json", false, "Print the task's reference, ID, state and result as JSON instead of the answer alone")
+	fs.BoolVar(&o.noWait, "no-wait", false, "Print the task's reference once the agent has it and return, leaving the task to run; follow it with agentiscaled task wait")
 	pos, err := cli.ParseInterleaved(fs, args)
 	if err != nil {
 		return err
 	}
-	if len(pos) < 1 || len(pos) > 2 {
-		fs.Usage()
-		return errors.New("task send takes an agent and a message")
-	}
-	agent := pos[0]
-	if !ServiceName.MatchString(agent) {
-		return fmt.Errorf("%q is not an agent name", agent)
+	var agent string
+	if o.taskID != "" {
+		// The reference names the agent and its node.
+		if o.answer, err = ParseTaskRef(o.taskID); err != nil {
+			return fmt.Errorf("-task: %w", err)
+		}
+		if len(pos) > 1 {
+			fs.Usage()
+			return errors.New("with -task, task send takes only the answer: the task's reference names its agent")
+		}
+		if o.peer != "" || o.waitAgent != 0 {
+			return errors.New("with -task, the task's reference says where its agent is: drop -peer and -wait-agent")
+		}
+		agent, pos = o.answer.Service, append([]string{o.answer.Service}, pos...)
+	} else {
+		if len(pos) < 1 || len(pos) > 2 {
+			fs.Usage()
+			return errors.New("task send takes an agent and a message")
+		}
+		agent = pos[0]
+		if !ServiceName.MatchString(agent) {
+			return fmt.Errorf("%q is not an agent name", agent)
+		}
 	}
 	text := "-"
 	if len(pos) == 2 {
@@ -106,9 +133,6 @@ func RunTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 	}
 	if strings.TrimSpace(text) == "" {
 		return errors.New("the message is empty")
-	}
-	if o.taskID != "" && !taskID.MatchString(o.taskID) {
-		return fmt.Errorf("-task %q is not a task ID", o.taskID)
 	}
 	if o.timeout <= 0 {
 		return errors.New("-timeout must be positive")
@@ -154,30 +178,28 @@ func readMessage(ctx context.Context, stdin io.Reader) ([]byte, error) {
 }
 
 // sendAndFollow finds agent, sends it text and follows the task until it
-// settles or the deadline, which ends ctx, passes.
+// settles or the deadline, which ends ctx, passes. An answer goes where its
+// task is, as the task's reference says.
 func sendAndFollow(ctx context.Context, deadline time.Time, tasks *Client, agent, text string, o taskSendOptions, out, errOut io.Writer) error {
-	// A drain steers only a new task: an answer goes to the agent that
-	// holds its task.
-	var target Target
-	var where string
-	var err error
-	if o.taskID == "" {
-		target, where, err = findAgent(ctx, tasks, agent, o.peer, o.waitAgent, true)
+	target, where := o.answer.Target, ""
+	if o.answer.ID == "" {
+		var err error
+		if target, where, err = findAgent(ctx, tasks, agent, o.peer, o.waitAgent, true); err != nil {
+			return timedOut(err, ctx, o.timeout)
+		}
 	} else {
-		target, where, err = taskTarget(ctx, tasks, agent, o.peer, o.taskID, o.waitAgent)
+		where = placeOf(ctx, tasks, target)
+		o.ref = o.answer.String()
 	}
-	if err != nil {
-		return timedOut(err, ctx, o.timeout)
-	}
-	sent, err := tasks.Send(ctx, target, text, o.taskID)
+	sent, err := tasks.Send(ctx, target, text, o.answer.ID)
 	if err != nil {
 		if ctx.Err() == nil {
 			return err
 		}
 		// The agent may have taken the task before the caller went: stop
 		// the task it knows, and say that a new one may still run.
-		if o.taskID != "" {
-			return stopTask(ctx, tasks, target, o, out, Task{TaskID: o.taskID}, err)
+		if o.answer.ID != "" {
+			return stopTask(ctx, tasks, o.answer.Target, o, out, Task{TaskID: o.answer.ID}, err)
 		}
 		return withExit(timeoutExit(ctx), fmt.Errorf("%s before %s confirmed the task, which may still run: %w", endedBy(ctx, o.timeout), agent, err))
 	}
@@ -189,19 +211,21 @@ func sendAndFollow(ctx context.Context, deadline time.Time, tasks *Client, agent
 		tasks.Cancel(stopCtx, target, id)
 		return fmt.Errorf("%s answered with %q, which is not a task ID; cancelled it", agent, id)
 	}
-	if o.taskID == "" {
+	ref := TaskRef{target, id}
+	o.ref = ref.String()
+	if o.answer.ID == "" {
 		fmt.Fprintf(errOut, "sent task %s to %s %s\n", id, agent, where)
 	} else {
 		fmt.Fprintf(errOut, "answered task %s of %s %s\n", id, agent, where)
 	}
 
 	if o.noWait {
-		fmt.Fprintf(errOut, "follow it with: %s\n", waitCommand(o, target, id))
+		fmt.Fprintf(errOut, "follow it with: %s\n", waitCommand(o, ref))
 		if o.json {
 			return report(out, o, sent, nil)
 		}
-		if _, err := fmt.Fprintln(out, id); err != nil {
-			return fmt.Errorf("write the task ID: %w", err)
+		if _, err := fmt.Fprintln(out, o.ref); err != nil {
+			return fmt.Errorf("write the task's reference: %w", err)
 		}
 		return nil
 	}
@@ -254,7 +278,7 @@ func settle(out io.Writer, o taskSendOptions, target Target, agent string, task 
 	case task.Terminal == "completed":
 		return report(out, o, task, nil)
 	case task.State == StateName(a2a.TaskStateInputRequired):
-		return report(out, o, task, withExit(exitInputRequired, fmt.Errorf("%s asks: %s\nanswer with: %s", agent, terminalSafe(task.Message), answerCommand(o, target, task.TaskID))))
+		return report(out, o, task, withExit(exitInputRequired, fmt.Errorf("%s asks: %s\nanswer with: %s", agent, terminalSafe(task.Message), answerCommand(o, TaskRef{target, task.TaskID}))))
 	default:
 		why := task.Terminal
 		if task.Message != "" {
@@ -269,18 +293,15 @@ func settle(out io.Writer, o taskSendOptions, target Target, agent string, task 
 // A2A server would send, is refused rather than shown or put in a command.
 var taskID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
-// answerCommand is the command that answers the question of task id, a
-// plain taskID; -- keeps an answer that starts with a dash an answer.
-func answerCommand(o taskSendOptions, target Target, id string) string {
+// answerCommand is the command that answers the question of task ref, whose
+// ID is a plain taskID; -- keeps an answer that starts with a dash an
+// answer.
+func answerCommand(o taskSendOptions, ref TaskRef) string {
 	answer := []string{"agentiscaled task send"}
 	if o.dataDir != nodestate.DefaultDataDir() {
 		answer = append(answer, "-data-dir", cli.ShellQuote(o.dataDir))
 	}
-	answer = append(answer, "-task", id)
-	if target.PeerID != "" {
-		answer = append(answer, "-peer", target.PeerID)
-	}
-	return strings.Join(append(answer, target.Service, "--", `"<your answer>"`), " ")
+	return strings.Join(append(answer, "-task", ref.String(), "--", `"<your answer>"`), " ")
 }
 
 // endedBy says what ended a call whose context is done.
@@ -314,6 +335,9 @@ func stopTask(ctx context.Context, tasks *Client, target Target, o taskSendOptio
 // the escape sequences that could drive it; a pipe or file gets it as the
 // agent wrote it.
 func report(out io.Writer, o taskSendOptions, task Task, err error) error {
+	if task.Ref == "" {
+		task.Ref = o.ref
+	}
 	var werr error
 	if o.json {
 		b, _ := json.MarshalIndent(task, "", "  ")
@@ -352,8 +376,11 @@ func findAgent(ctx context.Context, tasks *Client, agent, peer string, wait time
 	info, err := tasks.LocalInfo(ctx)
 	_, localDrained := info.Draining[agent]
 	local := err == nil && slices.Contains(info.Services, agent)
+	// This node's agent is named by this node's peer ID too, so that a
+	// task's reference says where it went.
+	here := Target{PeerID: info.PeerID, Service: agent}
 	if local && (!fresh || !localDrained) {
-		return Target{Service: agent}, "on this node", nil
+		return here, "on this node", nil
 	}
 	// -wait-agent bounds the search, lookups included, and leaves room for
 	// a few of them however short it is.
@@ -372,14 +399,14 @@ func findAgent(ctx context.Context, tasks *Client, agent, peer string, wait time
 		} else if err == nil && local {
 			// Every other agent of the name drains too: this node's
 			// refuses the task with its reason.
-			return Target{Service: agent}, "on this node", nil
+			return here, "on this node", nil
 		}
 		switch {
 		case err != nil && find.Err() != nil && ctx.Err() == nil && missing != nil:
 			// The search's own time ran out during a lookup.
 			return Target{}, "", missing
 		case err != nil && local:
-			return Target{Service: agent}, "on this node", nil
+			return here, "on this node", nil
 		case err != nil:
 		case len(peers) == 1:
 			return Target{PeerID: peers[0], Service: agent}, "on node " + peers[0], nil
@@ -400,62 +427,9 @@ func findAgent(ctx context.Context, tasks *Client, agent, peer string, wait time
 	}
 }
 
-// taskTarget finds the agent of the name that holds task id, which this
-// node sent. A drain can send a new task past an agent of the name, so the
-// name alone does not say where a task went: when the name picks no one
-// agent, or picks one that does not know the task, the task decides. peer,
-// when given, says where it is.
-func taskTarget(ctx context.Context, tasks *Client, agent, peer, id string, wait time.Duration) (Target, string, error) {
-	target, where, err := findAgent(ctx, tasks, agent, peer, wait, false)
-	if peer != "" {
-		return target, where, err
-	}
-	if err != nil {
-		// Several nodes offer the name: the one that holds the task is
-		// the one.
-		if other, ok := taskElsewhere(ctx, tasks, agent, id, Target{}); ok {
-			return other, targetPlace(other), nil
-		}
-		return target, where, err
-	}
-	if _, err := tasks.Watch(ctx, target, a2a.TaskID(id), 0, nil); !errors.Is(err, a2a.ErrTaskNotFound) {
-		return target, where, nil
-	}
-	if other, ok := taskElsewhere(ctx, tasks, agent, id, target); ok {
-		return other, targetPlace(other), nil
-	}
-	return target, where, nil
-}
-
-// taskElsewhere looks for task id at the agents of the name other than
-// tried (none, when tried is empty): this node's and those other nodes
-// offer. An agent shows a task
-// only to whoever sent it, so only the one that holds it answers.
-func taskElsewhere(ctx context.Context, tasks *Client, agent, id string, tried Target) (Target, bool) {
-	var candidates []Target
-	info, err := tasks.LocalInfo(ctx)
-	if err == nil && slices.Contains(info.Services, agent) {
-		candidates = append(candidates, Target{Service: agent})
-	}
-	if peers, _, err := discoverAgent(ctx, tasks.Mesh, tasks.BaseURL, agent, info.PeerID); err == nil {
-		for _, p := range peers {
-			candidates = append(candidates, Target{PeerID: p, Service: agent})
-		}
-	}
-	for _, c := range candidates {
-		if c == tried {
-			continue
-		}
-		if _, err := tasks.Watch(ctx, c, a2a.TaskID(id), 0, nil); err == nil {
-			return c, true
-		}
-	}
-	return Target{}, false
-}
-
-// targetPlace says where target's agent is, for the caller.
-func targetPlace(target Target) string {
-	if target.PeerID == "" {
+// placeOf says where target's agent is, for the caller.
+func placeOf(ctx context.Context, tasks *Client, target Target) string {
+	if info, err := tasks.LocalInfo(ctx); err == nil && info.PeerID == target.PeerID {
 		return "on this node"
 	}
 	return "on node " + target.PeerID

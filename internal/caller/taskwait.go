@@ -15,17 +15,16 @@ import (
 	"github.com/whiteredhouse/agentiscaled/internal/nodestate"
 )
 
-const taskWaitUsage = `usage: agentiscaled task wait [flags] AGENT TASK
+const taskWaitUsage = `usage: agentiscaled task wait [flags] TASK
 
-Waits for task TASK of AGENT, such as one sent with task send -no-wait, to
-end or to ask a question, printing the agent's steps on standard error while
-it works and its answer on standard output. A task that has already ended or
-asks a question returns at once. Waiting never stops the task: when -timeout
-passes or you press Ctrl-C, the task goes on and you can wait for it again.
+Waits for task TASK, such as one sent with task send -no-wait, to end or to
+ask a question, printing the agent's steps on standard error while it works
+and its answer on standard output. A task that has already ended or asks a
+question returns at once. Waiting never stops the task: when -timeout passes
+or you press Ctrl-C, the task goes on and you can wait for it again.
 
-AGENT is an agent this node hosts, or one another node of your network
-offers; give -peer when several nodes offer an agent of that name. Only the
-node that sent a task can follow it.
+TASK is the reference task send printed, PEER/AGENT/TASK-ID: it names the
+agent and the node it runs on. Only the node that sent a task can follow it.
 ` + taskExitCodes + `
 Flags:
 `
@@ -107,23 +106,19 @@ func RunTaskWait(ctx context.Context, args []string, out, errOut io.Writer) erro
 		fs.PrintDefaults()
 	}
 	fs.StringVar(&o.dataDir, "data-dir", nodestate.DefaultDataDir(), "Data directory of the running node that sent the task")
-	fs.StringVar(&o.peer, "peer", "", "Peer ID of the node that offers AGENT, when several do")
 	fs.DurationVar(&o.timeout, "timeout", DefaultTaskDeadline, "Stop waiting after this long; the task goes on")
-	fs.BoolVar(&o.json, "json", false, "Print the task's ID, state and result as JSON instead of the answer alone")
+	fs.BoolVar(&o.json, "json", false, "Print the task's reference, ID, state and result as JSON instead of the answer alone")
 	pos, err := cli.ParseInterleaved(fs, args)
 	if err != nil {
 		return err
 	}
-	if len(pos) != 2 {
+	if len(pos) != 1 {
 		fs.Usage()
-		return errors.New("task wait takes an agent and a task ID")
+		return errors.New("task wait takes a task's reference, as task send printed it")
 	}
-	agent, id := pos[0], pos[1]
-	if !ServiceName.MatchString(agent) {
-		return fmt.Errorf("%q is not an agent name", agent)
-	}
-	if !taskID.MatchString(id) {
-		return fmt.Errorf("%q is not a task ID", id)
+	ref, err := ParseTaskRef(pos[0])
+	if err != nil {
+		return err
 	}
 	if o.timeout <= 0 {
 		return errors.New("-timeout must be positive")
@@ -143,19 +138,17 @@ func RunTaskWait(ctx context.Context, args []string, out, errOut io.Writer) erro
 	if f, ok := out.(*os.File); ok {
 		o.terminal = cli.IsTerminal(f)
 	}
-	return safeError(waitForTask(ctx, deadline, tasks, agent, id, o, out, errOut))
+	return safeError(waitForTask(ctx, deadline, tasks, ref, o, out, errOut))
 }
 
 // lastReadTimeout bounds the read of a task's state after a wait ends.
 var lastReadTimeout = cancelTimeout
 
-// waitForTask finds agent and follows its task id until the task settles or
-// the deadline, which ends ctx, passes, and reports it.
-func waitForTask(ctx context.Context, deadline time.Time, tasks *Client, agent, id string, o taskSendOptions, out, errOut io.Writer) error {
-	target, _, err := taskTarget(ctx, tasks, agent, o.peer, id, 0)
-	if err != nil {
-		return timedOut(err, ctx, o.timeout)
-	}
+// waitForTask follows task ref until it settles or the deadline, which ends
+// ctx, passes, and reports it.
+func waitForTask(ctx context.Context, deadline time.Time, tasks *Client, ref TaskRef, o taskSendOptions, out, errOut io.Writer) error {
+	target, agent, id := ref.Target, ref.Service, ref.ID
+	o.ref = ref.String()
 	task, err := followTask(ctx, tasks, target, agent, Task{TaskID: id}, deadline, errOut)
 	task.TaskID = id
 	if ctx.Err() != nil {
@@ -177,7 +170,7 @@ func waitForTask(ctx context.Context, deadline time.Time, tasks *Client, agent, 
 		}
 		// The task's ID and the command to wait again, even when its state
 		// could not be read: a script goes on from them.
-		return report(out, o, task, withExit(timeoutExit(ctx), fmt.Errorf("task %s %s: %s; it goes on, wait again with: %s\nor cancel it with: %s", id, state, why, waitCommand(o, target, id), taskCommand("cancel", o, target, id))))
+		return report(out, o, task, withExit(timeoutExit(ctx), fmt.Errorf("task %s %s: %s; it goes on, wait again with: %s\nor cancel it with: %s", id, state, why, waitCommand(o, ref), taskCommand("cancel", o, ref))))
 	}
 	if err != nil {
 		return err
@@ -185,20 +178,18 @@ func waitForTask(ctx context.Context, deadline time.Time, tasks *Client, agent, 
 	return settle(out, o, target, agent, task)
 }
 
-// waitCommand is the command that waits for task id, a plain taskID.
-func waitCommand(o taskSendOptions, target Target, id string) string {
-	return taskCommand("wait", o, target, id)
+// waitCommand is the command that waits for task ref, whose ID is a plain
+// taskID.
+func waitCommand(o taskSendOptions, ref TaskRef) string {
+	return taskCommand("wait", o, ref)
 }
 
-// taskCommand is the task subcommand cmd (wait or cancel) for task id, a
-// plain taskID.
-func taskCommand(cmd string, o taskSendOptions, target Target, id string) string {
+// taskCommand is the task subcommand cmd (wait or cancel) for task ref,
+// whose ID is a plain taskID.
+func taskCommand(cmd string, o taskSendOptions, ref TaskRef) string {
 	wait := []string{"agentiscaled task " + cmd}
 	if o.dataDir != nodestate.DefaultDataDir() {
 		wait = append(wait, "-data-dir", cli.ShellQuote(o.dataDir))
 	}
-	if target.PeerID != "" {
-		wait = append(wait, "-peer", target.PeerID)
-	}
-	return strings.Join(append(wait, target.Service, id), " ")
+	return strings.Join(append(wait, ref.String()), " ")
 }

@@ -28,15 +28,35 @@ func TestTerminalSafe(t *testing.T) {
 	}
 }
 
+// testPeer is a peer ID a task reference can carry.
+const testPeer = "12D3KooWJZwrF8GWoShiLjjAbSN1oRJMTBS8rbELAk2GuU5XcJ6F"
+
 func TestAnswerCommand(t *testing.T) {
 	o := taskSendOptions{dataDir: nodestate.DefaultDataDir()}
-	if got, want := answerCommand(o, Target{Service: "helper"}, "a-1"), `agentiscaled task send -task a-1 helper -- "<your answer>"`; got != want {
+	ref := TaskRef{Target{PeerID: testPeer, Service: "helper"}, "a-1"}
+	if got, want := answerCommand(o, ref), `agentiscaled task send -task `+testPeer+`/helper/a-1 -- "<your answer>"`; got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 	o.dataDir = "/tmp/my node"
-	got := answerCommand(o, Target{PeerID: "12D3Koo", Service: "helper"}, "a-1")
-	if want := `agentiscaled task send -data-dir '/tmp/my node' -task a-1 -peer 12D3Koo helper -- "<your answer>"`; got != want {
+	if got, want := answerCommand(o, ref), `agentiscaled task send -data-dir '/tmp/my node' -task `+testPeer+`/helper/a-1 -- "<your answer>"`; got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+	if got, want := waitCommand(o, ref), `agentiscaled task wait -data-dir '/tmp/my node' `+testPeer+`/helper/a-1`; got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}
+
+// A task's reference names its node, its agent and its ID, each in the
+// form the commands take, and reads back as it was written.
+func TestTaskRefs(t *testing.T) {
+	ref := TaskRef{Target{PeerID: testPeer, Service: "helper.v2"}, "3f2b6c1e-9d4a-4c1b-8f0e-2a7d5b9c1e33"}
+	if got, err := ParseTaskRef(ref.String()); err != nil || got != ref {
+		t.Fatalf("%s read back as %+v, %v", ref, got, err)
+	}
+	for _, bad := range []string{"", "a-1", "helper/a-1", testPeer + "/helper", "not-a-peer/helper/a-1", testPeer + "/bad name/a-1", testPeer + "/helper/$(x)", testPeer + "/helper/a-1/x", testPeer + "//a-1"} {
+		if _, err := ParseTaskRef(bad); err == nil {
+			t.Errorf("%q taken", bad)
+		}
 	}
 }
 
@@ -52,9 +72,14 @@ func TestTaskIDs(t *testing.T) {
 			t.Errorf("%q taken", id)
 		}
 	}
-	err := RunTaskSend(context.Background(), []string{"-data-dir", t.TempDir(), "-task", "$(x)", "helper", "21"}, strings.NewReader(""), io.Discard, io.Discard)
+	err := RunTaskSend(context.Background(), []string{"-data-dir", t.TempDir(), "-task", testPeer + "/helper/$(x)", "21"}, strings.NewReader(""), io.Discard, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "not a task ID") {
 		t.Fatalf("-task $(x): %v", err)
+	}
+	// The reference names the agent: an agent beside it is a mistake.
+	err = RunTaskSend(context.Background(), []string{"-data-dir", t.TempDir(), "-task", testPeer + "/helper/a-1", "helper", "21"}, strings.NewReader(""), io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "takes only the answer") {
+		t.Fatalf("-task with an agent: %v", err)
 	}
 }
 
@@ -65,7 +90,8 @@ func TestAnswerCommandRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Skip("no bash")
 	}
-	cmd := answerCommand(taskSendOptions{dataDir: "/tmp/it's here"}, Target{Service: "helper"}, "a-1")
+	ref := TaskRef{Target{PeerID: testPeer, Service: "helper"}, "a-1"}
+	cmd := answerCommand(taskSendOptions{dataDir: "/tmp/it's here"}, ref)
 	cmd = strings.Replace(cmd, `"<your answer>"`, `-42`, 1)
 	out, err := exec.Command(bash, "-c", `agentiscaled() { printf '%s\0' "$@"; }; `+cmd).Output()
 	if err != nil {
@@ -75,7 +101,7 @@ func TestAnswerCommandRoundTrips(t *testing.T) {
 	fs := flag.NewFlagSet("t", flag.ContinueOnError)
 	task, dir := fs.String("task", "", ""), fs.String("data-dir", "", "")
 	pos, err := cli.ParseInterleaved(fs, args[2:])
-	if err != nil || *task != "a-1" || *dir != "/tmp/it's here" || !slices.Equal(pos, []string{"helper", "-42"}) {
+	if err != nil || *task != ref.String() || *dir != "/tmp/it's here" || !slices.Equal(pos, []string{"-42"}) {
 		t.Fatalf("task %q, dir %q, args %q, %v", *task, *dir, pos, err)
 	}
 }

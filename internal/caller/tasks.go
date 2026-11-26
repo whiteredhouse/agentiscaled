@@ -67,6 +67,9 @@ type Target struct {
 
 // Task is what the tools return about a task.
 type Task struct {
+	// Ref is where the task is, PEER/AGENT/TASK-ID (TaskRef), which the
+	// task commands print and take; the tools leave it out.
+	Ref    string `json:"ref,omitempty"`
 	TaskID string `json:"task_id"`
 	State  string `json:"state"`
 	// Terminal is set once the task has ended: completed, rejected,

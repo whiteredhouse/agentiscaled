@@ -122,9 +122,10 @@ func TestTaskSendAnswersAQuestion(t *testing.T) {
 	if run.out.String() != "" {
 		t.Fatalf("stdout %q for a question", run.out.String())
 	}
-	id := strings.Fields(err.Error()[strings.Index(err.Error(), "-task ")+len("-task "):])[0]
+	ref := strings.Fields(err.Error()[strings.Index(err.Error(), "-task ")+len("-task "):])[0]
+	id := ref[strings.LastIndex(ref, "/")+1:]
 
-	run = startTaskSend("", "-data-dir", dir, "-task", id, "helper", "21")
+	run = startTaskSend("", "-data-dir", dir, "-task", ref, "21")
 	if p := <-fix.prompts; p.Text != "21" || p.Session != "session-double a number" {
 		t.Fatalf("answer reached the agent as %+v", p)
 	}
@@ -235,9 +236,10 @@ func TestTaskSendPassesADrainingAgent(t *testing.T) {
 	}
 }
 
-// A task stays with the agent that took it, whatever drains after: an
-// answer goes to this node's agent that asked, though it drains now and
-// another node's agent of the name takes new tasks.
+// A task's reference says where it went, so its follow-ups reach it there
+// whatever drains after: an answer reaches this node's agent that asked,
+// though it drains now and another node's agent of the name takes new
+// tasks.
 func TestTaskSendAnswersTheAgentThatAsked(t *testing.T) {
 	t.Parallel()
 	net := newFakeNetwork(t)
@@ -250,14 +252,14 @@ func TestTaskSendAnswersTheAgentThatAsked(t *testing.T) {
 	<-local.fix.prompts
 	local.fix.ask <- "Which number?"
 	err := run.wait(t)
-	if err == nil || !strings.Contains(err.Error(), "-task ") || strings.Contains(err.Error(), "-peer") {
+	if err == nil || !strings.Contains(err.Error(), "-task "+self+"/helper/") {
 		t.Fatalf("question: %v", err)
 	}
-	id := strings.Fields(err.Error()[strings.Index(err.Error(), "-task ")+len("-task "):])[0]
+	ref := strings.Fields(err.Error()[strings.Index(err.Error(), "-task ")+len("-task "):])[0]
 
 	reason := "reboot"
 	net.drainLocal(&reason)
-	run = startTaskSend("", "-data-dir", net.dir, "-task", id, "helper", "21")
+	run = startTaskSend("", "-data-dir", net.dir, "-task", ref, "21")
 	select {
 	case p := <-local.fix.prompts:
 		if p.Text != "21" {
@@ -272,89 +274,64 @@ func TestTaskSendAnswersTheAgentThatAsked(t *testing.T) {
 	}
 }
 
-// A task a drain sent past this node's agent is found by the agent's name
-// alone: task wait and task cancel look for it at the other agents of the
-// name when this node's does not know it.
-func TestTaskFollowUpsFindATaskADrainSentElsewhere(t *testing.T) {
+// A new task a drain sent past this node's agent, or past a drained node,
+// is followed where it went: task wait and task cancel take its reference,
+// whichever agent of the name would take a new task now.
+func TestTaskFollowUpsReachTheTaskWhereADrainSentIt(t *testing.T) {
 	t.Parallel()
-	net := newFakeNetwork(t)
-	local, remote := newAgentHarness(t, testSender), newAgentHarness(t, testSender)
-	self, other := randomPeer(t), randomPeer(t)
-	net.host(t, self, local.url)
-	net.route(other, remote.url)
-	net.offer(other)
-	reason := "reboot"
-	net.drainLocal(&reason)
-
-	sendID := func() string {
-		run := startTaskSend("", "-data-dir", net.dir, "-no-wait", "helper", "hello")
-		<-remote.fix.prompts
-		if err := run.wait(t); err != nil || !strings.Contains(run.errOut.String(), "on node "+other) {
-			t.Fatalf("send: %v\n%s", err, run.errOut)
+	for _, local := range []bool{true, false} {
+		net := newFakeNetwork(t)
+		drainedAgent, open := newAgentHarness(t, testSender), newAgentHarness(t, testSender)
+		drained, other := randomPeer(t), randomPeer(t)
+		reason := "reboot"
+		if local {
+			net.host(t, drained, drainedAgent.url)
+		} else {
+			net.route(drained, drainedAgent.url)
+			net.offer(drained)
 		}
-		return strings.TrimSpace(run.out.String())
-	}
-	id := sendID()
-	remote.fix.release <- "done"
-	// This node's agent takes tasks again: the name now picks it first.
-	net.drainLocal(nil)
-	out, errOut := &syncBuffer{}, &syncBuffer{}
-	if err := caller.RunTaskWait(context.Background(), []string{"-data-dir", net.dir, "helper", id}, out, errOut); err != nil || out.String() != "done\n" {
-		t.Fatalf("wait: %v %q %s", err, out.String(), errOut)
-	}
-
-	net.drainLocal(&reason)
-	id = sendID()
-	net.drainLocal(nil)
-	out = &syncBuffer{}
-	if err := caller.RunTaskCancel(context.Background(), []string{"-data-dir", net.dir, "helper", id}, out, &syncBuffer{}); err != nil || !strings.Contains(out.String(), "task "+id+" cancelled") {
-		t.Fatalf("cancel: %v %q", err, out.String())
-	}
-}
-
-// With no agent of the name here and several nodes offering it, the task
-// decides where task wait and task cancel go: a new task went to the one
-// not drained.
-func TestTaskFollowUpsFindTheirTaskAmongSeveralNodes(t *testing.T) {
-	t.Parallel()
-	net := newFakeNetwork(t)
-	drainedAgent, open := newAgentHarness(t, testSender), newAgentHarness(t, testSender)
-	drained, other := randomPeer(t), randomPeer(t)
-	net.route(drained, drainedAgent.url)
-	net.route(other, open.url)
-	net.offer(drained)
-	net.offer(other)
-	net.mu.Lock()
-	net.drained = map[string]string{drained: "reboot"}
-	net.mu.Unlock()
-
-	sendID := func() string {
-		run := startTaskSend("", "-data-dir", net.dir, "-no-wait", "helper", "hello")
-		<-open.fix.prompts
-		if err := run.wait(t); err != nil || !strings.Contains(run.errOut.String(), "on node "+other) {
-			t.Fatalf("send: %v\n%s", err, run.errOut)
+		net.route(other, open.url)
+		net.offer(other)
+		drain := func(on bool) {
+			if local {
+				if on {
+					net.drainLocal(&reason)
+				} else {
+					net.drainLocal(nil)
+				}
+				return
+			}
+			net.mu.Lock()
+			defer net.mu.Unlock()
+			net.drained = nil
+			if on {
+				net.drained = map[string]string{drained: reason}
+			}
 		}
-		return strings.TrimSpace(run.out.String())
-	}
-	id := sendID()
-	open.fix.release <- "done"
-	out, errOut := &syncBuffer{}, &syncBuffer{}
-	if err := caller.RunTaskWait(context.Background(), []string{"-data-dir", net.dir, "helper", id}, out, errOut); err != nil || out.String() != "done\n" {
-		t.Fatalf("wait: %v %q %s", err, out.String(), errOut)
-	}
-	id = sendID()
-	out = &syncBuffer{}
-	if err := caller.RunTaskCancel(context.Background(), []string{"-data-dir", net.dir, "helper", id}, out, &syncBuffer{}); err != nil || !strings.Contains(out.String(), "task "+id+" cancelled") {
-		t.Fatalf("cancel: %v %q", err, out.String())
-	}
-	// A task no node holds still names the problem: the name.
-	err := caller.RunTaskWait(context.Background(), []string{"-data-dir", net.dir, "helper", "no-such-task"}, &syncBuffer{}, &syncBuffer{})
-	if err == nil || !strings.Contains(err.Error(), "2 nodes offer helper: pick one with -peer") {
-		t.Fatalf("unknown task: %v", err)
-	}
-	err = caller.RunTaskCancel(context.Background(), []string{"-data-dir", net.dir, "helper", "no-such-task"}, &syncBuffer{}, &syncBuffer{})
-	if err == nil || !strings.Contains(err.Error(), "2 nodes offer helper: pick one with -peer") {
-		t.Fatalf("cancel unknown task: %v", err)
+
+		// Each task goes past the drained agent; the drain is then lifted,
+		// so that the name would pick that agent, or no one agent.
+		send := func() string {
+			drain(true)
+			defer drain(false)
+			ref, _ := sendNoWait(t, "-data-dir", net.dir, "helper", "hello")
+			<-open.fix.prompts
+			if !strings.HasPrefix(ref, other+"/helper/") {
+				t.Fatalf("local %v: sent to %s", local, ref)
+			}
+			return ref
+		}
+		ref := send()
+		open.fix.release <- "done"
+		run := startTaskWait("-data-dir", net.dir, ref)
+		if err := run.wait(t); err != nil || run.out.String() != "done\n" {
+			t.Fatalf("local %v: wait: %v %q %s", local, err, run.out.String(), run.errOut)
+		}
+		ref = send()
+		run = startTaskCancel("-data-dir", net.dir, ref)
+		if err := run.wait(t); err != nil || !strings.HasSuffix(run.out.String(), " cancelled\n") {
+			t.Fatalf("local %v: cancel: %v %q", local, err, run.out.String())
+		}
 	}
 }
 
@@ -547,7 +524,7 @@ func TestTaskSendStopsWhileTheSendIsInFlight(t *testing.T) {
 	if cancelled.Load() != nil {
 		t.Fatal("cancelled a task without its ID")
 	}
-	err = startTaskSend("", "-data-dir", net.dir, "-timeout", "300ms", "-task", "t-7", "helper", "21").wait(t)
+	err = startTaskSend("", "-data-dir", net.dir, "-timeout", "300ms", "-task", remote+"/helper/t-7", "21").wait(t)
 	if err == nil || !strings.Contains(err.Error(), "task t-7: no answer within 300ms") {
 		t.Fatalf("answer: %v", err)
 	}

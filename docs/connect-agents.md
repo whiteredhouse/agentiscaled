@@ -107,19 +107,24 @@ Other `task send` flags:
   task, so the agent stops too, as it does when you press Ctrl-C.
 - `-wait-agent`: keep looking this long for a remote agent that is not on the
   network yet, such as one on a node that is still joining.
-- `-json`: print the task's ID, state, last message and result as JSON instead of
-  the answer alone.
+- `-json`: print the task's reference, ID, state, last message and result as JSON
+  instead of the answer alone.
 
-- `-no-wait`: print the task's ID once the agent has it and return, leaving the task
-  to run. Follow it later with `task wait`.
+- `-no-wait`: print the task's reference once the agent has it and return, leaving
+  the task to run. Follow it later with `task wait`.
+
+A task's reference, `<peer ID>/<agent>/<task ID>`, says where the task went: the node
+that runs it, the agent and the task. `task wait`, `task cancel` and an answer take it,
+so they reach the task wherever it went, even when `-peer` or a drain picked a node
+other than the one the agent's name would pick now.
 
 If the agent asks a question instead of answering, the command prints it with the
-command that answers it, `task send -task <task ID> <agent> -- "<answer>"`, which then
+command that answers it, `task send -task <task reference> -- "<answer>"`, which then
 follows the task again.
 
 ### Wait for a task
 
-`agentiscaled task wait <agent> <task ID>` follows a task this node sent, such as one
+`agentiscaled task wait <task reference>` follows a task this node sent, such as one
 sent with `task send -no-wait`, until it ends or the agent asks a question. It shows
 the agent's steps and prints its answer the way `task send` does, and returns at once
 for a task that has already ended. This lets a script start several tasks and collect
@@ -128,33 +133,32 @@ their answers later:
 ```sh
 review=$(agentiscaled task send -no-wait reviewer "Review the changes on this branch")
 tests=$(agentiscaled task send -no-wait tester "Run the integration tests")
-agentiscaled task wait reviewer "$review" > review.md
-agentiscaled task wait tester "$tests" > tests.md
+agentiscaled task wait "$review" > review.md
+agentiscaled task wait "$tests" > tests.md
 ```
 
-It takes `-peer`, `-data-dir` and `-json` as `task send` does. `-timeout` (default
+It takes `-data-dir` and `-json` as `task send` does. `-timeout` (default
 15m) bounds the wait only: unlike `task send`, waiting never cancels the task, so when
 the time passes or you press Ctrl-C the task goes on and you can wait for it again.
 Only the node that sent a task can follow it.
 
 ### Cancel a task
 
-`agentiscaled task cancel <agent> <task ID>...` cancels tasks this node sent, so that
-the agent stops working on them and can take other tasks: an agent runs one task at a
+`agentiscaled task cancel <task reference>...` cancels tasks this node sent, so that
+their agents stop working on them and can take other tasks: an agent runs one task at a
 time, and one left running keeps it busy. Cancel the tasks a script stops waiting
 for, for example in a cleanup step that runs however the script ended:
 
 ```sh
-agentiscaled task cancel -- reviewer "$review"
+agentiscaled task cancel "$review" "$tests"
 ```
 
-A task that has already ended is left as it is, and an empty task ID is skipped, so a
-cleanup step can pass every ID it may have; `--` before the agent keeps a value that
-starts with a dash from being read as a flag. The tasks are cancelled together, and one
+A task that has already ended is left as it is, and an empty reference is skipped, so
+a cleanup step can pass every reference it may have. The tasks are cancelled together, and one
 that fails, such as an unknown task, does not stop the others. The command prints one
 line for each task (with `-json`, a JSON array whose failed entries have an `error`)
 and exits 0 when each task is cancelled or had already ended, else 1. It takes
-`-peer`, `-data-dir` and `-timeout` (default 30s).
+`-data-dir` and `-timeout` (default 30s).
 
 ### Exit status
 
