@@ -48,12 +48,46 @@ func DrainReasonError(reason string) string {
 	return ""
 }
 
-// Metadata is the drain's service metadata value. It leaves out a reason
-// that would not fit, which only a hand-edited drain file can hold.
-func (d Drain) Metadata() string {
+// maxDrainByBytes bounds a drain's By: a word such as DrainSetOnNode.
+const maxDrainByBytes = 32
+
+// maxDrainMetadataBytes is what Agent Mesh takes in one service metadata
+// value.
+const maxDrainMetadataBytes = 512
+
+// validDrainBy reports whether by is a word a drain's By may be: lower-case
+// letters, digits and dashes.
+func validDrainBy(by string) bool {
+	return len(by) <= maxDrainByBytes && !strings.ContainsFunc(by, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-'
+	})
+}
+
+// Valid is the drain without the fields it may not carry: a reason or By
+// that would not fit, which only a hand-edited drain file or another node
+// can hold. The mark itself always stays.
+func (d Drain) Valid() Drain {
 	if DrainReasonError(d.Reason) != "" {
 		d.Reason = ""
 	}
+	if !validDrainBy(d.By) {
+		d.By = ""
+	}
+	return d
+}
+
+// Metadata is the drain's service metadata value, which always fits in
+// one: it leaves out any field the drain may not carry, and keeps only
+// the time should the rest still not fit.
+func (d Drain) Metadata() string {
+	v := encodeDrain(d.Valid())
+	if len(v) > maxDrainMetadataBytes {
+		v = encodeDrain(Drain{Since: d.Since})
+	}
+	return v
+}
+
+func encodeDrain(d Drain) string {
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
@@ -74,9 +108,7 @@ func DrainFromMetadata(md map[string]string) *Drain {
 	if json.Unmarshal([]byte(v), &d) != nil {
 		return &Drain{}
 	}
-	if DrainReasonError(d.Reason) != "" {
-		d.Reason = ""
-	}
+	d = d.Valid()
 	return &d
 }
 

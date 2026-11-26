@@ -116,6 +116,13 @@ func cancelTasks(ctx context.Context, tasks *Client, agent string, ids []string,
 				return
 			}
 			task, line, err := cancelOne(ctx, tasks, target, id)
+			if errors.Is(err, a2a.ErrTaskNotFound) && o.peer == "" {
+				// A drain may have sent the task to another agent of the
+				// name.
+				if other, ok := taskElsewhere(ctx, tasks, agent, id, target); ok {
+					task, line, err = cancelOne(ctx, tasks, other, id)
+				}
+			}
 			if err != nil {
 				shown[i] = cancelled{Task{TaskID: id}, err.Error()}
 				lines[i] = fmt.Sprintf("task %s: %v", id, err)

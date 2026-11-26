@@ -284,8 +284,10 @@ as `drained`, with how long ago the drain began and its reason. Callers see the
 drain too: `network agent list` marks the agent `(draining: <reason>)`, the
 `draining` field of its entry in `network agent list -json` and of the
 `list_agents` tool gives the reason and when it began, and `task send` passes
-over a drained agent when another node offers one of the same name. Your
-console shows it as Draining.
+over a drained agent when another node offers one of the same name. Only new
+tasks go elsewhere: an answer with `task send -task`, `task wait` and
+`task cancel` reach the agent that holds the task, found by its name alone.
+Your console shows it as Draining.
 
 To restart a machine without cutting tasks off, drain its agents, wait until
 `agent list` shows them `drained`, then run `agentiscaled down`.

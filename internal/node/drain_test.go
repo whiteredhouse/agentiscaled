@@ -87,6 +87,37 @@ func TestUnreadableDrainStillDrains(t *testing.T) {
 	}
 }
 
+// A hand-edited drain file whose fields do not fit still drains the agent,
+// and its mark still fits the service metadata, so that the node
+// registers.
+func TestHandEditedDrainFileStillFits(t *testing.T) {
+	t.Parallel()
+	h := newAgentHarness(t, testSender)
+	for name, file := range map[string]string{
+		"long by":             `{"reason":"reboot","by":"` + strings.Repeat("x", 600) + `"}`,
+		"by not a word":       `{"reason":"reboot","by":"no de"}`,
+		"long reason":         `{"reason":"` + strings.Repeat("x", 600) + `","by":"node"}`,
+		"control in by":       `{"by":"a\u0007b"}`,
+		"time with an offset": `{"reason":"reboot","since":"9999-12-31T23:59:59-01:00"}`,
+	} {
+		if err := os.WriteFile(drainPath(h.dir, "helper"), []byte(file), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		md := h.svc.activity().serviceMetadata()
+		if err := api.ValidateServiceMetadata(md); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		d := caller.DrainFromMetadata(md)
+		if d == nil || len(d.Reason) > caller.MaxDrainReasonBytes || (d.By != "" && d.By != caller.DrainSetOnNode) {
+			t.Fatalf("%s: %+v", name, d)
+		}
+	}
+	got := h.await(t, h.send(t, "", "task", nil).ID, a2a.TaskStateRejected)
+	if text := statusText(got); !strings.HasPrefix(text, "refused: helper is draining") {
+		t.Fatalf("refusal: %q", text)
+	}
+}
+
 // The catalog's metadata changes only when the drain does, so a drain
 // reaches callers and the console at once, without a report a second.
 func TestReportActivityPublishesTheDrain(t *testing.T) {

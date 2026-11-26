@@ -28,7 +28,8 @@ const maxDrainFileBytes = 4 << 10
 
 // loadDrain reads an agent's drain, or nil when it has none. A drain file
 // that cannot be read still drains the agent, without a reason: the owner
-// meant the agent to take no new tasks.
+// meant the agent to take no new tasks. A field it may not carry is left
+// out, so that a hand-edited file never keeps the node from registering.
 func loadDrain(path string) *drainMark {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -42,9 +43,7 @@ func loadDrain(path string) *drainMark {
 	if err != nil || len(b) > maxDrainFileBytes || json.Unmarshal(b, &d) != nil {
 		return &drainMark{}
 	}
-	if caller.DrainReasonError(d.Reason) != "" {
-		d.Reason = ""
-	}
+	d = d.Valid()
 	return &d
 }
 

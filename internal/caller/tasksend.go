@@ -156,7 +156,16 @@ func readMessage(ctx context.Context, stdin io.Reader) ([]byte, error) {
 // sendAndFollow finds agent, sends it text and follows the task until it
 // settles or the deadline, which ends ctx, passes.
 func sendAndFollow(ctx context.Context, deadline time.Time, tasks *Client, agent, text string, o taskSendOptions, out, errOut io.Writer) error {
-	target, where, err := findAgent(ctx, tasks, agent, o.peer, o.waitAgent, true)
+	// A drain steers only a new task: an answer goes to the agent that
+	// holds its task.
+	var target Target
+	var where string
+	var err error
+	if o.taskID == "" {
+		target, where, err = findAgent(ctx, tasks, agent, o.peer, o.waitAgent, true)
+	} else {
+		target, where, err = taskTarget(ctx, tasks, agent, o.peer, o.taskID, o.waitAgent)
+	}
 	if err != nil {
 		return timedOut(err, ctx, o.timeout)
 	}
@@ -389,6 +398,58 @@ func findAgent(ctx context.Context, tasks *Client, agent, peer string, wait time
 		case <-time.After(every):
 		}
 	}
+}
+
+// taskTarget finds the agent of the name that holds task id, which this
+// node sent: the one findAgent picks for a task that exists, unless that
+// one does not know the task and another agent of the name does. A drain
+// can send a new task past this node's agent, so the name alone does not
+// say where a task went; peer, when given, does.
+func taskTarget(ctx context.Context, tasks *Client, agent, peer, id string, wait time.Duration) (Target, string, error) {
+	target, where, err := findAgent(ctx, tasks, agent, peer, wait, false)
+	if err != nil || peer != "" {
+		return target, where, err
+	}
+	if _, err := tasks.Watch(ctx, target, a2a.TaskID(id), 0, nil); !errors.Is(err, a2a.ErrTaskNotFound) {
+		return target, where, nil
+	}
+	if other, ok := taskElsewhere(ctx, tasks, agent, id, target); ok {
+		return other, targetPlace(other), nil
+	}
+	return target, where, nil
+}
+
+// taskElsewhere looks for task id at the agents of the name other than
+// tried: this node's and those other nodes offer. An agent shows a task
+// only to whoever sent it, so only the one that holds it answers.
+func taskElsewhere(ctx context.Context, tasks *Client, agent, id string, tried Target) (Target, bool) {
+	var candidates []Target
+	info, err := tasks.LocalInfo(ctx)
+	if err == nil && slices.Contains(info.Services, agent) {
+		candidates = append(candidates, Target{Service: agent})
+	}
+	if peers, _, err := discoverAgent(ctx, tasks.Mesh, tasks.BaseURL, agent, info.PeerID); err == nil {
+		for _, p := range peers {
+			candidates = append(candidates, Target{PeerID: p, Service: agent})
+		}
+	}
+	for _, c := range candidates {
+		if c == tried {
+			continue
+		}
+		if _, err := tasks.Watch(ctx, c, a2a.TaskID(id), 0, nil); err == nil {
+			return c, true
+		}
+	}
+	return Target{}, false
+}
+
+// targetPlace says where target's agent is, for the caller.
+func targetPlace(target Target) string {
+	if target.PeerID == "" {
+		return "on this node"
+	}
+	return "on node " + target.PeerID
 }
 
 // discoverAgent lists the other nodes that offer A2A agent name, through

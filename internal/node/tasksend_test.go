@@ -21,6 +21,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/whiteredhouse/agentiscaled/internal/caller"
+	"github.com/whiteredhouse/agentiscaled/internal/nodeclient"
 )
 
 // syncBuffer is an output that a test reads while task send writes it.
@@ -234,6 +235,83 @@ func TestTaskSendPassesADrainingAgent(t *testing.T) {
 	}
 }
 
+// A task stays with the agent that took it, whatever drains after: an
+// answer goes to this node's agent that asked, though it drains now and
+// another node's agent of the name takes new tasks.
+func TestTaskSendAnswersTheAgentThatAsked(t *testing.T) {
+	t.Parallel()
+	net := newFakeNetwork(t)
+	local, remote := newAgentHarness(t, testSender), newAgentHarness(t, testSender)
+	self, other := randomPeer(t), randomPeer(t)
+	net.host(t, self, local.url)
+	net.route(other, remote.url)
+	net.offer(other)
+	run := startTaskSend("", "-data-dir", net.dir, "helper", "double a number")
+	<-local.fix.prompts
+	local.fix.ask <- "Which number?"
+	err := run.wait(t)
+	if err == nil || !strings.Contains(err.Error(), "-task ") || strings.Contains(err.Error(), "-peer") {
+		t.Fatalf("question: %v", err)
+	}
+	id := strings.Fields(err.Error()[strings.Index(err.Error(), "-task ")+len("-task "):])[0]
+
+	reason := "reboot"
+	net.drainLocal(&reason)
+	run = startTaskSend("", "-data-dir", net.dir, "-task", id, "helper", "21")
+	select {
+	case p := <-local.fix.prompts:
+		if p.Text != "21" {
+			t.Fatalf("answer reached the agent as %+v", p)
+		}
+	case err := <-run.done:
+		t.Fatalf("the answer did not reach the agent that asked: %v\n%s", err, run.errOut)
+	}
+	local.fix.release <- "42"
+	if err := run.wait(t); err != nil || run.out.String() != "42\n" || !strings.Contains(run.errOut.String(), "on this node") {
+		t.Fatalf("answer: %v %q %s", err, run.out.String(), run.errOut)
+	}
+}
+
+// A task a drain sent past this node's agent is found by the agent's name
+// alone: task wait and task cancel look for it at the other agents of the
+// name when this node's does not know it.
+func TestTaskFollowUpsFindATaskADrainSentElsewhere(t *testing.T) {
+	t.Parallel()
+	net := newFakeNetwork(t)
+	local, remote := newAgentHarness(t, testSender), newAgentHarness(t, testSender)
+	self, other := randomPeer(t), randomPeer(t)
+	net.host(t, self, local.url)
+	net.route(other, remote.url)
+	net.offer(other)
+	reason := "reboot"
+	net.drainLocal(&reason)
+
+	sendID := func() string {
+		run := startTaskSend("", "-data-dir", net.dir, "-no-wait", "helper", "hello")
+		<-remote.fix.prompts
+		if err := run.wait(t); err != nil || !strings.Contains(run.errOut.String(), "on node "+other) {
+			t.Fatalf("send: %v\n%s", err, run.errOut)
+		}
+		return strings.TrimSpace(run.out.String())
+	}
+	id := sendID()
+	remote.fix.release <- "done"
+	// This node's agent takes tasks again: the name now picks it first.
+	net.drainLocal(nil)
+	out, errOut := &syncBuffer{}, &syncBuffer{}
+	if err := caller.RunTaskWait(context.Background(), []string{"-data-dir", net.dir, "helper", id}, out, errOut); err != nil || out.String() != "done\n" {
+		t.Fatalf("wait: %v %q %s", err, out.String(), errOut)
+	}
+
+	net.drainLocal(&reason)
+	id = sendID()
+	net.drainLocal(nil)
+	out = &syncBuffer{}
+	if err := caller.RunTaskCancel(context.Background(), []string{"-data-dir", net.dir, "helper", id}, out, &syncBuffer{}); err != nil || !strings.Contains(out.String(), "task "+id+" cancelled") {
+		t.Fatalf("cancel: %v %q", err, out.String())
+	}
+}
+
 func TestTaskSendUsage(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -257,8 +335,11 @@ type fakeNetwork struct {
 	mu      sync.Mutex
 	offers  []string
 	drained map[string]string
-	routes  map[string]http.Handler
-	lookups atomic.Int32
+	// localDrain is the reason of this node's own helper's drain, once
+	// host serves one.
+	localDrain *string
+	routes     map[string]http.Handler
+	lookups    atomic.Int32
 }
 
 func newFakeNetwork(t *testing.T) *fakeNetwork {
@@ -321,6 +402,41 @@ func (n *fakeNetwork) route(p, agentURL string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.routes[p] = proxy
+}
+
+// host makes the node host helper too, as node self, at the agent at
+// agentURL; localDrain, when set, is its drain's reason.
+func (n *fakeNetwork) host(t *testing.T, self, agentURL string) {
+	ln, err := net.Listen("unix", filepath.Join(n.dir, nodeclient.AgentSocketName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(agentURL)
+	proxy := httputil.NewSingleHostReverseProxy(u)
+	proxy.Transport = meshHeaders{"secret", testSender}
+	proxy.FlushInterval = -1
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /info", func(w http.ResponseWriter, r *http.Request) {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		info := caller.LocalInfo{PeerID: self, Services: []string{"helper"}}
+		if n.localDrain != nil {
+			info.Draining = map[string]caller.Drain{"helper": {Reason: *n.localDrain}}
+		}
+		json.NewEncoder(w).Encode(info)
+	})
+	mux.Handle("/a2a/"+self+"/helper/", http.StripPrefix("/a2a/"+self+"/helper", proxy))
+	mux.Handle("/a2a/"+self+"/helper", http.StripPrefix("/a2a/"+self+"/helper", proxy))
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+}
+
+// drainLocal drains, or with nil undrains, the node's own helper.
+func (n *fakeNetwork) drainLocal(reason *string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.localDrain = reason
 }
 
 func randomPeer(t *testing.T) string {
