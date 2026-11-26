@@ -610,7 +610,7 @@ func target(rest []string) string {
 // errOldNode says that the running node is from before drains: it ignores
 // the drain file until it restarts, so the drain does not hold yet.
 func errOldNode(dir string, st settings) error {
-	return fmt.Errorf("the drain is saved, but the running node is older than this command and ignores it until it restarts; %s, which ends the tasks it runs", restartAdvice(dir, st))
+	return fmt.Errorf("the drain is saved, but the running node is older than this command and ignores it until it restarts; %s, which ends the tasks it runs", restartAdvice(dir, st, newService(dir)))
 }
 
 // errDenied says that this user may not ask the node whether the drain
@@ -620,10 +620,14 @@ func errDenied(dir string) error {
 }
 
 // restartAdvice says how to restart the node that runs from dir: its
-// background service, or the agentiscaled run process in the foreground.
-func restartAdvice(dir string, st settings) string {
-	if svc := newService(dir); svc != nil && !st.Foreground && svc.installed() {
-		return fmt.Sprintf("restart its background service (%s)", svc.name())
+// background service when that is what runs now, else the agentiscaled run
+// process in the foreground (also when an installed service is stopped and
+// the node runs in the foreground instead).
+func restartAdvice(dir string, st settings, svc service) string {
+	if svc != nil && !st.Foreground && svc.installed() {
+		if _, running := svc.state(); running {
+			return fmt.Sprintf("restart its background service (%s)", svc.name())
+		}
 	}
 	return fmt.Sprintf("restart the node: stop the 'agentiscaled run -data-dir %s' process (Ctrl-C, or stop its container) and start it again", shellQuote(dir))
 }

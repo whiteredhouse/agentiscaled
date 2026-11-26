@@ -799,10 +799,12 @@ const (
 
 // activity says what the agent is doing now.
 func (s *agentService) activity() agentActivity {
-	drain := s.drain()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	a := agentActivity{Name: s.name, State: activityIdle, Drain: drain}
+	// The drain is read with the task state, under the lock that admission
+	// takes, so an answer is one moment: agent drain -wait never pairs a
+	// drain that has since been lifted with work that ended after it.
+	a := agentActivity{Name: s.name, State: activityIdle, Drain: s.drain()}
 	if s.current != nil {
 		a.State = activityBusy
 		started := s.current.started

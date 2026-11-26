@@ -417,14 +417,38 @@ func TestAgentDrainWait(t *testing.T) {
 func TestDrainRestartAdvice(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	if got := restartAdvice(dir, settings{Foreground: true}); !strings.Contains(got, "stop the 'agentiscaled run -data-dir") || strings.Contains(got, "background service") {
-		t.Fatalf("foreground: %q", got)
+	foreground := func(got string) bool {
+		return strings.Contains(got, "stop the 'agentiscaled run -data-dir") && !strings.Contains(got, "background service")
 	}
-	// No background service is installed for a fresh data directory.
-	if got := restartAdvice(dir, settings{}); !strings.Contains(got, "agentiscaled run") {
-		t.Fatalf("no service installed: %q", got)
+	running := &adviceService{installedNow: true, runningNow: true}
+	if got := restartAdvice(dir, settings{}, running); got != "restart its background service (test service)" {
+		t.Fatalf("running service: %q", got)
+	}
+	for name, c := range map[string]struct {
+		st  settings
+		svc service
+	}{
+		"foreground setting":    {settings{Foreground: true}, running},
+		"no service":            {settings{}, nil},
+		"service not installed": {settings{}, &adviceService{}},
+		// Stopped, while the node runs in the foreground instead.
+		"service stopped": {settings{}, &adviceService{installedNow: true}},
+	} {
+		if got := restartAdvice(dir, c.st, c.svc); !foreground(got) {
+			t.Errorf("%s: %q", name, got)
+		}
 	}
 }
+
+// adviceService is a background service for restartAdvice.
+type adviceService struct {
+	service
+	installedNow, runningNow bool
+}
+
+func (s *adviceService) name() string          { return "test service" }
+func (s *adviceService) installed() bool       { return s.installedNow }
+func (s *adviceService) state() (string, bool) { return "", s.runningNow }
 
 // A user who may not use the node's socket is told so at once, with the
 // drain saved, rather than left waiting.
@@ -473,5 +497,29 @@ func TestDrainReadWhereTheSlotIsTaken(t *testing.T) {
 	got := h.await(t, task.ID, a2a.TaskStateRejected)
 	if text := statusText(got); text != "refused: helper is draining: reboot; it takes no new tasks" {
 		t.Fatalf("refusal: %q", text)
+	}
+}
+
+// An activity answer is one moment: the drain is read under the lock that
+// guards the task state, so a drain lifted while the answer waits for that
+// lock is not paired with the state after it.
+func TestActivityReadsDrainWithTaskState(t *testing.T) {
+	t.Parallel()
+	h := newAgentHarness(t, testSender)
+	if err := saveDrain(h.dir, "helper", drainMark{Reason: "reboot", Since: time.Now().UTC(), By: caller.DrainSetOnNode}); err != nil {
+		t.Fatal(err)
+	}
+	h.svc.mu.Lock()
+	got := make(chan agentActivity, 1)
+	go func() { got <- h.svc.activity() }()
+	// Let the answer start and wait for the lock.
+	time.Sleep(100 * time.Millisecond)
+	if _, err := removeDrain(h.dir, "helper"); err != nil {
+		h.svc.mu.Unlock()
+		t.Fatal(err)
+	}
+	h.svc.mu.Unlock()
+	if a := <-got; a.Drain != nil {
+		t.Fatalf("an undrained agent's answer carries the lifted drain: %+v", a.Drain)
 	}
 }
