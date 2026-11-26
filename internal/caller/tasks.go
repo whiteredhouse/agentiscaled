@@ -170,11 +170,9 @@ func (t *Client) LocalInfo(ctx context.Context) (LocalInfo, error) {
 	if _, err := peer.Decode(info.PeerID); err != nil {
 		return info, fmt.Errorf("invalid local peer ID: %w", err)
 	}
-	for _, name := range info.Services {
-		if !ValidAgentName(name) {
-			return info, errors.New("invalid local service name")
-		}
-	}
+	// A name outside the rule (from a node older than it) is left out on
+	// its own, so that the node's other agents stay reachable.
+	info.Services = slices.DeleteFunc(info.Services, func(name string) bool { return !ValidAgentName(name) })
 	return info, nil
 }
 

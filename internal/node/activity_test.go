@@ -309,6 +309,22 @@ func TestSavedAgentNamesShownSafely(t *testing.T) {
 	}
 }
 
+// A bare agent remove that picks the only saved agent refuses it too when
+// its name is refused, and says where to fix it.
+func TestRemoveSoleInvalidAgent(t *testing.T) {
+	t.Parallel()
+	dir := shortTempDir(t)
+	writeSettings(t, dir, settings{Control: "https://control.test", Agents: []agentConfig{
+		{Runtime: "claude", Name: "bot/$(id)", Dir: t.TempDir()},
+	}})
+	if _, err := runAgentOut(dir, "remove"); err == nil || !strings.Contains(err.Error(), "agent bot%2F%24%28id%29 has an invalid name; fix or delete it in "+filepath.Join(dir, settingsFile)) {
+		t.Fatalf("bare remove: %v", err)
+	}
+	if s, err := loadSettings(dir); err != nil || len(s.Agents) != 1 {
+		t.Fatalf("after bare remove: %+v %v", s.Agents, err)
+	}
+}
+
 // runAgentOut runs an agent command on dir and gives its output.
 func runAgentOut(dir string, args ...string) (string, error) {
 	var out bytes.Buffer

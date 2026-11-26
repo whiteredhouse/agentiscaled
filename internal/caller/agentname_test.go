@@ -1,6 +1,11 @@
 package caller
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -35,5 +40,29 @@ func TestValidAgentName(t *testing.T) {
 	}
 	if want := slices.Sorted(slices.Values(taken)); !slices.Equal(listed, want) {
 		t.Fatalf("listed %q, want %q", listed, want)
+	}
+}
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A name outside the rule in the local catalog, as a node older than the
+// rule may report, is left out on its own: the node's other agents stay
+// reachable.
+func TestLocalCatalogDropsOnlyInvalidNames(t *testing.T) {
+	t.Parallel()
+	const peerID = "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"
+	body, _ := json.Marshal(LocalInfo{PeerID: peerID, Services: []string{"codex", strings.Repeat("a", 64), "bot/x"}})
+	client := &Client{Local: &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Header: http.Header{}}, nil
+	})}}
+	info, err := client.LocalInfo(context.Background())
+	if err != nil || !slices.Equal(info.Services, []string{"codex"}) {
+		t.Fatalf("local info: %+v %v", info.Services, err)
+	}
+	endpoint, _, err := client.selectRoute(context.Background(), Target{Service: "codex"})
+	if err != nil || endpoint != "http://agentiscaled/a2a/"+peerID+"/codex" {
+		t.Fatalf("route to codex: %q %v", endpoint, err)
 	}
 }

@@ -266,6 +266,11 @@ func runAgentRemove(args []string, out io.Writer) error {
 	default:
 		name = names[0]
 	}
+	// However the agent was picked, a refused name is fixed or deleted in
+	// the settings file, as agent list says.
+	if !takenAgentName(name) {
+		return fmt.Errorf("agent %s has an invalid name; %s", shownAgentName(name), fixInSettings(dir))
+	}
 	s.Agents = slices.DeleteFunc(s.Agents, func(a agentConfig) bool { return a.Name == name })
 	if err := saveSettings(dir, s); err != nil {
 		return fmt.Errorf("save settings: %w", err)
@@ -351,7 +356,12 @@ func runAgentList(args []string, out io.Writer) error {
 // invalidNameState is what agent list and status say of a saved agent whose
 // name the node refuses.
 func invalidNameState(dataDir string) string {
-	return "invalid name; the node does not start: fix or delete it in " + filepath.Join(dataDir, settingsFile)
+	return "invalid name; the node does not start: " + fixInSettings(dataDir)
+}
+
+// fixInSettings says where a saved agent with a refused name is fixed.
+func fixInSettings(dataDir string) string {
+	return "fix or delete it in " + filepath.Join(dataDir, settingsFile)
 }
 
 // activityTimeout bounds `agent list`'s question to the running node.
