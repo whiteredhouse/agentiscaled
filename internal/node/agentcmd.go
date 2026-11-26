@@ -2,12 +2,14 @@ package node
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -681,47 +683,41 @@ var (
 	drainWaitSilence = 30 * time.Second
 )
 
-// waitDrained waits until the node says that none of the named agents has
-// a task running or waiting for an answer, and that their drain holds. Only
-// that answer ends the wait with success: a node that stops answering,
-// refuses this user, or stays silent for drainWaitSilence ends it with an
-// error, since none of these proves that no task runs. ctx carries the
-// -timeout, which timeout names for the error.
+// waitDrained asks the node to answer once the drains this command saved
+// (held) hold and the agents have no task left. The node judges that under
+// its own locks and clock (POST /agents/drain/wait); the command only asks
+// again while the node says work remains. Only the node's answer that the
+// drains hold and no task is left ends the wait with success. ctx carries
+// the -timeout, which timeout names for the error.
 func waitDrained(ctx context.Context, dir string, st settings, held map[string]time.Time, timeout time.Duration, out io.Writer, target string) error {
-	names := make([]string, 0, len(held))
-	for name := range held {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	tick := time.NewTicker(drainWaitEvery)
-	defer tick.Stop()
+	names := slices.Sorted(maps.Keys(held))
 	var left []string // nil until the node answers
 	heard := time.Now()
+	tick := time.NewTicker(drainWaitEvery)
+	defer tick.Stop()
 	for {
-		activity, answer := askNodeActivity(ctx, dir)
+		answer, kind := askDrainWait(ctx, dir, held)
 		// An answer that came in after the deadline does not count.
 		if ctx.Err() != nil {
 			return waitEnded(ctx, left, timeout)
 		}
-		switch answer {
+		switch kind {
 		case nodeAnswered:
-			if err := checkDrains(ctx, dir, st, activity, held); err != nil {
-				return err
-			}
 			heard = time.Now()
-			left = []string{}
-			for _, name := range names {
-				if a, served := activity[name]; served && (a.State == activityBusy || a.Waiting > 0) {
-					left = append(left, name)
-				}
-			}
-			if len(left) == 0 {
+			switch answer.State {
+			case drainHeld:
 				fmt.Fprintf(out, "%s: no task left.\n", strings.Join(names, ", "))
 				fmt.Fprintf(out, "'agentiscaled agent undrain%s' lets it take tasks again.\n", target)
 				return nil
+			case drainLifted:
+				return fmt.Errorf("%s was undrained while this command waited, so it may take new tasks", answer.Agent)
+			case drainWorking:
+				left = answer.Left
+				continue // the node held the request while work remained
 			}
+			return fmt.Errorf("the node answered %q, which this command does not know", answer.State)
 		case nodeNoActivity:
-			return errOldNode(ctx, dir, st)
+			return fmt.Errorf("the drain holds, but the running node is older than this command and cannot say when its tasks are done; %s to use -wait, or watch 'agentiscaled agent list'", restartAdvice(ctx, dir, st, newService(dir)))
 		case nodeDenied:
 			return errDenied(dir)
 		case nodeSilent:
@@ -737,6 +733,50 @@ func waitDrained(ctx context.Context, dir string, st settings, held map[string]t
 		case <-tick.C:
 		}
 	}
+}
+
+// askDrainWait asks the running node to answer once the drains in held
+// hold and no task is left, or a drain is lifted, or it has waited long
+// enough (POST /agents/drain/wait). The kinds are askNodeActivity's;
+// nodeNoActivity is a node without this question.
+func askDrainWait(ctx context.Context, dir string, held map[string]time.Time) (drainWaitAnswer, nodeAnswer) {
+	body, err := json.Marshal(drainWaitRequest{Agents: held})
+	if err != nil {
+		return drainWaitAnswer{}, nodeBadAnswer
+	}
+	// The node holds the request up to drainWaitLongest; a node that holds
+	// it much longer is not answering.
+	ctx, cancel := context.WithTimeout(ctx, drainWaitLongest+activityTimeout)
+	defer cancel()
+	client := nodeclient.SocketClient(filepath.Join(dir, localAgentSocketName))
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agentiscaled/agents/drain/wait", bytes.NewReader(body))
+	if err != nil {
+		return drainWaitAnswer{}, nodeUnreachable
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		switch {
+		case errors.Is(err, os.ErrPermission):
+			return drainWaitAnswer{}, nodeDenied
+		case errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED):
+			return drainWaitAnswer{}, nodeSilent
+		}
+		return drainWaitAnswer{}, nodeUnreachable
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		return drainWaitAnswer{}, nodeNoActivity
+	case resp.StatusCode != http.StatusOK:
+		return drainWaitAnswer{}, nodeBadAnswer
+	}
+	var answer drainWaitAnswer
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&answer); err != nil {
+		return drainWaitAnswer{}, nodeBadAnswer
+	}
+	return answer, nodeAnswered
 }
 
 // waitEnded is agent drain -wait's error when its context ends first;

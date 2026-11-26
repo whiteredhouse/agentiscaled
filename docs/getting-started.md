@@ -287,7 +287,7 @@ drain too: `network agent list` marks the agent `(draining: <reason>)`, the
 over a drained agent when another node offers one of the same name. Only new
 tasks go elsewhere: an answer with `task send -task`, `task wait` and
 `task cancel` take the task's reference, which says where it went.
-Your console shows it as Draining.
+Your console shows it as Draining while it finishes its tasks, then Drained.
 
 To restart a machine without cutting tasks off, drain its agents with
 `-wait`, which returns once they have no task left, then run
@@ -297,11 +297,14 @@ To restart a machine without cutting tasks off, drain its agents with
 agentiscaled agent drain -reason "reboot" -wait -timeout 30m && agentiscaled down
 ```
 
-`agent drain -wait` succeeds only when the running node itself says that the
-drain holds and the agents have no task left. Anything else ends it with an
-error, and the drain stays saved either way: no node answering (a node that is
-starting serves its agents before it answers), a node that stops answering or
-stays silent for 30 seconds, or a user who may not reach the node. With
+`agent drain -wait` asks the running node to answer once this drain holds and
+the agents have no task left, and succeeds only on that answer. The node
+decides, so a task taken just before the drain was saved still counts. Anything
+else ends it with an error, and the drain stays saved either way: no node
+answering (a node that is starting serves its agents before it answers), a node
+that stops answering or stays silent for 30 seconds, a user who may not reach
+the node, the agent undrained while the command waits, or a node too old to
+answer waits (restart it, or watch `agentiscaled agent list`). With
 `-timeout`, it gives up after that long; the agents stay drained and keep
 finishing their tasks. A task that waits for an answer keeps the agent draining
 until it is answered or times out.

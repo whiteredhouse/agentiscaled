@@ -529,7 +529,7 @@ func run(ctx context.Context, c config) error {
 		}
 		localAPI, err := serveLocalAgent(nodeCtx, node, nodeConfig, targets, c.dataDir, func() []agentActivity {
 			return agentsActivity(svcs)
-		})
+		}, svcs)
 		if err != nil {
 			return fmt.Errorf("start local agent API: %w", err)
 		}
