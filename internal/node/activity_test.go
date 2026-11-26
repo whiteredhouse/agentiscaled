@@ -297,8 +297,8 @@ func TestSavedAgentNamesShownSafely(t *testing.T) {
 	if _, err := runAgentOut(dir, "remove", encoded); err == nil {
 		t.Fatal("remove took the encoded form of a refused name")
 	}
-	if _, err := runAgentOut(dir, "remove", bad); err == nil {
-		t.Fatal("remove took a refused name")
+	if _, err := runAgentOut(dir, "remove", bad); err == nil || !strings.Contains(err.Error(), "agent "+encoded+" has an invalid name; fix or delete it in "+filepath.Join(dir, settingsFile)) {
+		t.Fatalf("remove of a refused name: %v", err)
 	}
 	if out, err := runAgentOut(dir, "remove", "botx2fx24x28idx29x0ax27xx27"); err != nil || !strings.Contains(out, "no longer offers botx2fx24x28idx29x0ax27xx27;") {
 		t.Fatalf("remove: %q %v", out, err)

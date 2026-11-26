@@ -248,9 +248,9 @@ func runAgentRemove(args []string, out io.Writer) error {
 	var name string
 	switch {
 	case len(rest) == 1:
-		// Only a name the node takes names an agent here; a refused one is
-		// fixed or deleted in the settings file, as agent list says.
-		i := slices.IndexFunc(names, func(n string) bool { return caller.ValidAgentName(n) && n == rest[0] })
+		// The exact saved name picks the agent; the check below then says
+		// where a refused one is fixed.
+		i := slices.Index(names, rest[0])
 		if i < 0 {
 			return fmt.Errorf("this machine offers no agent named %s; see 'agentiscaled agent list'", caller.QuotedAgentName(rest[0]))
 		}
