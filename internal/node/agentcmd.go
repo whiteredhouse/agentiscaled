@@ -46,9 +46,9 @@ func RunAgent(ctx context.Context, args []string, out io.Writer) error {
 	case "list":
 		return runAgentList(args[1:], out)
 	case "drain":
-		return runAgentDrain(args[1:], out, true)
+		return runAgentDrain(ctx, args[1:], out, true)
 	case "undrain":
-		return runAgentDrain(args[1:], out, false)
+		return runAgentDrain(ctx, args[1:], out, false)
 	}
 	return fmt.Errorf("unknown agent command %q\n%s", args[0], agentUsage)
 }
@@ -424,7 +424,7 @@ func activityText(activity map[string]agentActivity, running bool, name string, 
 // agent finishes the tasks it has, answers to its questions included, but
 // refuses new ones with the reason. The node reads the drain for each new
 // task, so it takes effect at once, without a restart, and outlasts one.
-func runAgentDrain(args []string, out io.Writer, drain bool) error {
+func runAgentDrain(ctx context.Context, args []string, out io.Writer, drain bool) error {
 	verb := "undrain"
 	if drain {
 		verb = "drain"
@@ -432,12 +432,16 @@ func runAgentDrain(args []string, out io.Writer, drain bool) error {
 	fs := flag.NewFlagSet("agent "+verb, flag.ContinueOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node that offers the agent")
 	var reason *string
+	var wait *bool
+	var timeout *time.Duration
 	if drain {
 		reason = fs.String("reason", "", "Why the agent takes no new tasks, which callers see when it refuses one (one line, up to 200 bytes)")
+		wait = fs.Bool("wait", false, "Wait until the agent has no task running or waiting for an answer, then exit")
+		timeout = fs.Duration("timeout", 0, "With -wait, give up after this long, exiting with an error; the agent stays drained (default: no limit)")
 	}
 	fs.Usage = func() {
 		if drain {
-			fmt.Fprint(fs.Output(), "usage: agentiscaled agent drain [NAME] [-reason TEXT]\n\nThe agent finishes the tasks it has, answers to its questions included, and refuses new ones.\nWithout NAME, every agent this machine offers drains; agents added later do not.\n\n")
+			fmt.Fprint(fs.Output(), "usage: agentiscaled agent drain [NAME] [-reason TEXT] [-wait [-timeout DURATION]]\n\nThe agent finishes the tasks it has, answers to its questions included, and refuses new ones.\nWithout NAME, every agent this machine offers drains; agents added later do not.\nWith -wait, the command returns once the agent has no task left, so a script can then restart it.\n\n")
 		} else {
 			fmt.Fprint(fs.Output(), "usage: agentiscaled agent undrain [NAME]\n\nThe agent takes new tasks again. Without NAME, every agent this machine offers does.\n\n")
 		}
@@ -449,6 +453,12 @@ func runAgentDrain(args []string, out io.Writer, drain bool) error {
 	}
 	if len(rest) > 1 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(rest[1:], " "))
+	}
+	if drain && *timeout != 0 && !*wait {
+		return errors.New("-timeout needs -wait")
+	}
+	if drain && *timeout < 0 {
+		return errors.New("-timeout must not be negative")
 	}
 	if drain {
 		*reason = strings.TrimSpace(*reason)
@@ -503,6 +513,11 @@ func runAgentDrain(args []string, out io.Writer, drain bool) error {
 		}
 	}
 	activity, running := nodeActivity(dir)
+	// A node from before drains ignores the file until it restarts: say so
+	// rather than claim a drain that does not hold.
+	if running && !nodeReadsDrains(activity, names) {
+		return fmt.Errorf("the running node is older than this command and ignores the drain until it restarts; restart its background service (%s) to apply it, which ends the tasks it runs", serviceName(dir))
+	}
 	for _, name := range names {
 		a, served := activity[name]
 		switch {
@@ -520,8 +535,76 @@ func runAgentDrain(args []string, out io.Writer, drain bool) error {
 	if len(rest) == 1 {
 		target = " " + rest[0]
 	}
+	if *wait && running {
+		return waitDrained(ctx, dir, names, *timeout, out, target)
+	}
 	fmt.Fprintf(out, "'agentiscaled agent list' shows when it is drained; 'agentiscaled agent undrain%s' lets it take tasks again.\n", target)
 	return nil
+}
+
+// nodeReadsDrains reports whether the running node reads drain files: it
+// then reports the drain of each agent it serves that was just drained.
+func nodeReadsDrains(activity map[string]agentActivity, names []string) bool {
+	if activity == nil {
+		return false // no activity API: older still
+	}
+	for _, name := range names {
+		if a, served := activity[name]; served && a.Drain == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// serviceName names the node's background service for a message, or says
+// how the node runs when it has none.
+func serviceName(dir string) string {
+	if svc := newService(dir); svc != nil {
+		return svc.name()
+	}
+	return "or the agentiscaled run process"
+}
+
+// drainWaitEvery is how often agent drain -wait asks the node.
+var drainWaitEvery = time.Second
+
+// waitDrained waits until none of the named agents has a task running or
+// waiting for an answer. An agent the node does not serve has none, and a
+// node that stops has none left either.
+func waitDrained(ctx context.Context, dir string, names []string, timeout time.Duration, out io.Writer, target string) error {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	tick := time.NewTicker(drainWaitEvery)
+	defer tick.Stop()
+	for {
+		activity, running := nodeActivity(dir)
+		var left []string
+		for _, name := range names {
+			if a, served := activity[name]; running && served && (a.State == activityBusy || a.Waiting > 0) {
+				left = append(left, name)
+			}
+		}
+		if len(left) == 0 {
+			if !running {
+				fmt.Fprintln(out, "The node stopped; nothing is left to finish.")
+			} else {
+				fmt.Fprintf(out, "%s: no task left.\n", strings.Join(names, ", "))
+			}
+			fmt.Fprintf(out, "'agentiscaled agent undrain%s' lets it take tasks again.\n", target)
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return fmt.Errorf("%s still has work after %s; it stays drained and finishes it", strings.Join(left, ", "), timeout)
+			}
+			return ctx.Err()
+		case <-tick.C:
+		}
+	}
 }
 
 // unfinishedText names the tasks a draining agent still finishes.

@@ -289,8 +289,21 @@ tasks go elsewhere: an answer with `task send -task`, `task wait` and
 `task cancel` take the task's reference, which says where it went.
 Your console shows it as Draining.
 
-To restart a machine without cutting tasks off, drain its agents, wait until
-`agent list` shows them `drained`, then run `agentiscaled down`.
+To restart a machine without cutting tasks off, drain its agents with
+`-wait`, which returns once they have no task left, then run
+`agentiscaled down`:
+
+```sh
+agentiscaled agent drain -reason "reboot" -wait -timeout 30m && agentiscaled down
+```
+
+With `-timeout`, `agent drain -wait` gives up after that long and exits with an
+error; the agents stay drained and keep finishing their tasks. A task that
+waits for an answer keeps the agent draining until it is answered or times out.
+
+If the running node is older than the `agentiscaled` command, for example after
+an upgrade that did not restart it, `agent drain` saves the drain but says the
+node ignores it until it restarts, and exits with an error.
 
 Agent questions, runtime login and validation finish before `up` or `agent add` stops an existing
 service. If a later enrollment, save or startup step fails, agentiscaled attempts to restore

@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -259,5 +262,76 @@ func TestAgentDrainCommand(t *testing.T) {
 	b, _ := json.Marshal(drainMark{})
 	if string(b) != "{}" {
 		t.Fatalf("empty drain: %s", b)
+	}
+}
+
+// agent drain -wait returns once the agent has no task left, gives up
+// after -timeout with the agent still drained, and a node that does not
+// read drains is reported, not trusted.
+func TestAgentDrainWait(t *testing.T) {
+	dir := shortTempDir(t)
+	writeSettings(t, dir, settings{Control: "https://control.test", Agents: []agentConfig{
+		{Runtime: "codex", Name: "codex", Dir: t.TempDir()},
+		{Runtime: "claude", Name: "claude", Dir: t.TempDir()},
+	}})
+	run := func(args ...string) (string, error) {
+		var out bytes.Buffer
+		err := RunAgent(context.Background(), append(args, "-data-dir", dir), &out)
+		return out.String(), err
+	}
+	if _, err := run("drain", "codex", "-timeout", "1s"); err == nil || !strings.Contains(err.Error(), "-timeout needs -wait") {
+		t.Fatalf("timeout without wait: %v", err)
+	}
+	// No node runs: nothing to wait for.
+	if out, err := run("drain", "codex", "-wait"); err != nil || !strings.Contains(out, "its node is not running") {
+		t.Fatalf("no node: %q %v", out, err)
+	}
+
+	prev := drainWaitEvery
+	drainWaitEvery = 10 * time.Millisecond
+	t.Cleanup(func() { drainWaitEvery = prev })
+	listener, err := listenAgentSocket(filepath.Join(dir, localAgentSocketName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var busy, reads atomic.Bool
+	reads.Store(true)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /agents", func(w http.ResponseWriter, r *http.Request) {
+		a := agentActivity{Name: "codex", State: activityIdle}
+		if busy.Load() {
+			a.State = activityBusy
+		}
+		if reads.Load() {
+			a.Drain = loadDrain(drainPath(dir, "codex"))
+		}
+		_ = json.NewEncoder(w).Encode(localAgentsActivity{Agents: []agentActivity{a}})
+	})
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(listener)
+	t.Cleanup(func() { srv.Close() })
+
+	busy.Store(true)
+	out, err := run("drain", "codex", "-wait", "-timeout", "100ms")
+	if err == nil || !strings.Contains(err.Error(), "codex still has work after 100ms; it stays drained") || !strings.Contains(out, "codex is draining") {
+		t.Fatalf("timeout: %q %v", out, err)
+	}
+	if loadDrain(drainPath(dir, "codex")) == nil {
+		t.Fatal("a timed-out wait lifted the drain")
+	}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		busy.Store(false)
+	}()
+	out, err = run("drain", "codex", "-wait")
+	if err != nil || !strings.Contains(out, "codex: no task left.") {
+		t.Fatalf("wait: %q %v", out, err)
+	}
+
+	// A node from before drains reports no drain for an agent it serves.
+	reads.Store(false)
+	busy.Store(false)
+	if _, err := run("drain", "codex"); err == nil || !strings.Contains(err.Error(), "the running node is older than this command") {
+		t.Fatalf("old node: %v", err)
 	}
 }
