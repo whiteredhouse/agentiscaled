@@ -801,9 +801,34 @@ const (
 func (s *agentService) activity() agentActivity {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// The drain is read with the task state, under the lock that admission
-	// takes, so an answer is one moment: agent drain -wait never pairs a
-	// drain that has since been lifted with work that ended after it.
+	return s.activityLocked()
+}
+
+// agentsActivity is what all agents of the node do at one moment: it holds
+// every agent's lock while it reads them, taken in the agents' fixed order,
+// so agent drain -wait never sees one agent drained and idle and another
+// at a different moment.
+func agentsActivity(agents []*agentService) []agentActivity {
+	for _, s := range agents {
+		s.mu.Lock()
+	}
+	defer func() {
+		for _, s := range agents {
+			s.mu.Unlock()
+		}
+	}()
+	out := make([]agentActivity, 0, len(agents))
+	for _, s := range agents {
+		out = append(out, s.activityLocked())
+	}
+	return out
+}
+
+// activityLocked is activity with s.mu held. The drain is read with the
+// task state, under the lock that admission takes, so an answer is one
+// moment: it never pairs a drain that has since been lifted with work that
+// ended after it.
+func (s *agentService) activityLocked() agentActivity {
 	a := agentActivity{Name: s.name, State: activityIdle, Drain: s.drain()}
 	if s.current != nil {
 		a.State = activityBusy

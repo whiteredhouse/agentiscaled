@@ -533,6 +533,9 @@ func runAgentDrain(ctx context.Context, args []string, out io.Writer, drain bool
 		return nil
 	}
 	now := time.Now().UTC()
+	// held is when each drain began, as saved: the drain this command
+	// waits on, told apart from one lifted and set again.
+	held := make(map[string]time.Time, len(names))
 	for _, name := range names {
 		mark := drainMark{Reason: *reason, Since: now, By: caller.DrainSetOnNode}
 		// Draining again changes the reason; the drain still began when it
@@ -543,6 +546,7 @@ func runAgentDrain(ctx context.Context, args []string, out io.Writer, drain bool
 		if err := saveDrain(dir, name, mark); err != nil {
 			return fmt.Errorf("drain %s: %w", name, err)
 		}
+		held[name] = mark.Since
 	}
 	// -timeout bounds the whole wait, the first question to the node too.
 	if *wait && *timeout > 0 {
@@ -556,10 +560,10 @@ func runAgentDrain(ctx context.Context, args []string, out io.Writer, drain bool
 	}
 	switch answer {
 	case nodeNoActivity:
-		return errOldNode(dir, s)
+		return errOldNode(ctx, dir, s)
 	case nodeAnswered:
-		if !nodeReadsDrains(activity, names) {
-			return errOldNode(dir, s)
+		if err := checkDrains(ctx, dir, s, activity, held); err != nil {
+			return err
 		}
 	case nodeDenied:
 		return errDenied(dir)
@@ -577,7 +581,7 @@ func runAgentDrain(ctx context.Context, args []string, out io.Writer, drain bool
 	default: // unreachable, or an answer that cannot be read
 		if *wait {
 			// The wait asks again.
-			return waitDrained(ctx, dir, s, names, *timeout, out, target(rest))
+			return waitDrained(ctx, dir, s, held, *timeout, out, target(rest))
 		}
 		return errors.New("the drain is saved, but the node did not answer whether it holds; check with 'agentiscaled agent list'")
 	}
@@ -593,7 +597,7 @@ func runAgentDrain(ctx context.Context, args []string, out io.Writer, drain bool
 		}
 	}
 	if *wait {
-		return waitDrained(ctx, dir, s, names, *timeout, out, target(rest))
+		return waitDrained(ctx, dir, s, held, *timeout, out, target(rest))
 	}
 	fmt.Fprintf(out, "'agentiscaled agent list' shows when it is drained; 'agentiscaled agent undrain%s' lets it take tasks again.\n", target(rest))
 	return nil
@@ -609,8 +613,8 @@ func target(rest []string) string {
 
 // errOldNode says that the running node is from before drains: it ignores
 // the drain file until it restarts, so the drain does not hold yet.
-func errOldNode(dir string, st settings) error {
-	return fmt.Errorf("the drain is saved, but the running node is older than this command and ignores it until it restarts; %s, which ends the tasks it runs", restartAdvice(dir, st, newService(dir)))
+func errOldNode(ctx context.Context, dir string, st settings) error {
+	return fmt.Errorf("the drain is saved, but the running node is older than this command and ignores it until it restarts; %s, which ends the tasks it runs", restartAdvice(ctx, dir, st, newService(dir)))
 }
 
 // errDenied says that this user may not ask the node whether the drain
@@ -619,28 +623,60 @@ func errDenied(dir string) error {
 	return fmt.Errorf("the drain is saved, but this user may not use the node's socket in %s to see whether it holds; run the command as the user that runs the node", dir)
 }
 
+// serviceStateWait bounds the question to launchd or systemd whether the
+// node's background service runs.
+var serviceStateWait = 2 * time.Second
+
 // restartAdvice says how to restart the node that runs from dir: its
 // background service when that is what runs now, else the agentiscaled run
 // process in the foreground (also when an installed service is stopped and
-// the node runs in the foreground instead).
-func restartAdvice(dir string, st settings, svc service) string {
-	if svc != nil && !st.Foreground && svc.installed() {
-		if _, running := svc.state(); running {
+// the node runs in the foreground instead). The question to the service
+// manager ends with ctx, so it keeps within -timeout; without its answer
+// the advice names both ways.
+func restartAdvice(ctx context.Context, dir string, st settings, svc service) string {
+	foreground := fmt.Sprintf("stop the 'agentiscaled run -data-dir %s' process (Ctrl-C, or stop its container) and start it again", shellQuote(dir))
+	if svc == nil || st.Foreground || !svc.installed() {
+		return "restart the node: " + foreground
+	}
+	ctx, cancel := context.WithTimeout(ctx, serviceStateWait)
+	defer cancel()
+	running := make(chan bool, 1)
+	go func() {
+		_, r := svc.state()
+		running <- r
+	}()
+	select {
+	case r := <-running:
+		if r {
 			return fmt.Sprintf("restart its background service (%s)", svc.name())
 		}
+		return "restart the node: " + foreground
+	case <-ctx.Done():
+		return fmt.Sprintf("restart the node: its background service (%s) if that runs it, else %s", svc.name(), foreground)
 	}
-	return fmt.Sprintf("restart the node: stop the 'agentiscaled run -data-dir %s' process (Ctrl-C, or stop its container) and start it again", shellQuote(dir))
 }
 
-// nodeReadsDrains reports whether the running node reads drain files: it
-// then reports the drain of each agent it serves that was just drained.
-func nodeReadsDrains(activity map[string]agentActivity, names []string) bool {
-	for _, name := range names {
-		if a, served := activity[name]; served && a.Drain == nil {
-			return false
+// checkDrains checks that the node holds each drain this command saved
+// (held), for the agents it serves. A drain the node does not report is
+// told apart by its file: still saved, the node ignores drains (it is from
+// before them); gone or begun anew, someone lifted it.
+func checkDrains(ctx context.Context, dir string, st settings, activity map[string]agentActivity, held map[string]time.Time) error {
+	for name, since := range held {
+		a, served := activity[name]
+		switch {
+		case !served:
+			continue
+		case a.Drain != nil && a.Drain.Since.Equal(since):
+			continue
+		case a.Drain != nil:
+			return fmt.Errorf("%s was undrained and drained again while this command waited", name)
 		}
+		if saved := loadDrain(drainPath(dir, name)); saved == nil || !saved.Since.Equal(since) {
+			return fmt.Errorf("%s was undrained while this command waited: it takes new tasks", name)
+		}
+		return errOldNode(ctx, dir, st)
 	}
-	return true
+	return nil
 }
 
 // drainWaitEvery is how often agent drain -wait asks the node, and
@@ -656,7 +692,12 @@ var (
 // refuses this user, or stays silent for drainWaitSilence ends it with an
 // error, since none of these proves that no task runs. ctx carries the
 // -timeout, which timeout names for the error.
-func waitDrained(ctx context.Context, dir string, st settings, names []string, timeout time.Duration, out io.Writer, target string) error {
+func waitDrained(ctx context.Context, dir string, st settings, held map[string]time.Time, timeout time.Duration, out io.Writer, target string) error {
+	names := make([]string, 0, len(held))
+	for name := range held {
+		names = append(names, name)
+	}
+	slices.Sort(names)
 	tick := time.NewTicker(drainWaitEvery)
 	defer tick.Stop()
 	var left []string // nil until the node answers
@@ -669,8 +710,8 @@ func waitDrained(ctx context.Context, dir string, st settings, names []string, t
 		}
 		switch answer {
 		case nodeAnswered:
-			if !nodeReadsDrains(activity, names) {
-				return errOldNode(dir, st)
+			if err := checkDrains(ctx, dir, st, activity, held); err != nil {
+				return err
 			}
 			heard = time.Now()
 			left = []string{}
@@ -685,7 +726,7 @@ func waitDrained(ctx context.Context, dir string, st settings, names []string, t
 				return nil
 			}
 		case nodeNoActivity:
-			return errOldNode(dir, st)
+			return errOldNode(ctx, dir, st)
 		case nodeDenied:
 			return errDenied(dir)
 		case nodeSilent:

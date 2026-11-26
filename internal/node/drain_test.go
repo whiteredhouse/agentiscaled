@@ -378,6 +378,27 @@ func TestAgentDrainWait(t *testing.T) {
 	slow.Store(0)
 	activityTimeout = prevTimeout
 
+	// A drain lifted while the command waits is told apart from a node
+	// that ignores drains: the agent takes new tasks again.
+	busy.Store(true)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		removeDrain(dir, "codex")
+	}()
+	if out, err := run("drain", "codex", "-wait", "-timeout", "5s"); err == nil || !strings.Contains(err.Error(), "codex was undrained while this command waited") {
+		t.Fatalf("lifted drain: %q %v", out, err)
+	}
+	// And one lifted and set again by someone else between two polls.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		// One write: undrain and drain again between two polls.
+		saveDrain(dir, "codex", drainMark{Since: time.Now().UTC().Add(time.Second), By: caller.DrainSetOnNode})
+	}()
+	if out, err := run("drain", "codex", "-wait", "-timeout", "5s"); err == nil || !strings.Contains(err.Error(), "codex was undrained and drained again") {
+		t.Fatalf("drained again: %q %v", out, err)
+	}
+	busy.Store(false)
+
 	// A node from before drains reports no drain for an agent it serves.
 	reads.Store(false)
 	busy.Store(false)
@@ -421,7 +442,7 @@ func TestDrainRestartAdvice(t *testing.T) {
 		return strings.Contains(got, "stop the 'agentiscaled run -data-dir") && !strings.Contains(got, "background service")
 	}
 	running := &adviceService{installedNow: true, runningNow: true}
-	if got := restartAdvice(dir, settings{}, running); got != "restart its background service (test service)" {
+	if got := restartAdvice(context.Background(), dir, settings{}, running); got != "restart its background service (test service)" {
 		t.Fatalf("running service: %q", got)
 	}
 	for name, c := range map[string]struct {
@@ -434,9 +455,48 @@ func TestDrainRestartAdvice(t *testing.T) {
 		// Stopped, while the node runs in the foreground instead.
 		"service stopped": {settings{}, &adviceService{installedNow: true}},
 	} {
-		if got := restartAdvice(dir, c.st, c.svc); !foreground(got) {
+		if got := restartAdvice(context.Background(), dir, c.st, c.svc); !foreground(got) {
 			t.Errorf("%s: %q", name, got)
 		}
+	}
+	// A service manager that is slow to answer does not outlast the
+	// caller's deadline; the advice then names both ways.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	got := restartAdvice(ctx, dir, settings{}, &adviceService{installedNow: true, runningNow: true, slow: time.Second})
+	if took := time.Since(start); took > 300*time.Millisecond || !strings.Contains(got, "test service) if that runs it, else stop the 'agentiscaled run") {
+		t.Fatalf("slow service manager: %q after %s", got, took)
+	}
+}
+
+// The node answers for all its agents at one moment: an agent read while
+// another's lock is still taken is read then, not before.
+func TestAgentsActivityIsOneMoment(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	a, err := newAgentService(t.TempDir(), nil, dir, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := newAgentService(t.TempDir(), nil, dir, "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saveDrain(dir, "a", drainMark{Since: time.Now().UTC(), By: caller.DrainSetOnNode}); err != nil {
+		t.Fatal(err)
+	}
+	b.mu.Lock()
+	got := make(chan []agentActivity, 1)
+	go func() { got <- agentsActivity([]*agentService{a, b}) }()
+	time.Sleep(100 * time.Millisecond)
+	if _, err := removeDrain(dir, "a"); err != nil {
+		b.mu.Unlock()
+		t.Fatal(err)
+	}
+	b.mu.Unlock()
+	if as := <-got; as[0].Drain != nil {
+		t.Fatalf("a was read before b's moment: %+v", as[0].Drain)
 	}
 }
 
@@ -444,11 +504,15 @@ func TestDrainRestartAdvice(t *testing.T) {
 type adviceService struct {
 	service
 	installedNow, runningNow bool
+	slow                     time.Duration
 }
 
-func (s *adviceService) name() string          { return "test service" }
-func (s *adviceService) installed() bool       { return s.installedNow }
-func (s *adviceService) state() (string, bool) { return "", s.runningNow }
+func (s *adviceService) name() string    { return "test service" }
+func (s *adviceService) installed() bool { return s.installedNow }
+func (s *adviceService) state() (string, bool) {
+	time.Sleep(s.slow)
+	return "", s.runningNow
+}
 
 // A user who may not use the node's socket is told so at once, with the
 // drain saved, rather than left waiting.
