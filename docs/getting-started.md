@@ -297,13 +297,18 @@ To restart a machine without cutting tasks off, drain its agents with
 agentiscaled agent drain -reason "reboot" -wait -timeout 30m && agentiscaled down
 ```
 
-With `-timeout`, `agent drain -wait` gives up after that long and exits with an
-error; the agents stay drained and keep finishing their tasks. A task that
-waits for an answer keeps the agent draining until it is answered or times out.
+`agent drain -wait` succeeds only when the running node itself says that the
+drain holds and the agents have no task left. Anything else ends it with an
+error, and the drain stays saved either way: no node answering (a node that is
+starting serves its agents before it answers), a node that stops answering or
+stays silent for 30 seconds, or a user who may not reach the node. With
+`-timeout`, it gives up after that long; the agents stay drained and keep
+finishing their tasks. A task that waits for an answer keeps the agent draining
+until it is answered or times out.
 
 If the running node is older than the `agentiscaled` command, for example after
 an upgrade that did not restart it, `agent drain` saves the drain but says the
-node ignores it until it restarts, and exits with an error.
+node ignores it until it restarts, how to restart it, and exits with an error.
 
 Agent questions, runtime login and validation finish before `up` or `agent add` stops an existing
 service. If a later enrollment, save or startup step fails, agentiscaled attempts to restore

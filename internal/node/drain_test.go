@@ -227,7 +227,7 @@ func TestAgentDrainCommand(t *testing.T) {
 		t.Fatalf("bad reason: %v", err)
 	}
 	out, err := run("drain", "codex", "-reason", " re-login ")
-	if err != nil || !strings.Contains(out, "codex is drained: its node is not running") {
+	if err != nil || !strings.Contains(out, "codex is drained: no node answers on this machine now") {
 		t.Fatalf("drain: %q %v", out, err)
 	}
 	first := loadDrain(drainPath(dir, "codex"))
@@ -282,9 +282,13 @@ func TestAgentDrainWait(t *testing.T) {
 	if _, err := run("drain", "codex", "-timeout", "1s"); err == nil || !strings.Contains(err.Error(), "-timeout needs -wait") {
 		t.Fatalf("timeout without wait: %v", err)
 	}
-	// No node runs: nothing to wait for.
-	if out, err := run("drain", "codex", "-wait"); err != nil || !strings.Contains(out, "its node is not running") {
+	// No node answers: silence is not proof that no task runs, since a
+	// starting node serves its agents before it opens the socket.
+	if out, err := run("drain", "codex", "-wait"); err == nil || !strings.Contains(err.Error(), "no node answers; the drain is saved") || !strings.Contains(out, "codex is drained") {
 		t.Fatalf("no node: %q %v", out, err)
+	}
+	if loadDrain(drainPath(dir, "codex")) == nil {
+		t.Fatal("drain not saved")
 	}
 
 	prev := drainWaitEvery
@@ -381,16 +385,71 @@ func TestAgentDrainWait(t *testing.T) {
 		t.Fatalf("old node: %v", err)
 	}
 
-	// Only a node confirmed stopped, its socket gone, ends the wait early.
+	// A node that only fails to answer ends the wait with an error after
+	// drainWaitSilence, also without -timeout.
 	reads.Store(true)
 	busy.Store(true)
+	prevSilence := drainWaitSilence
+	drainWaitSilence = 150 * time.Millisecond
+	t.Cleanup(func() { drainWaitSilence = prevSilence })
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		failing.Store(1 << 20)
+	}()
+	if out, err := run("drain", "codex", "-wait"); err == nil || !strings.Contains(err.Error(), "the node has not answered for 150ms; the drain is saved") {
+		t.Fatalf("silent node: %q %v", out, err)
+	}
+	failing.Store(0)
+
+	// A node that goes away while the agent works is no proof that its
+	// work is done: the wait fails.
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		srv.Close()
 	}()
 	out, err = run("drain", "codex", "-wait", "-timeout", "5s")
-	if err != nil || !strings.Contains(out, "The node stopped") {
-		t.Fatalf("node stopped: %q %v", out, err)
+	if err == nil || !strings.Contains(err.Error(), "the node stopped answering before it said the agent had no task left") || strings.Contains(out, "no task left.") {
+		t.Fatalf("node went away: %q %v", out, err)
+	}
+}
+
+// The restart advice for a node that ignores drains fits how it runs.
+func TestDrainRestartAdvice(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if got := restartAdvice(dir, settings{Foreground: true}); !strings.Contains(got, "stop the 'agentiscaled run -data-dir") || strings.Contains(got, "background service") {
+		t.Fatalf("foreground: %q", got)
+	}
+	// No background service is installed for a fresh data directory.
+	if got := restartAdvice(dir, settings{}); !strings.Contains(got, "agentiscaled run") {
+		t.Fatalf("no service installed: %q", got)
+	}
+}
+
+// A user who may not use the node's socket is told so at once, with the
+// drain saved, rather than left waiting.
+func TestDrainSocketDenied(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may use any socket")
+	}
+	dir := shortTempDir(t)
+	writeSettings(t, dir, settings{Control: "https://control.test", Agents: []agentConfig{{Runtime: "codex", Name: "codex", Dir: t.TempDir()}}})
+	socket := filepath.Join(dir, localAgentSocketName)
+	listener, err := listenAgentSocket(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	if err := os.Chmod(socket, 0); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err = RunAgent(context.Background(), []string{"drain", "codex", "-wait", "-data-dir", dir}, &out)
+	if err == nil || !strings.Contains(err.Error(), "the drain is saved, but this user may not use the node's socket") {
+		t.Fatalf("denied: %q %v", out.String(), err)
+	}
+	if loadDrain(drainPath(dir, "codex")) == nil {
+		t.Fatal("drain not saved")
 	}
 }
 
