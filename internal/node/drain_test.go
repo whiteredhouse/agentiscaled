@@ -93,23 +93,34 @@ func TestUnreadableDrainStillDrains(t *testing.T) {
 func TestHandEditedDrainFileStillFits(t *testing.T) {
 	t.Parallel()
 	h := newAgentHarness(t, testSender)
-	for name, file := range map[string]string{
-		"long by":             `{"reason":"reboot","by":"` + strings.Repeat("x", 600) + `"}`,
-		"by not a word":       `{"reason":"reboot","by":"no de"}`,
-		"long reason":         `{"reason":"` + strings.Repeat("x", 600) + `","by":"node"}`,
-		"control in by":       `{"by":"a\u0007b"}`,
-		"time with an offset": `{"reason":"reboot","since":"9999-12-31T23:59:59-01:00"}`,
+	since := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, tc := range []struct {
+		name, file, reason string
+		since              bool
+	}{
+		{"long by", `{"reason":"reboot","since":"2026-01-02T03:04:05Z","by":"` + strings.Repeat("x", 600) + `"}`, "reboot", true},
+		{"by not a word", `{"reason":"reboot","by":"no de"}`, "reboot", false},
+		{"long reason", `{"reason":"` + strings.Repeat("x", 600) + `","since":"2026-01-02T03:04:05Z","by":"node"}`, "", true},
+		{"control in by", `{"by":"a\u0007b"}`, "", false},
+		// Go reads this time and cannot write it.
+		{"offset past a day", `{"reason":"reboot","since":"2026-01-02T03:04:05+24:00"}`, "reboot", false},
+		{"offset", `{"reason":"reboot","since":"2026-01-02T04:04:05+01:00"}`, "reboot", true},
 	} {
-		if err := os.WriteFile(drainPath(h.dir, "helper"), []byte(file), 0o600); err != nil {
+		if err := os.WriteFile(drainPath(h.dir, "helper"), []byte(tc.file), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		md := h.svc.activity().serviceMetadata()
+		activity := h.svc.activity()
+		md := activity.serviceMetadata()
 		if err := api.ValidateServiceMetadata(md); err != nil {
-			t.Fatalf("%s: %v", name, err)
+			t.Fatalf("%s: %v", tc.name, err)
 		}
 		d := caller.DrainFromMetadata(md)
-		if d == nil || len(d.Reason) > caller.MaxDrainReasonBytes || (d.By != "" && d.By != caller.DrainSetOnNode) {
-			t.Fatalf("%s: %+v", name, d)
+		if d == nil || d.Reason != tc.reason || d.Since.Equal(since) != tc.since || (d.By != "" && d.By != caller.DrainSetOnNode) {
+			t.Fatalf("%s: %q read back as %+v", tc.name, md[caller.DrainMetadataKey], d)
+		}
+		// The local agent API writes every agent's drain in one answer.
+		if _, err := json.Marshal(caller.LocalInfo{Draining: map[string]caller.Drain{"helper": *activity.Drain}}); err != nil {
+			t.Fatalf("%s: /info: %v", tc.name, err)
 		}
 	}
 	got := h.await(t, h.send(t, "", "task", nil).ID, a2a.TaskStateRejected)

@@ -64,7 +64,7 @@ func validDrainBy(by string) bool {
 }
 
 // Valid is the drain without the fields it may not carry: a reason or By
-// that would not fit, which only a hand-edited drain file or another node
+// that would not fit, or a time JSON cannot write, which only a hand-edited drain file or another node
 // can hold. The mark itself always stays.
 func (d Drain) Valid() Drain {
 	if DrainReasonError(d.Reason) != "" {
@@ -72,6 +72,12 @@ func (d Drain) Valid() Drain {
 	}
 	if !validDrainBy(d.By) {
 		d.By = ""
+	}
+	// A time can read and still not write, such as one 24 hours ahead of
+	// UTC; it would leave the drain, and every answer that carries it,
+	// unwritable.
+	if _, err := d.Since.MarshalJSON(); err != nil {
+		d.Since = time.Time{}
 	}
 	return d
 }

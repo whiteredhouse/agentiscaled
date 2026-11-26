@@ -312,6 +312,52 @@ func TestTaskFollowUpsFindATaskADrainSentElsewhere(t *testing.T) {
 	}
 }
 
+// With no agent of the name here and several nodes offering it, the task
+// decides where task wait and task cancel go: a new task went to the one
+// not drained.
+func TestTaskFollowUpsFindTheirTaskAmongSeveralNodes(t *testing.T) {
+	t.Parallel()
+	net := newFakeNetwork(t)
+	drainedAgent, open := newAgentHarness(t, testSender), newAgentHarness(t, testSender)
+	drained, other := randomPeer(t), randomPeer(t)
+	net.route(drained, drainedAgent.url)
+	net.route(other, open.url)
+	net.offer(drained)
+	net.offer(other)
+	net.mu.Lock()
+	net.drained = map[string]string{drained: "reboot"}
+	net.mu.Unlock()
+
+	sendID := func() string {
+		run := startTaskSend("", "-data-dir", net.dir, "-no-wait", "helper", "hello")
+		<-open.fix.prompts
+		if err := run.wait(t); err != nil || !strings.Contains(run.errOut.String(), "on node "+other) {
+			t.Fatalf("send: %v\n%s", err, run.errOut)
+		}
+		return strings.TrimSpace(run.out.String())
+	}
+	id := sendID()
+	open.fix.release <- "done"
+	out, errOut := &syncBuffer{}, &syncBuffer{}
+	if err := caller.RunTaskWait(context.Background(), []string{"-data-dir", net.dir, "helper", id}, out, errOut); err != nil || out.String() != "done\n" {
+		t.Fatalf("wait: %v %q %s", err, out.String(), errOut)
+	}
+	id = sendID()
+	out = &syncBuffer{}
+	if err := caller.RunTaskCancel(context.Background(), []string{"-data-dir", net.dir, "helper", id}, out, &syncBuffer{}); err != nil || !strings.Contains(out.String(), "task "+id+" cancelled") {
+		t.Fatalf("cancel: %v %q", err, out.String())
+	}
+	// A task no node holds still names the problem: the name.
+	err := caller.RunTaskWait(context.Background(), []string{"-data-dir", net.dir, "helper", "no-such-task"}, &syncBuffer{}, &syncBuffer{})
+	if err == nil || !strings.Contains(err.Error(), "2 nodes offer helper: pick one with -peer") {
+		t.Fatalf("unknown task: %v", err)
+	}
+	err = caller.RunTaskCancel(context.Background(), []string{"-data-dir", net.dir, "helper", "no-such-task"}, &syncBuffer{}, &syncBuffer{})
+	if err == nil || !strings.Contains(err.Error(), "2 nodes offer helper: pick one with -peer") {
+		t.Fatalf("cancel unknown task: %v", err)
+	}
+}
+
 func TestTaskSendUsage(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

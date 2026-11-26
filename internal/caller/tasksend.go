@@ -401,13 +401,21 @@ func findAgent(ctx context.Context, tasks *Client, agent, peer string, wait time
 }
 
 // taskTarget finds the agent of the name that holds task id, which this
-// node sent: the one findAgent picks for a task that exists, unless that
-// one does not know the task and another agent of the name does. A drain
-// can send a new task past this node's agent, so the name alone does not
-// say where a task went; peer, when given, does.
+// node sent. A drain can send a new task past an agent of the name, so the
+// name alone does not say where a task went: when the name picks no one
+// agent, or picks one that does not know the task, the task decides. peer,
+// when given, says where it is.
 func taskTarget(ctx context.Context, tasks *Client, agent, peer, id string, wait time.Duration) (Target, string, error) {
 	target, where, err := findAgent(ctx, tasks, agent, peer, wait, false)
-	if err != nil || peer != "" {
+	if peer != "" {
+		return target, where, err
+	}
+	if err != nil {
+		// Several nodes offer the name: the one that holds the task is
+		// the one.
+		if other, ok := taskElsewhere(ctx, tasks, agent, id, Target{}); ok {
+			return other, targetPlace(other), nil
+		}
 		return target, where, err
 	}
 	if _, err := tasks.Watch(ctx, target, a2a.TaskID(id), 0, nil); !errors.Is(err, a2a.ErrTaskNotFound) {
@@ -420,7 +428,8 @@ func taskTarget(ctx context.Context, tasks *Client, agent, peer, id string, wait
 }
 
 // taskElsewhere looks for task id at the agents of the name other than
-// tried: this node's and those other nodes offer. An agent shows a task
+// tried (none, when tried is empty): this node's and those other nodes
+// offer. An agent shows a task
 // only to whoever sent it, so only the one that holds it answers.
 func taskElsewhere(ctx context.Context, tasks *Client, agent, id string, tried Target) (Target, bool) {
 	var candidates []Target

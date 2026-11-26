@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -98,10 +99,13 @@ type cancelled struct {
 // cancelTasks finds agent and cancels each of its tasks ids, all at once,
 // reporting each in order; it fails if any task could not be cancelled.
 func cancelTasks(ctx context.Context, tasks *Client, agent string, ids []string, o taskSendOptions, out io.Writer) error {
-	target, _, err := findAgent(ctx, tasks, agent, o.peer, 0, false)
-	if err != nil {
-		return err
+	// The name picks the agent; when it picks no one agent, as when several
+	// nodes offer it, each task decides (taskElsewhere).
+	target, _, ferr := findAgent(ctx, tasks, agent, o.peer, 0, false)
+	if ferr != nil && o.peer != "" {
+		return ferr
 	}
+	var found atomic.Int32
 	shown := make([]cancelled, len(ids))
 	lines := make([]string, len(ids))
 	var wg sync.WaitGroup
@@ -115,8 +119,19 @@ func cancelTasks(ctx context.Context, tasks *Client, agent string, ids []string,
 				lines[i] = fmt.Sprintf("%q is not a task ID", id)
 				return
 			}
-			task, line, err := cancelOne(ctx, tasks, target, id)
-			if errors.Is(err, a2a.ErrTaskNotFound) && o.peer == "" {
+			at := target
+			if ferr != nil {
+				other, ok := taskElsewhere(ctx, tasks, agent, id, Target{})
+				if !ok {
+					shown[i] = cancelled{Task{TaskID: id}, ferr.Error()}
+					lines[i] = fmt.Sprintf("task %s: %v", id, ferr)
+					return
+				}
+				at = other
+			}
+			found.Add(1)
+			task, line, err := cancelOne(ctx, tasks, at, id)
+			if errors.Is(err, a2a.ErrTaskNotFound) && o.peer == "" && ferr == nil {
 				// A drain may have sent the task to another agent of the
 				// name.
 				if other, ok := taskElsewhere(ctx, tasks, agent, id, target); ok {
@@ -132,6 +147,10 @@ func cancelTasks(ctx context.Context, tasks *Client, agent string, ids []string,
 		}()
 	}
 	wg.Wait()
+	if ferr != nil && found.Load() == 0 {
+		// No task was found anywhere: the name is the problem.
+		return ferr
+	}
 	failed := 0
 	for i := range ids {
 		if shown[i].Error != "" {
