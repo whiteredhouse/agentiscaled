@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -244,53 +246,76 @@ func TestAgentListShowsActivity(t *testing.T) {
 	}
 }
 
-// A saved name the node refuses is shown escaped and labelled wherever
-// saved names are printed, so that it cannot be copied into a command as
-// it is; an agent saved without a name has the one the node gives it.
+// A saved name the node refuses is shown percent-encoded and labelled
+// wherever saved names are printed, so that it cannot be copied into a
+// command as it is; an agent saved without a name has the one the node
+// gives it.
 func TestSavedAgentNamesShownSafely(t *testing.T) {
 	t.Parallel()
 	dir := shortTempDir(t)
 	bad := "bot/$(id)\n'x'"
-	escaped := `bot\x2f\x24\x28id\x29\x0a\x27x\x27`
+	encoded := "bot%2F%24%28id%29%0A%27x%27"
 	writeSettings(t, dir, settings{Control: "https://control.test", Agents: []agentConfig{
 		{Runtime: "codex", Dir: t.TempDir()},
+		{Runtime: "acp", Command: "/opt/My Apps/my-agent", Dir: t.TempDir()},
 		{Runtime: "claude", Name: "release.bot.", Dir: t.TempDir()},
 		{Runtime: "claude", Name: bad, Dir: t.TempDir()},
+		// What the shell would leave of a backslash escape of bad, and a
+		// refused name that is the encoded form itself.
+		{Runtime: "claude", Name: "botx2fx24x28idx29x0ax27xx27", Dir: t.TempDir()},
+		{Runtime: "claude", Name: encoded, Dir: t.TempDir()},
 	}})
-	run := func(args ...string) string {
-		t.Helper()
-		var out bytes.Buffer
-		if err := RunAgent(context.Background(), append(args, "-data-dir", dir), &out); err != nil {
-			t.Fatal(err)
-		}
-		return out.String()
+	got, err := runAgentOut(dir, "list")
+	if err != nil {
+		t.Fatal(err)
 	}
-	got := run("list")
 	lines := strings.Split(strings.TrimSpace(got), "\n")
-	if len(lines) != 4 || !strings.HasPrefix(lines[1], "codex ") || strings.Contains(lines[1], "invalid") ||
-		!strings.HasPrefix(lines[2], "release.bot. ") || strings.Contains(lines[2], "invalid") ||
-		!strings.HasPrefix(lines[3], escaped+" ") || !strings.Contains(lines[3], "invalid name; the node does not start") || strings.Contains(got, "$(id)") {
+	want := []struct{ prefix, state string }{
+		{"codex ", ""}, {"my-agent ", ""}, {"release.bot. ", ""}, {encoded + " ", "invalid"},
+		{"botx2fx24x28idx29x0ax27xx27 ", ""}, {"bot%252F%2524%2528id%2529%250A%2527x%2527 ", "invalid"},
+	}
+	if len(lines) != len(want)+1 || strings.Contains(got, "$(id)") {
 		t.Fatalf("agent list:\n%s", got)
+	}
+	for i, w := range want {
+		if line := lines[i+1]; !strings.HasPrefix(line, w.prefix) || strings.Contains(line, "invalid name; the node does not start") != (w.state != "") {
+			t.Fatalf("agent list line %d %q, want %q:\n%s", i+1, line, w.prefix, got)
+		}
 	}
 	var status bytes.Buffer
 	if err := RunStatus(context.Background(), []string{"-data-dir", dir}, &status); err != nil {
 		t.Fatal(err)
 	}
-	if st := status.String(); !strings.Contains(st, "Agent:    codex (codex)") || !strings.Contains(st, "Agent:    "+escaped+" (claude)") ||
-		!strings.Contains(st, "invalid name; the node does not start") || strings.Contains(st, "$(id)") {
+	if st := status.String(); !strings.Contains(st, "Agent:    codex (codex)") || !strings.Contains(st, "Agent:    my-agent (acp)") ||
+		!strings.Contains(st, "Agent:    "+encoded+" (claude)") || !strings.Contains(st, "invalid name; the node does not start") || strings.Contains(st, "$(id)") {
 		t.Fatalf("status:\n%s", st)
 	}
-	// Draining every agent leaves out the refused one, which serves nothing.
-	if out, err := runAgentOut(dir, "drain"); strings.Contains(out, "$(id)") || strings.Contains(out, escaped) {
-		t.Fatalf("drain all: %q %v", out, err)
+	// Draining every agent leaves out the refused ones, which serve nothing.
+	if out, _ := runAgentOut(dir, "drain"); strings.Contains(out, "$(id)") || strings.Contains(out, "%2F") {
+		t.Fatalf("drain all: %q", out)
 	}
-	// The refused name is removed as agent list shows it.
-	if out, err := runAgentOut(dir, "remove", escaped); err != nil || !strings.Contains(out, "no longer offers "+escaped+";") {
-		t.Fatalf("remove escaped: %q %v", out, err)
+	// The encoded name, pasted into a shell as agent list prints it,
+	// reaches the command unchanged and removes that agent only.
+	for _, sh := range []string{"sh", "bash", "zsh", "fish"} {
+		path, err := exec.LookPath(sh)
+		if err != nil {
+			continue
+		}
+		pasted, err := exec.Command(path, "-c", "printf %s "+encoded).Output()
+		if err != nil || string(pasted) != encoded {
+			t.Fatalf("%s gives %q for the pasted name: %v", sh, pasted, err)
+		}
+	}
+	if out, err := runAgentOut(dir, "remove", encoded); err != nil || !strings.Contains(out, "no longer offers "+encoded+";") {
+		t.Fatalf("remove encoded: %q %v", out, err)
 	}
 	s, err := loadSettings(dir)
-	if err != nil || len(s.Agents) != 2 {
+	if err != nil || len(s.Agents) != 5 || slices.ContainsFunc(s.Agents, func(a agentConfig) bool { return a.Name == bad }) {
 		t.Fatalf("after remove: %+v %v", s.Agents, err)
+	}
+	// A refused name is named only by its encoded form.
+	if _, err := runAgentOut(dir, "remove", encoded); err == nil {
+		t.Fatal("the encoded form named the agent whose raw name it is")
 	}
 }
 

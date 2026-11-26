@@ -164,11 +164,9 @@ func (a agentConfig) effectiveName() string {
 	if _, ok := runtimes[a.Runtime]; !ok {
 		return ""
 	}
-	program := a.Command
-	if a.Runtime == "acp" && len(a.Args) == 0 {
-		program, _, _ = splitACPCommand(a.Command)
-	}
-	return runtimeDefaultName(a.Runtime, program)
+	// Saved ACP agents keep the program apart from its arguments, so
+	// Command is the program's whole path, spaces and all.
+	return runtimeDefaultName(a.Runtime, a.Command)
 }
 
 func (a agentConfig) policy() agentPolicy {

@@ -248,8 +248,10 @@ func runAgentRemove(args []string, out io.Writer) error {
 	var name string
 	switch {
 	case len(rest) == 1:
-		// A refused name is taken as agent list shows it, escaped.
-		i := slices.IndexFunc(names, func(n string) bool { return n == rest[0] || shownAgentName(n) == rest[0] })
+		// Each agent is named as agent list shows it: a name the node
+		// takes as it is, a refused one only percent-encoded, so that no
+		// argument names two agents.
+		i := slices.IndexFunc(names, func(n string) bool { return shownAgentName(n) == rest[0] })
 		if i < 0 {
 			return fmt.Errorf("this machine offers no agent named %s; see 'agentiscaled agent list'", shownAgentName(rest[0]))
 		}

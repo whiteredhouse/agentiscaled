@@ -171,15 +171,17 @@ func takenAgentName(name string) bool {
 }
 
 // shownAgentName is how a saved or reported agent name is printed: a name
-// the node takes as it is, any other escaped, so that no shell reads it as
-// syntax and no terminal as control: every byte outside letters, digits,
-// '.', '_' and '-' is written as \xHH, and an empty name as "".
+// the node takes as it is, any other percent-encoded: every byte outside
+// letters, digits, '.', '_' and '-' as %XX, and an empty name as "%". The
+// encoded form has nothing any common shell changes, so it reaches a
+// command as printed, and it never equals a name the node takes, which has
+// no '%'.
 func shownAgentName(name string) string {
 	if takenAgentName(name) {
 		return name
 	}
 	if name == "" {
-		return `""`
+		return "%"
 	}
 	var b strings.Builder
 	for i := 0; i < len(name); i++ {
@@ -187,7 +189,7 @@ func shownAgentName(name string) string {
 		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-' {
 			b.WriteByte(c)
 		} else {
-			fmt.Fprintf(&b, `\x%02x`, c)
+			fmt.Fprintf(&b, "%%%02X", c)
 		}
 	}
 	return b.String()
