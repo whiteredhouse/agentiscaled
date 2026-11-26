@@ -63,7 +63,15 @@ func loadSettings(dataDir string) (settings, error) {
 	if err != nil {
 		return s, err
 	}
-	return s, json.Unmarshal(b, &s)
+	if err := json.Unmarshal(b, &s); err != nil {
+		return s, err
+	}
+	// An agent saved without a name has the one the node gives it, for
+	// every command that reads the settings.
+	for i := range s.Agents {
+		s.Agents[i].Name = s.Agents[i].effectiveName()
+	}
+	return s, nil
 }
 
 func saveSettings(dataDir string, s settings) error {
@@ -426,9 +434,7 @@ func checkAgent(ctx context.Context, a *agentConfig, dataDir string, service boo
 	if !ok {
 		return fmt.Errorf("agent runtime %q: unknown (have %s)", a.Runtime, strings.Join(runtimeNames(), ", "))
 	}
-	if a.Name == "" {
-		a.Name = runtimeDefaultName(a.Runtime, a.Command)
-	}
+	a.Name = a.effectiveName()
 	if err := agentNameError(a.Name); err != nil {
 		return err
 	}
@@ -685,7 +691,12 @@ func printSavedNodeStatus(out io.Writer, dir string, s settings) bool {
 		fmt.Fprintf(out, "Mesh:     %s\n", s.MeshURL)
 	}
 	for _, a := range s.Agents {
-		fmt.Fprintf(out, "Agent:    %s (%s) in %s\n", a.Name, a.Runtime, a.Dir)
+		name := a.effectiveName()
+		if agentNameError(name) != nil {
+			fmt.Fprintf(out, "Agent:    %s (%s) in %s, invalid name; the node does not start\n", shownAgentName(name), a.Runtime, a.Dir)
+			continue
+		}
+		fmt.Fprintf(out, "Agent:    %s (%s) in %s\n", name, a.Runtime, a.Dir)
 	}
 	if svc := newService(dir); svc != nil {
 		state, serviceRuns := svc.state(context.Background())

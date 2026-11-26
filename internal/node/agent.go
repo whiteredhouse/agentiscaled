@@ -159,16 +159,28 @@ var agentName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_-]{0,62}(\.[A-Za-z0-
 // network: it must be a plain DNS name (agentName) that the node's service
 // registry also takes as a2a://<name>.
 func agentNameError(name string) error {
-	if len(name) > 253 || !agentName.MatchString(name) || api.ValidateServiceFormat(api.ServiceTypeStringA2A+"://"+name) != nil {
-		return fmt.Errorf("agent name %s: the network takes a DNS name: letters, digits, - and _, in labels of up to 63 characters joined by dots", escapedName(name))
+	if !takenAgentName(name) {
+		return fmt.Errorf("agent name %s: the network takes a DNS name: letters, digits, - and _, in labels of up to 63 characters joined by dots", shownAgentName(name))
 	}
 	return nil
 }
 
-// escapedName shows a name that may not be an agent's as text that no
-// shell reads as syntax: every byte outside letters, digits, '.', '_' and
-// '-' is written as \xHH.
-func escapedName(name string) string {
+// takenAgentName tells whether the node takes name (agentNameError).
+func takenAgentName(name string) bool {
+	return len(name) <= 253 && agentName.MatchString(name) && api.ValidateServiceFormat(api.ServiceTypeStringA2A+"://"+name) == nil
+}
+
+// shownAgentName is how a saved or reported agent name is printed: a name
+// the node takes as it is, any other escaped, so that no shell reads it as
+// syntax and no terminal as control: every byte outside letters, digits,
+// '.', '_' and '-' is written as \xHH, and an empty name as "".
+func shownAgentName(name string) string {
+	if takenAgentName(name) {
+		return name
+	}
+	if name == "" {
+		return `""`
+	}
 	var b strings.Builder
 	for i := 0; i < len(name); i++ {
 		c := name[i]

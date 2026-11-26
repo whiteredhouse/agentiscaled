@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -153,6 +154,23 @@ func (a *agentConfig) splitCommand() error {
 	return nil
 }
 
+// effectiveName is the agent's name: its own, else the one the node gives
+// an agent of its runtime and command (runtimeDefaultName). Everything that
+// starts, checks or shows a saved agent uses this name.
+func (a agentConfig) effectiveName() string {
+	if a.Name != "" {
+		return a.Name
+	}
+	if _, ok := runtimes[a.Runtime]; !ok {
+		return ""
+	}
+	program := a.Command
+	if a.Runtime == "acp" && len(a.Args) == 0 {
+		program, _, _ = splitACPCommand(a.Command)
+	}
+	return runtimeDefaultName(a.Runtime, program)
+}
+
 func (a agentConfig) policy() agentPolicy {
 	return agentPolicy{DirInstructions: !a.IgnoreDirInstructions, DirSkills: !a.IgnoreDirSkills, OwnerConfig: !a.OwnConfig}
 }
@@ -184,11 +202,7 @@ func agentFlags(fs *flag.FlagSet) func() *agentConfig {
 			// An empty command fails when the agent is checked.
 			a.splitCommand()
 		}
-		if a.Name == "" {
-			if _, ok := runtimes[a.Runtime]; ok {
-				a.Name = runtimeDefaultName(a.Runtime, a.Command)
-			}
-		}
+		a.Name = a.effectiveName()
 		return &a
 	}
 }
@@ -258,11 +272,13 @@ func newAgents(ctx context.Context, c *config) ([]*hostedAgent, error) {
 	names := map[string]bool{}
 	for i := range c.agents {
 		a := &c.agents[i]
-		if a.Name == "" {
-			a.Name = runtimeDefaultName(a.Runtime, a.Command)
-		}
+		a.Name = a.effectiveName()
 		if names[a.Name] {
-			return nil, fmt.Errorf("two agents are named %q; each agent needs a name of its own", a.Name)
+			shown := shownAgentName(a.Name)
+			if shown == a.Name {
+				shown = strconv.Quote(a.Name)
+			}
+			return nil, fmt.Errorf("two agents are named %s; each agent needs a name of its own", shown)
 		}
 		names[a.Name] = true
 		ownerConfig = ownerConfig || a.policy().OwnerConfig
@@ -299,11 +315,9 @@ func newAgents(ctx context.Context, c *config) ([]*hostedAgent, error) {
 // run. The node's environment is set up already (newAgents).
 func newAgent(ctx context.Context, a *agentConfig, dataDir string) (*agentService, error) {
 	if _, ok := runtimes[a.Runtime]; !ok {
-		return nil, fmt.Errorf("agent %s: unknown runtime %q (have %s)", a.Name, a.Runtime, strings.Join(runtimeNames(), ", "))
+		return nil, fmt.Errorf("agent %s: unknown runtime %q (have %s)", shownAgentName(a.Name), a.Runtime, strings.Join(runtimeNames(), ", "))
 	}
-	if a.Name == "" {
-		a.Name = runtimeDefaultName(a.Runtime, a.Command)
-	}
+	a.Name = a.effectiveName()
 	if err := agentNameError(a.Name); err != nil {
 		return nil, err
 	}

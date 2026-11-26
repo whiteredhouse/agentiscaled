@@ -244,25 +244,59 @@ func TestAgentListShowsActivity(t *testing.T) {
 	}
 }
 
-// A saved name the node refuses is listed escaped and labelled, so that it
-// cannot be copied into a command as it is.
-func TestAgentListShowsInvalidNameEscaped(t *testing.T) {
+// A saved name the node refuses is shown escaped and labelled wherever
+// saved names are printed, so that it cannot be copied into a command as
+// it is; an agent saved without a name has the one the node gives it.
+func TestSavedAgentNamesShownSafely(t *testing.T) {
 	t.Parallel()
 	dir := shortTempDir(t)
+	bad := "bot/$(id)\n'x'"
+	escaped := `bot\x2f\x24\x28id\x29\x0a\x27x\x27`
 	writeSettings(t, dir, settings{Control: "https://control.test", Agents: []agentConfig{
-		{Runtime: "codex", Name: "release.bot.", Dir: t.TempDir()},
-		{Runtime: "claude", Name: "bot/$(id)\n'x'", Dir: t.TempDir()},
+		{Runtime: "codex", Dir: t.TempDir()},
+		{Runtime: "claude", Name: "release.bot.", Dir: t.TempDir()},
+		{Runtime: "claude", Name: bad, Dir: t.TempDir()},
 	}})
-	var out bytes.Buffer
-	if err := RunAgent(context.Background(), []string{"list", "-data-dir", dir}, &out); err != nil {
+	run := func(args ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		if err := RunAgent(context.Background(), append(args, "-data-dir", dir), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	got := run("list")
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	if len(lines) != 4 || !strings.HasPrefix(lines[1], "codex ") || strings.Contains(lines[1], "invalid") ||
+		!strings.HasPrefix(lines[2], "release.bot. ") || strings.Contains(lines[2], "invalid") ||
+		!strings.HasPrefix(lines[3], escaped+" ") || !strings.Contains(lines[3], "invalid name; the node does not start") || strings.Contains(got, "$(id)") {
+		t.Fatalf("agent list:\n%s", got)
+	}
+	var status bytes.Buffer
+	if err := RunStatus(context.Background(), []string{"-data-dir", dir}, &status); err != nil {
 		t.Fatal(err)
 	}
-	got := out.String()
-	if !strings.Contains(got, `bot\x2f\x24\x28id\x29\x0a\x27x\x27`) || !strings.Contains(got, "invalid name; the node does not start") ||
-		strings.Contains(got, "$(id)") || strings.Count(got, "\n") != 3 {
-		t.Fatalf("invalid name:\n%s", got)
+	if st := status.String(); !strings.Contains(st, "Agent:    codex (codex)") || !strings.Contains(st, "Agent:    "+escaped+" (claude)") ||
+		!strings.Contains(st, "invalid name; the node does not start") || strings.Contains(st, "$(id)") {
+		t.Fatalf("status:\n%s", st)
 	}
-	if line := strings.Split(got, "\n")[1]; !strings.HasPrefix(line, "release.bot. ") || strings.Contains(line, "invalid") {
-		t.Fatalf("valid name with a final dot: %q", line)
+	// Draining every agent leaves out the refused one, which serves nothing.
+	if out, err := runAgentOut(dir, "drain"); strings.Contains(out, "$(id)") || strings.Contains(out, escaped) {
+		t.Fatalf("drain all: %q %v", out, err)
 	}
+	// The refused name is removed as agent list shows it.
+	if out, err := runAgentOut(dir, "remove", escaped); err != nil || !strings.Contains(out, "no longer offers "+escaped+";") {
+		t.Fatalf("remove escaped: %q %v", out, err)
+	}
+	s, err := loadSettings(dir)
+	if err != nil || len(s.Agents) != 2 {
+		t.Fatalf("after remove: %+v %v", s.Agents, err)
+	}
+}
+
+// runAgentOut runs an agent command on dir and gives its output.
+func runAgentOut(dir string, args ...string) (string, error) {
+	var out bytes.Buffer
+	err := RunAgent(context.Background(), append(args, "-data-dir", dir), &out)
+	return out.String(), err
 }

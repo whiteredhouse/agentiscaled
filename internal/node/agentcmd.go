@@ -247,14 +247,21 @@ func runAgentRemove(args []string, out io.Writer) error {
 	}
 	var name string
 	switch {
-	case len(rest) == 1 && !slices.Contains(names, rest[0]):
-		return fmt.Errorf("this machine offers no agent named %q; see 'agentiscaled agent list'", rest[0])
 	case len(rest) == 1:
-		name = rest[0]
+		// A refused name is taken as agent list shows it, escaped.
+		i := slices.IndexFunc(names, func(n string) bool { return n == rest[0] || shownAgentName(n) == rest[0] })
+		if i < 0 {
+			return fmt.Errorf("this machine offers no agent named %s; see 'agentiscaled agent list'", shownAgentName(rest[0]))
+		}
+		name = names[i]
 	case len(names) == 0:
 		return errors.New("this machine offers no agent")
 	case len(names) > 1:
-		return fmt.Errorf("name the agent to remove: %s", strings.Join(names, ", "))
+		shown := make([]string, len(names))
+		for i, n := range names {
+			shown[i] = shownAgentName(n)
+		}
+		return fmt.Errorf("name the agent to remove: %s", strings.Join(shown, ", "))
 	default:
 		name = names[0]
 	}
@@ -267,7 +274,7 @@ func runAgentRemove(args []string, out io.Writer) error {
 	if _, err := removeDrain(dir, name); err != nil {
 		fmt.Fprintf(out, "Could not lift its drain: %v\n", err)
 	}
-	fmt.Fprintf(out, "This machine no longer offers %q; its directory stays as it is.\n", name)
+	fmt.Fprintf(out, "This machine no longer offers %s; its directory stays as it is.\n", shownAgentName(name))
 	return restartNode(dir, s, newService(dir), out)
 }
 
@@ -319,12 +326,12 @@ func runAgentList(args []string, out io.Writer) error {
 	}
 	now := time.Now()
 	for _, a := range s.Agents {
-		name := a.Name
-		state := activityText(activity, running, a.Name, now, loadDrain(drainPath(*dataDir, a.Name)))
-		// A saved name the node refuses is shown escaped, so that it cannot
-		// be copied into a command as it is.
-		if agentNameError(a.Name) != nil {
-			name = escapedName(a.Name)
+		// The name the node gives it; one it refuses is shown escaped, so
+		// that it cannot be copied into a command as it is.
+		name := a.effectiveName()
+		state := activityText(activity, running, name, now, loadDrain(drainPath(*dataDir, name)))
+		if agentNameError(name) != nil {
+			name = shownAgentName(name)
 			state = "invalid name; the node does not start"
 		}
 		if !defined {
@@ -333,7 +340,7 @@ func runAgentList(args []string, out io.Writer) error {
 		}
 		def := "-"
 		if a.Definition != "" {
-			def = homeRelative(definitionCopy(*dataDir, a.Name, a.Definition))
+			def = homeRelative(definitionCopy(*dataDir, a.effectiveName(), a.Definition))
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", name, state, a.Runtime, homeRelative(a.Dir), def)
 	}
@@ -517,7 +524,11 @@ func runAgentDrain(ctx context.Context, args []string, out io.Writer, drain bool
 	}
 	var names []string
 	for _, a := range s.Agents {
-		names = append(names, a.Name)
+		// A name the node refuses serves nothing, so there is nothing to
+		// drain; agent list shows it.
+		if takenAgentName(a.Name) {
+			names = append(names, a.Name)
+		}
 	}
 	switch {
 	case len(names) == 0:
