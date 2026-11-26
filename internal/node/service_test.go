@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ type fakeLaunchd struct {
 	ran        []string
 }
 
-func (f *fakeLaunchd) run(name string, args ...string) ([]byte, error) {
+func (f *fakeLaunchd) run(_ context.Context, name string, args ...string) ([]byte, error) {
 	f.ran = append(f.ran, args[0])
 	switch args[0] {
 	case "bootout":
@@ -59,8 +60,8 @@ func TestLaunchdRestartWaitsForBootout(t *testing.T) {
 	f := &fakeLaunchd{loaded: true}
 	svc := useFakeLaunchd(t, f)
 	orig := f.run
-	commandRunner = func(name string, args ...string) ([]byte, error) {
-		out, err := orig(name, args...)
+	commandRunner = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		out, err := orig(context.Background(), name, args...)
 		if args[0] == "bootout" && err == nil {
 			f.lingering = 3
 		}
@@ -84,12 +85,12 @@ func TestLaunchdStartRetriesBootstrap(t *testing.T) {
 	svc := useFakeLaunchd(t, f)
 	refusals := 2
 	orig := f.run
-	commandRunner = func(name string, args ...string) ([]byte, error) {
+	commandRunner = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		if args[0] == "bootstrap" && refusals > 0 {
 			refusals--
 			return []byte("Bootstrap failed: 5: Input/output error"), errors.New("exit status 5")
 		}
-		return orig(name, args...)
+		return orig(context.Background(), name, args...)
 	}
 	if err := svc.start(serviceSpec{exe: "/usr/local/bin/agentiscaled", dataDir: "/Users/a/.config/agentiscale"}); err != nil {
 		t.Fatalf("start: %v", err)
@@ -104,11 +105,11 @@ func TestLaunchdStartRetriesBootstrap(t *testing.T) {
 func TestLaunchdGivesUp(t *testing.T) {
 	f := &fakeLaunchd{loaded: true}
 	svc := useFakeLaunchd(t, f)
-	commandRunner = func(name string, args ...string) ([]byte, error) {
+	commandRunner = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		if args[0] == "bootout" {
 			return nil, nil // claims success, but the job stays
 		}
-		return f.run(name, args...)
+		return f.run(context.Background(), name, args...)
 	}
 	if err := svc.stop(); err == nil || !strings.Contains(err.Error(), "still loaded") {
 		t.Fatalf("stop of a job that stays: %v", err)
@@ -116,11 +117,11 @@ func TestLaunchdGivesUp(t *testing.T) {
 
 	f = &fakeLaunchd{}
 	svc = useFakeLaunchd(t, f)
-	commandRunner = func(name string, args ...string) ([]byte, error) {
+	commandRunner = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		if args[0] == "bootstrap" {
 			return []byte("Bootstrap failed: 5: Input/output error"), errors.New("exit status 5")
 		}
-		return f.run(name, args...)
+		return f.run(context.Background(), name, args...)
 	}
 	err := svc.start(serviceSpec{exe: "/usr/local/bin/agentiscaled", dataDir: "/Users/a/.config/agentiscale"})
 	if err == nil || !strings.Contains(err.Error(), "Input/output error") {

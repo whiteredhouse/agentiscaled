@@ -43,8 +43,10 @@ type agentSocketContextKey struct{}
 // serveLocalAgent is agentiscaled's owner API, separate from Agent Mesh's
 // network routes. Both paths proxy to the same agent handler and task store.
 // targets maps each agent's name to where serveAgent serves it, and
-// activity, when set, says what each agent is doing now (GET /agents).
-func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, targets map[string]string, dataDir string, activity func() []agentActivity) (*http.Server, error) {
+// activity, when set, says what each agent is doing now (GET /agents), and
+// drains, when set, are the agents whose drains POST /agents/drain/wait
+// waits on.
+func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, targets map[string]string, dataDir string, activity func() []agentActivity, drains []*agentService) (*http.Server, error) {
 	proxies := map[string]*httputil.ReverseProxy{}
 	for name, target := range targets {
 		backend, err := url.Parse(target)
@@ -85,6 +87,10 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(info)
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/agents/drain/wait" && drains != nil {
+			serveDrainWait(w, r, drains, dataDir)
 			return
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/agents" && activity != nil {

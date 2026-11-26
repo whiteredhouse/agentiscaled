@@ -287,10 +287,31 @@ drain too: `network agent list` marks the agent `(draining: <reason>)`, the
 over a drained agent when another node offers one of the same name. Only new
 tasks go elsewhere: an answer with `task send -task`, `task wait` and
 `task cancel` take the task's reference, which says where it went.
-Your console shows it as Draining.
+Your console shows it as Draining while it finishes its tasks, then Drained.
 
-To restart a machine without cutting tasks off, drain its agents, wait until
-`agent list` shows them `drained`, then run `agentiscaled down`.
+To restart a machine without cutting tasks off, drain its agents with
+`-wait`, which returns once they have no task left, then run
+`agentiscaled down`:
+
+```sh
+agentiscaled agent drain -reason "reboot" -wait -timeout 30m && agentiscaled down
+```
+
+`agent drain -wait` asks the running node to answer once this drain holds and
+the agents have no task left, and succeeds only on that answer. The node
+decides, so a task taken just before the drain was saved still counts. Anything
+else ends it with an error, and the drain stays saved either way: no node
+answering (a node that is starting serves its agents before it answers), a node
+that stops answering or stays silent for 30 seconds, a user who may not reach
+the node, the agent undrained while the command waits, or a node too old to
+answer waits (restart it, or watch `agentiscaled agent list`). With
+`-timeout`, it gives up after that long; the agents stay drained and keep
+finishing their tasks. A task that waits for an answer keeps the agent draining
+until it is answered or times out.
+
+If the running node is older than the `agentiscaled` command, for example after
+an upgrade that did not restart it, `agent drain` saves the drain but says the
+node ignores it until it restarts, how to restart it, and exits with an error.
 
 Agent questions, runtime login and validation finish before `up` or `agent add` stops an existing
 service. If a later enrollment, save or startup step fails, agentiscaled attempts to restore

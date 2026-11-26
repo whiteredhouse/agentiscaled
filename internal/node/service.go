@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -40,8 +41,9 @@ type service interface {
 	// installed says whether the service is installed.
 	installed() bool
 	// state says whether the service is installed and running, and
-	// running whether its process runs now.
-	state() (desc string, running bool)
+	// running whether its process runs now. ctx ends the question to the
+	// service manager.
+	state(ctx context.Context) (desc string, running bool)
 	// hint is advice to print after start, if any.
 	hint() string
 }
@@ -52,9 +54,9 @@ type service interface {
 // shorten it.
 var launchdWait = struct{ unload, load, poll time.Duration }{30 * time.Second, 5 * time.Second, 250 * time.Millisecond}
 
-// commandRunner runs a system command; tests replace it.
-var commandRunner = func(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+// commandRunner runs a system command, which ctx ends; tests replace it.
+var commandRunner = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 // newService returns the background service for a node's data directory on
@@ -122,7 +124,7 @@ func (s *launchdService) start(spec serviceSpec) error {
 	// the same error 5, so try again until the wait is over.
 	deadline := time.Now().Add(launchdWait.load)
 	for {
-		out, err := commandRunner("launchctl", "bootstrap", "gui/"+strconv.Itoa(s.uid), s.plistPath())
+		out, err := commandRunner(context.Background(), "launchctl", "bootstrap", "gui/"+strconv.Itoa(s.uid), s.plistPath())
 		if err == nil {
 			return nil
 		}
@@ -139,7 +141,7 @@ func (s *launchdService) start(spec serviceSpec) error {
 // error".
 func (s *launchdService) stop() error {
 	// bootout fails when the agent is not loaded, which is fine.
-	_, _ = commandRunner("launchctl", "bootout", s.target())
+	_, _ = commandRunner(context.Background(), "launchctl", "bootout", s.target())
 	deadline := time.Now().Add(launchdWait.unload)
 	for s.loaded() {
 		if time.Now().After(deadline) {
@@ -152,7 +154,7 @@ func (s *launchdService) stop() error {
 
 // loaded says whether launchd knows the job, running or not.
 func (s *launchdService) loaded() bool {
-	_, err := commandRunner("launchctl", "print", s.target())
+	_, err := commandRunner(context.Background(), "launchctl", "print", s.target())
 	return err == nil
 }
 
@@ -164,11 +166,11 @@ func (s *launchdService) remove() error {
 	return nil
 }
 
-func (s *launchdService) state() (string, bool) {
+func (s *launchdService) state(ctx context.Context) (string, bool) {
 	if _, err := os.Stat(s.plistPath()); err != nil {
 		return "not installed", false
 	}
-	out, err := commandRunner("launchctl", "print", s.target())
+	out, err := commandRunner(ctx, "launchctl", "print", s.target())
 	if err != nil {
 		return "installed, not loaded", false
 	}
@@ -241,7 +243,7 @@ func (s *systemdService) unitPath() string {
 }
 
 func (s *systemdService) systemctl(args ...string) error {
-	out, err := commandRunner("systemctl", append([]string{"--user"}, args...)...)
+	out, err := commandRunner(context.Background(), "systemctl", append([]string{"--user"}, args...)...)
 	if err != nil {
 		return fmt.Errorf("systemctl --user %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
@@ -285,11 +287,11 @@ func (s *systemdService) remove() error {
 	return s.systemctl("daemon-reload")
 }
 
-func (s *systemdService) state() (string, bool) {
+func (s *systemdService) state(ctx context.Context) (string, bool) {
 	if _, err := os.Stat(s.unitPath()); err != nil {
 		return "not installed", false
 	}
-	out, _ := commandRunner("systemctl", "--user", "is-active", s.unit)
+	out, _ := commandRunner(ctx, "systemctl", "--user", "is-active", s.unit)
 	v := strings.TrimSpace(string(out))
 	return "installed, " + v, v == "active"
 }
@@ -306,7 +308,7 @@ func (s *systemdService) hint() string {
 	if err != nil {
 		return ""
 	}
-	out, err := commandRunner("loginctl", "show-user", u.Username, "--property=Linger", "--value")
+	out, err := commandRunner(context.Background(), "loginctl", "show-user", u.Username, "--property=Linger", "--value")
 	if err != nil || strings.TrimSpace(string(out)) == "yes" {
 		return ""
 	}

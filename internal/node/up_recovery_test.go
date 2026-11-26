@@ -30,7 +30,7 @@ func installTestSupervisor(t *testing.T, dir string, running bool) *testSupervis
 	// systemctl restart does.
 	launchdWait.unload, launchdWait.load, launchdWait.poll = 200*time.Millisecond, 0, time.Millisecond
 	state := &testSupervisor{}
-	commandRunner = func(command string, args ...string) ([]byte, error) {
+	commandRunner = func(_ context.Context, command string, args ...string) ([]byte, error) {
 		action := ""
 		if len(args) > 0 {
 			action = args[0]

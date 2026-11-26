@@ -523,13 +523,13 @@ func run(ctx context.Context, c config) error {
 		for _, a := range agents {
 			targets[a.Name] = a.target
 		}
+		svcs := make([]*agentService, 0, len(agents))
+		for _, a := range agents {
+			svcs = append(svcs, a.svc)
+		}
 		localAPI, err := serveLocalAgent(nodeCtx, node, nodeConfig, targets, c.dataDir, func() []agentActivity {
-			out := make([]agentActivity, 0, len(agents))
-			for _, a := range agents {
-				out = append(out, a.svc.activity())
-			}
-			return out
-		})
+			return agentsActivity(svcs)
+		}, svcs)
 		if err != nil {
 			return fmt.Errorf("start local agent API: %w", err)
 		}
