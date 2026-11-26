@@ -696,7 +696,13 @@ func waitDrained(ctx context.Context, dir string, st settings, held map[string]t
 	tick := time.NewTicker(drainWaitEvery)
 	defer tick.Stop()
 	for {
-		answer, kind := askDrainWait(ctx, dir, held)
+		// Each question gets only the silence left, so that no answer
+		// counts after drainWaitSilence without one.
+		budget := drainWaitSilence - time.Since(heard)
+		if budget <= 0 {
+			return fmt.Errorf("the node has not answered for %s; the drain is saved", drainWaitSilence)
+		}
+		answer, kind := askDrainWait(ctx, dir, held, budget)
 		// An answer that came in after the deadline does not count.
 		if ctx.Err() != nil {
 			return waitEnded(ctx, left, timeout)
@@ -739,14 +745,17 @@ func waitDrained(ctx context.Context, dir string, st settings, held map[string]t
 // hold and no task is left, or a drain is lifted, or it has waited long
 // enough (POST /agents/drain/wait). The kinds are askNodeActivity's;
 // nodeNoActivity is a node without this question.
-func askDrainWait(ctx context.Context, dir string, held map[string]time.Time) (drainWaitAnswer, nodeAnswer) {
-	body, err := json.Marshal(drainWaitRequest{Agents: held})
+func askDrainWait(ctx context.Context, dir string, held map[string]time.Time, budget time.Duration) (drainWaitAnswer, nodeAnswer) {
+	// The node holds the request up to drainWaitLongest; a node that holds
+	// it much longer is not answering. Within budget, the node is asked to
+	// answer early enough for its answer to arrive.
+	limit := min(drainWaitLongest+activityTimeout, budget)
+	hold := max(min(drainWaitLongest, limit-activityTimeout), limit/2)
+	body, err := json.Marshal(drainWaitRequest{Agents: held, WithinMS: max(hold.Milliseconds(), 1)})
 	if err != nil {
 		return drainWaitAnswer{}, nodeBadAnswer
 	}
-	// The node holds the request up to drainWaitLongest; a node that holds
-	// it much longer is not answering.
-	ctx, cancel := context.WithTimeout(ctx, drainWaitLongest+activityTimeout)
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	client := nodeclient.SocketClient(filepath.Join(dir, localAgentSocketName))
 	defer client.CloseIdleConnections()

@@ -16,9 +16,11 @@ import (
 
 // drainWaitRequest is the body of POST /agents/drain/wait: the drains to
 // wait on, each named by its agent and known by when it began, as the
-// drain file the command saved says.
+// drain file the command saved says. WithinMS, when set, is how long the
+// command can wait for this answer, so the node answers within it.
 type drainWaitRequest struct {
-	Agents map[string]time.Time `json:"agents"`
+	Agents   map[string]time.Time `json:"agents"`
+	WithinMS int64                `json:"within_ms,omitempty"`
 }
 
 // What the node answers about the drains a command waits on.
@@ -112,11 +114,15 @@ func serveDrainWaitEvery(w http.ResponseWriter, r *http.Request, agents []*agent
 		http.Error(w, "the request names no drain", http.StatusBadRequest)
 		return
 	}
+	// The names a node registers, not only the ones the wizard offers.
 	for name := range req.Agents {
-		if !validAgentName(name) {
+		if agentNameError(name) != nil {
 			http.Error(w, "the request names no agent of this node's form", http.StatusBadRequest)
 			return
 		}
+	}
+	if within := time.Duration(req.WithinMS) * time.Millisecond; req.WithinMS > 0 && within < longest {
+		longest = within
 	}
 	answer := waitDrainsHeld(r.Context(), agents, dataDir, req.Agents, longest, every)
 	w.Header().Set("Content-Type", "application/json")

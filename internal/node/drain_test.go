@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -435,9 +436,18 @@ func TestAgentDrainWait(t *testing.T) {
 		t.Fatalf("silent node: %q %v", out, err)
 	}
 	failing.Store(0)
+	// Nor does an answer that arrives after drainWaitSilence count: each
+	// question gets only the silence left.
+	setBusy(false)
+	slow.Store(int64(170 * time.Millisecond))
+	if out, err := run("drain", "codex", "-wait"); err == nil || !strings.Contains(err.Error(), "the node has not answered for 150ms; the drain is saved") || strings.Contains(out, "no task left.") {
+		t.Fatalf("answer after the silence: %q %v", out, err)
+	}
+	slow.Store(0)
 
 	// A node that goes away while the agent works is no proof that its
 	// work is done: the wait fails.
+	setBusy(true)
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		srv.Close()
@@ -445,6 +455,44 @@ func TestAgentDrainWait(t *testing.T) {
 	out, err = run("drain", "codex", "-wait", "-timeout", "5s")
 	if err == nil || !strings.Contains(err.Error(), "the node stopped answering before it said the agent had no task left") || strings.Contains(out, "no task left.") {
 		t.Fatalf("node went away: %q %v", out, err)
+	}
+}
+
+// The node answers waits on every name it registers, DNS names too, and
+// answers within the time the command says it can wait.
+func TestDrainWaitEndpoint(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	svc, err := newAgentService(t.TempDir(), nil, dir, "release.bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	since := time.Now().UTC().Truncate(time.Second)
+	if err := saveDrain(dir, "release.bot", drainMark{Since: since, By: caller.DrainSetOnNode}); err != nil {
+		t.Fatal(err)
+	}
+	ask := func(req drainWaitRequest) (int, drainWaitAnswer, time.Duration) {
+		body, _ := json.Marshal(req)
+		rec := httptest.NewRecorder()
+		start := time.Now()
+		serveDrainWaitEvery(rec, httptest.NewRequest(http.MethodPost, "/agents/drain/wait", bytes.NewReader(body)), []*agentService{svc}, dir, 5*time.Second, 5*time.Millisecond)
+		took := time.Since(start)
+		var answer drainWaitAnswer
+		_ = json.Unmarshal(rec.Body.Bytes(), &answer)
+		return rec.Code, answer, took
+	}
+	if code, answer, _ := ask(drainWaitRequest{Agents: map[string]time.Time{"release.bot": since}}); code != http.StatusOK || answer.State != drainHeld {
+		t.Fatalf("DNS name: %d %+v", code, answer)
+	}
+	if code, _, _ := ask(drainWaitRequest{Agents: map[string]time.Time{"../x": since}}); code != http.StatusBadRequest {
+		t.Fatalf("bad name: %d", code)
+	}
+	svc.mu.Lock()
+	svc.current = &agentRun{taskID: "t1", started: time.Now()}
+	svc.mu.Unlock()
+	code, answer, took := ask(drainWaitRequest{Agents: map[string]time.Time{"release.bot": since}, WithinMS: 50})
+	if code != http.StatusOK || answer.State != drainWorking || took > time.Second {
+		t.Fatalf("within 50ms: %d %+v after %s", code, answer, took)
 	}
 }
 
