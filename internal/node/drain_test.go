@@ -464,9 +464,13 @@ func TestDrainRestartAdvice(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	got := restartAdvice(ctx, dir, settings{}, &adviceService{installedNow: true, runningNow: true, slow: time.Second})
+	slow := &adviceService{installedNow: true, runningNow: true, slow: time.Second}
+	got := restartAdvice(ctx, dir, settings{}, slow)
 	if took := time.Since(start); took > 300*time.Millisecond || !strings.Contains(got, "test service) if that runs it, else stop the 'agentiscaled run") {
 		t.Fatalf("slow service manager: %q after %s", got, took)
+	}
+	if !slow.cancelled.Load() {
+		t.Fatal("the service manager's question was not cancelled with the deadline")
 	}
 }
 
@@ -505,12 +509,19 @@ type adviceService struct {
 	service
 	installedNow, runningNow bool
 	slow                     time.Duration
+	cancelled                atomic.Bool
 }
 
 func (s *adviceService) name() string    { return "test service" }
 func (s *adviceService) installed() bool { return s.installedNow }
-func (s *adviceService) state() (string, bool) {
-	time.Sleep(s.slow)
+func (s *adviceService) state(ctx context.Context) (string, bool) {
+	select {
+	case <-time.After(s.slow):
+	case <-ctx.Done():
+		// The service manager's process is cancelled with ctx.
+		s.cancelled.Store(true)
+		return "", false
+	}
 	return "", s.runningNow
 }
 
@@ -585,5 +596,27 @@ func TestActivityReadsDrainWithTaskState(t *testing.T) {
 	h.svc.mu.Unlock()
 	if a := <-got; a.Drain != nil {
 		t.Fatalf("an undrained agent's answer carries the lifted drain: %+v", a.Drain)
+	}
+}
+
+// A waiting question is judged at the snapshot's moment, not when its
+// agent happens to be read: agentsActivity reads every agent as of one
+// clock reading.
+func TestActivityJudgesExpiryAtTheSnapshot(t *testing.T) {
+	t.Parallel()
+	s, err := newAgentService(t.TempDir(), nil, t.TempDir(), "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.answerWait = time.Hour
+	asked := time.Now().Add(-2 * time.Hour) // expired by the wall clock
+	s.waiting[a2a.TaskID("t1")] = &waitingTask{since: asked}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if a := s.activityLocked(asked.Add(59 * time.Minute)); a.Waiting != 1 {
+		t.Fatalf("at the snapshot the question still waits: %+v", a)
+	}
+	if a := s.activityLocked(asked.Add(time.Hour)); a.Waiting != 0 {
+		t.Fatalf("at its expiry the question no longer waits: %+v", a)
 	}
 }

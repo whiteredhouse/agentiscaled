@@ -801,7 +801,7 @@ const (
 func (s *agentService) activity() agentActivity {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.activityLocked()
+	return s.activityLocked(time.Now())
 }
 
 // agentsActivity is what all agents of the node do at one moment: it holds
@@ -817,18 +817,23 @@ func agentsActivity(agents []*agentService) []agentActivity {
 			s.mu.Unlock()
 		}
 	}()
+	// One clock reading for every agent, taken before any drain is read:
+	// a question that expires while the agents are read is judged at the
+	// same moment for all of them.
+	now := time.Now()
 	out := make([]agentActivity, 0, len(agents))
 	for _, s := range agents {
-		out = append(out, s.activityLocked())
+		out = append(out, s.activityLocked(now))
 	}
 	return out
 }
 
-// activityLocked is activity with s.mu held. The drain is read with the
-// task state, under the lock that admission takes, so an answer is one
-// moment: it never pairs a drain that has since been lifted with work that
-// ended after it.
-func (s *agentService) activityLocked() agentActivity {
+// activityLocked is activity with s.mu held, as of now. The drain is read
+// with the task state, under the lock that admission takes, so an answer is
+// one moment: it never pairs a drain that has since been lifted with work
+// that ended after it. A waiting question counts until now reaches its
+// expiry, whatever the clock says by the time it is read.
+func (s *agentService) activityLocked(now time.Time) agentActivity {
 	a := agentActivity{Name: s.name, State: activityIdle, Drain: s.drain()}
 	if s.current != nil {
 		a.State = activityBusy
@@ -837,7 +842,7 @@ func (s *agentService) activityLocked() agentActivity {
 	}
 	for _, w := range s.waiting {
 		// The timer may still be waiting for the lock.
-		if time.Since(w.since) >= s.answerWait {
+		if now.Sub(w.since) >= s.answerWait {
 			continue
 		}
 		a.Waiting++

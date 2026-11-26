@@ -287,7 +287,7 @@ func TestSystemdService(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	var ran []string
 	old := commandRunner
-	commandRunner = func(name string, args ...string) ([]byte, error) {
+	commandRunner = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		ran = append(ran, name+" "+strings.Join(args, " "))
 		if name == "loginctl" {
 			return []byte("no\n"), nil
@@ -328,7 +328,7 @@ func TestSystemdService(t *testing.T) {
 	if ran[0] != "systemctl --user disable --now "+svc.unit {
 		t.Errorf("remove ran %q", ran)
 	}
-	if state, running := svc.state(); state != "not installed" || running {
+	if state, running := svc.state(context.Background()); state != "not installed" || running {
 		t.Errorf("state = %q, %v", state, running)
 	}
 }
@@ -416,8 +416,8 @@ func TestServiceStateSaysWhetherItRuns(t *testing.T) {
 		{systemd, "activating\n", "installed, activating", false},
 		{systemd, "failed\n", "installed, failed", false},
 	} {
-		commandRunner = func(string, ...string) ([]byte, error) { return []byte(c.out), nil }
-		if desc, running := c.svc.state(); desc != c.desc || running != c.running {
+		commandRunner = func(context.Context, string, ...string) ([]byte, error) { return []byte(c.out), nil }
+		if desc, running := c.svc.state(context.Background()); desc != c.desc || running != c.running {
 			t.Errorf("%s with %q: %q, %v; want %q, %v", c.svc.name(), c.out, desc, running, c.desc, c.running)
 		}
 	}

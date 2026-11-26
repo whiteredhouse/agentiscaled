@@ -638,22 +638,17 @@ func restartAdvice(ctx context.Context, dir string, st settings, svc service) st
 	if svc == nil || st.Foreground || !svc.installed() {
 		return "restart the node: " + foreground
 	}
+	// The service manager's process ends with ctx too.
 	ctx, cancel := context.WithTimeout(ctx, serviceStateWait)
 	defer cancel()
-	running := make(chan bool, 1)
-	go func() {
-		_, r := svc.state()
-		running <- r
-	}()
-	select {
-	case r := <-running:
-		if r {
-			return fmt.Sprintf("restart its background service (%s)", svc.name())
-		}
-		return "restart the node: " + foreground
-	case <-ctx.Done():
+	_, running := svc.state(ctx)
+	switch {
+	case ctx.Err() != nil:
 		return fmt.Sprintf("restart the node: its background service (%s) if that runs it, else %s", svc.name(), foreground)
+	case running:
+		return fmt.Sprintf("restart its background service (%s)", svc.name())
 	}
+	return "restart the node: " + foreground
 }
 
 // checkDrains checks that the node holds each drain this command saved

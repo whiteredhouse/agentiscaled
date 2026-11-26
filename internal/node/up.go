@@ -266,7 +266,7 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 	svc := newService(c.dataDir)
 	wasRunning := false
 	if svc != nil {
-		_, wasRunning = svc.state()
+		_, wasRunning = svc.state(context.Background())
 		// Unload an installed job even between automatic restart attempts.
 		if svc.installed() {
 			if err := svc.stop(); err != nil {
@@ -688,7 +688,7 @@ func printSavedNodeStatus(out io.Writer, dir string, s settings) bool {
 		fmt.Fprintf(out, "Agent:    %s (%s) in %s\n", a.Name, a.Runtime, a.Dir)
 	}
 	if svc := newService(dir); svc != nil {
-		state, serviceRuns := svc.state()
+		state, serviceRuns := svc.state(context.Background())
 		fmt.Fprintf(out, "Service:  %s, %s\n", svc.name(), state)
 		return serviceRuns
 	}
