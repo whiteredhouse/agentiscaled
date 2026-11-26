@@ -720,14 +720,16 @@ func (s *agentService) wait(id a2a.TaskID, w waitingTask) (why string) {
 // the same critical section as expiry. A refused answer returns its pending
 // question if the caller can still retry.
 func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, from taskSender, fromErr error, request string, cancel context.CancelCauseFunc) (run *agentRun, prior *waitingTask, reason string, metadata map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	// A drained agent finishes its tasks, answers to its questions
-	// included, but takes no new one.
+	// included, but takes no new one. The drain is read in the same
+	// critical section that takes the running slot, so once agent drain
+	// saved it and saw the agent idle, no new task can still start.
 	var drained *drainMark
 	if execCtx.StoredTask == nil {
 		drained = s.drain()
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if execCtx.StoredTask != nil {
 		prior = s.waiting[execCtx.TaskID]
 		if prior == nil || time.Since(prior.since) >= s.answerWait {

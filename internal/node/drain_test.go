@@ -295,9 +295,16 @@ func TestAgentDrainWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	var busy, reads atomic.Bool
+	var failing atomic.Int32 // the next polls to answer 503
+	var slow atomic.Int64    // how long each answer takes, in nanoseconds
 	reads.Store(true)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /agents", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(time.Duration(slow.Load()))
+		if failing.Add(-1) >= 0 {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		a := agentActivity{Name: "codex", State: activityIdle}
 		if busy.Load() {
 			a.State = activityBusy
@@ -328,10 +335,84 @@ func TestAgentDrainWait(t *testing.T) {
 		t.Fatalf("wait: %q %v", out, err)
 	}
 
+	// A poll that fails says nothing: the wait goes on until the node
+	// answers that the agent is idle.
+	busy.Store(true)
+	failing.Store(3)
+	var idleAt atomic.Int64
+	go func() {
+		for failing.Load() > 0 {
+			time.Sleep(5 * time.Millisecond)
+		}
+		time.Sleep(50 * time.Millisecond)
+		idleAt.Store(time.Now().UnixNano())
+		busy.Store(false)
+	}()
+	out, err = run("drain", "codex", "-wait")
+	if err != nil || !strings.Contains(out, "codex: no task left.") || idleAt.Load() == 0 {
+		t.Fatalf("wait through failed polls: %q %v", out, err)
+	}
+	// So does a poll that times out.
+	prevTimeout := activityTimeout
+	activityTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { activityTimeout = prevTimeout })
+	busy.Store(false)
+	slow.Store(int64(100 * time.Millisecond))
+	if out, err := run("drain", "codex", "-wait", "-timeout", "300ms"); err == nil || !strings.Contains(err.Error(), "the node did not say within 300ms") {
+		t.Fatalf("timed-out polls: %q %v", out, err)
+	}
+	// An answer that comes in after -timeout does not count as success.
+	activityTimeout = time.Second
+	start := time.Now()
+	out, err = run("drain", "codex", "-wait", "-timeout", "30ms")
+	if err == nil || !strings.Contains(err.Error(), "the node did not say within 30ms") {
+		t.Fatalf("late answer: %q %v", out, err)
+	}
+	if took := time.Since(start); took > 90*time.Millisecond {
+		t.Fatalf("-timeout 30ms took %s: the poll outlived it", took)
+	}
+	slow.Store(0)
+	activityTimeout = prevTimeout
+
 	// A node from before drains reports no drain for an agent it serves.
 	reads.Store(false)
 	busy.Store(false)
 	if _, err := run("drain", "codex"); err == nil || !strings.Contains(err.Error(), "the running node is older than this command") {
 		t.Fatalf("old node: %v", err)
+	}
+
+	// Only a node confirmed stopped, its socket gone, ends the wait early.
+	reads.Store(true)
+	busy.Store(true)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		srv.Close()
+	}()
+	out, err = run("drain", "codex", "-wait", "-timeout", "5s")
+	if err != nil || !strings.Contains(out, "The node stopped") {
+		t.Fatalf("node stopped: %q %v", out, err)
+	}
+}
+
+// A task whose admission waits for the agent's lock while the owner drains
+// it is refused: admission reads the drain in the critical section that
+// takes the running slot, so agent drain -wait's idle answer holds.
+func TestDrainReadWhereTheSlotIsTaken(t *testing.T) {
+	t.Parallel()
+	h := newAgentHarness(t, testSender)
+	h.svc.mu.Lock()
+	sent := make(chan *a2a.Task, 1)
+	go func() { sent <- h.send(t, "", "slips in", nil) }()
+	// Let the request reach admission and wait there for the lock.
+	time.Sleep(100 * time.Millisecond)
+	if err := saveDrain(h.dir, "helper", drainMark{Reason: "reboot", Since: time.Now().UTC(), By: caller.DrainSetOnNode}); err != nil {
+		h.svc.mu.Unlock()
+		t.Fatal(err)
+	}
+	h.svc.mu.Unlock()
+	task := <-sent
+	got := h.await(t, task.ID, a2a.TaskStateRejected)
+	if text := statusText(got); text != "refused: helper is draining: reboot; it takes no new tasks" {
+		t.Fatalf("refusal: %q", text)
 	}
 }
