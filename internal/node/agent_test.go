@@ -831,7 +831,7 @@ func TestAgentsKeepDeliveriesApart(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	seen := map[string]bool{}
-	for _, name := range []string{"helper", "writer", "Helper", "other/../helper"} {
+	for _, name := range []caller.AgentName{"helper", "writer", "Helper", "helper.team"} {
 		svc, err := newAgentService(t.TempDir(), newFixture(), dir, name)
 		if err != nil {
 			t.Fatal(err)

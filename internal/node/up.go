@@ -22,6 +22,7 @@ import (
 	meshnode "github.com/google/agentmesh/export/node"
 	"github.com/google/uuid"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/whiteredhouse/agentiscaled/internal/caller"
 	"github.com/whiteredhouse/agentiscaled/internal/cli"
 	"github.com/whiteredhouse/agentiscaled/internal/nodeclient"
 )
@@ -693,7 +694,7 @@ func printSavedNodeStatus(out io.Writer, dir string, s settings) bool {
 	for _, a := range s.Agents {
 		name := a.effectiveName()
 		if agentNameError(name) != nil {
-			fmt.Fprintf(out, "Agent:    %s (%s) in %s, %s\n", shownAgentName(name), a.Runtime, a.Dir, invalidNameState(dir))
+			fmt.Fprintf(out, "Agent:    %s (%s) in %s, %s\n", caller.ShownAgentName(name), a.Runtime, a.Dir, invalidNameState(dir))
 			continue
 		}
 		fmt.Fprintf(out, "Agent:    %s (%s) in %s\n", name, a.Runtime, a.Dir)

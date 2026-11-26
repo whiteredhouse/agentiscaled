@@ -39,7 +39,7 @@ func TestNetworkAgentListIncludesLocalAndRemote(t *testing.T) {
 		if r.URL.Path != "/info" {
 			t.Errorf("unexpected local route %s", r.URL.Path)
 		}
-		json.NewEncoder(w).Encode(localAgentInfo{PeerID: local, Services: []string{"helper"}})
+		json.NewEncoder(w).Encode(localAgentInfo{PeerID: local, Services: []caller.AgentName{"helper"}})
 	})
 	providers := []*api.DiscoveredProvider{
 		{SrvName: "helper", PeerId: local},
@@ -99,7 +99,7 @@ func TestNetworkAgentListShowsDrains(t *testing.T) {
 	local, remote := randomPeer(t), randomPeer(t)
 	since := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	serveDiscoveryFixture(t, dir, localAgentSocketName, func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(localAgentInfo{PeerID: local, Services: []string{"helper", "open"}, Draining: map[string]drainMark{"helper": {Reason: "re-login", Since: since, By: "node"}}})
+		json.NewEncoder(w).Encode(localAgentInfo{PeerID: local, Services: []caller.AgentName{"helper", "open"}, Draining: map[caller.AgentName]drainMark{"helper": {Reason: "re-login", Since: since, By: "node"}}})
 	})
 	serveDiscoveryFixture(t, dir, meshnode.DefaultSocketName, func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]*api.DiscoveredProvider{
@@ -118,7 +118,7 @@ func TestNetworkAgentListShowsDrains(t *testing.T) {
 	}
 	drains := map[string]*caller.Drain{}
 	for _, row := range result.Agents {
-		drains[row.Service] = row.Draining
+		drains[row.Service.String()] = row.Draining
 	}
 	want := map[string]*caller.Drain{
 		"helper":   {Reason: "re-login", Since: since, By: "node"},
@@ -160,7 +160,7 @@ func TestNetworkAgentListReadsLargeLocalCatalog(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mesh := newFakeNetwork(t)
-			info := localAgentInfo{PeerID: randomPeer(t), Services: tc.services}
+			info := map[string]any{"peer_id": randomPeer(t), "services": tc.services}
 			serveDiscoveryFixture(t, mesh.dir, localAgentSocketName, func(w http.ResponseWriter, r *http.Request) {
 				json.NewEncoder(w).Encode(info)
 			})
@@ -180,7 +180,7 @@ func TestNetworkAgentListReadsLargeLocalCatalog(t *testing.T) {
 				t.Fatalf("read %d local agents: %v", len(got.Agents), err)
 			}
 			for i, name := range names {
-				if got.Agents[i] != (caller.AgentRow{Service: name}) {
+				if got.Agents[i] != (caller.AgentRow{Service: caller.AgentName(name)}) {
 					t.Fatalf("row %d: got %+v, want local agent %s", i, got.Agents[i], name)
 				}
 			}

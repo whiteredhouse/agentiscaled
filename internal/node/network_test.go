@@ -236,17 +236,17 @@ func TestHostedAgentCallsAnotherAgent(t *testing.T) {
 	defer network.wait()
 	helperRT := newFixture()
 	callerRT := &callingRuntime{helper: helperRT, tokens: make(chan string, 1)}
-	targets := map[string]string{}
-	for name, rt := range map[string]runtime{"helper": helperRT, "caller": callerRT} {
+	targets := map[caller.AgentName]string{}
+	for name, rt := range map[caller.AgentName]runtime{"helper": helperRT, "caller": callerRT} {
 		svc, err := newAgentService(t.TempDir(), rt, dir, name)
 		if err != nil {
 			t.Fatal(err)
 		}
 		svc.network = network
-		if targets[name], _, err = serveAgent(ctx, svc, name); err != nil {
+		if targets[name], _, err = serveAgent(ctx, svc, name.String()); err != nil {
 			t.Fatal(err)
 		}
-		if err := node.RegisterService(ctx, &api.RegisterServiceRequest{Service: &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_A2A, Name: name}, Backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: targets[name]}}); err != nil {
+		if err := node.RegisterService(ctx, &api.RegisterServiceRequest{Service: &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_A2A, Name: name.String()}, Backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: targets[name]}}); err != nil {
 			t.Fatal(err)
 		}
 	}

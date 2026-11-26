@@ -442,9 +442,9 @@ func (n *fakeNetwork) host(t *testing.T, self, agentURL string) {
 	mux.HandleFunc("GET /info", func(w http.ResponseWriter, r *http.Request) {
 		n.mu.Lock()
 		defer n.mu.Unlock()
-		info := caller.LocalInfo{PeerID: self, Services: []string{"helper"}}
+		info := caller.LocalInfo{PeerID: self, Services: []caller.AgentName{"helper"}}
 		if n.localDrain != nil {
-			info.Draining = map[string]caller.Drain{"helper": {Reason: *n.localDrain}}
+			info.Draining = map[caller.AgentName]caller.Drain{"helper": {Reason: *n.localDrain}}
 		}
 		json.NewEncoder(w).Encode(info)
 	})

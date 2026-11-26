@@ -93,7 +93,7 @@ func RunTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 	if err != nil {
 		return err
 	}
-	var agent string
+	var agent AgentName
 	if o.taskID != "" {
 		// The reference names the agent and its node.
 		if o.answer, err = ParseTaskRef(o.taskID); err != nil {
@@ -106,15 +106,14 @@ func RunTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 		if o.peer != "" || o.waitAgent != 0 {
 			return errors.New("with -task, the task's reference says where its agent is: drop -peer and -wait-agent")
 		}
-		agent, pos = o.answer.Service, append([]string{o.answer.Service}, pos...)
+		agent, pos = o.answer.Service, append([]string{o.answer.Service.String()}, pos...)
 	} else {
 		if len(pos) < 1 || len(pos) > 2 {
 			fs.Usage()
 			return errors.New("task send takes an agent and a message")
 		}
-		agent = pos[0]
-		if !ValidAgentName(agent) {
-			return fmt.Errorf("%q is not an agent name", agent)
+		if agent, err = ParseAgentName(pos[0]); err != nil {
+			return err
 		}
 	}
 	text := "-"
@@ -180,7 +179,7 @@ func readMessage(ctx context.Context, stdin io.Reader) ([]byte, error) {
 // sendAndFollow finds agent, sends it text and follows the task until it
 // settles or the deadline, which ends ctx, passes. An answer goes where its
 // task is, as the task's reference says.
-func sendAndFollow(ctx context.Context, deadline time.Time, tasks *Client, agent, text string, o taskSendOptions, out, errOut io.Writer) error {
+func sendAndFollow(ctx context.Context, deadline time.Time, tasks *Client, agent AgentName, text string, o taskSendOptions, out, errOut io.Writer) error {
 	target, where := o.answer.Target, ""
 	if o.answer.ID == "" {
 		var err error
@@ -244,7 +243,7 @@ func sendAndFollow(ctx context.Context, deadline time.Time, tasks *Client, agent
 // followTask follows task until it ends or asks a question, the deadline
 // passes or ctx ends, printing each new step of the agent's on errOut, and
 // returns the task as last seen. Callers check ctx before the error.
-func followTask(ctx context.Context, tasks *Client, target Target, agent string, task Task, deadline time.Time, errOut io.Writer) (Task, error) {
+func followTask(ctx context.Context, tasks *Client, target Target, agent AgentName, task Task, deadline time.Time, errOut io.Writer) (Task, error) {
 	last := ""
 	notify := func(step string) {
 		if step = ProgressLine(terminalSafe(step)); step != "" && step != last {
@@ -273,7 +272,7 @@ func followTask(ctx context.Context, tasks *Client, target Target, agent string,
 
 // settle reports a task that ended or asks a question: the answer of a
 // completed task, else an error whose exit status says which.
-func settle(out io.Writer, o taskSendOptions, target Target, agent string, task Task) error {
+func settle(out io.Writer, o taskSendOptions, target Target, agent AgentName, task Task) error {
 	switch {
 	case task.Terminal == "completed":
 		return report(out, o, task, nil)
@@ -369,7 +368,7 @@ func timedOut(err error, ctx context.Context, timeout time.Duration) error {
 // is draining counts only when no other agent of the name takes tasks:
 // the drained one then refuses the task with its owner's reason. A task
 // that exists already stays with its agent, drained or not.
-func findAgent(ctx context.Context, tasks *Client, agent, peer string, wait time.Duration, fresh bool) (Target, string, error) {
+func findAgent(ctx context.Context, tasks *Client, agent AgentName, peer string, wait time.Duration, fresh bool) (Target, string, error) {
 	if peer != "" {
 		return Target{PeerID: peer, Service: agent}, "on node " + peer, nil
 	}
@@ -437,8 +436,8 @@ func placeOf(ctx context.Context, tasks *Client, target Target) string {
 
 // discoverAgent lists the other nodes that offer A2A agent name, through
 // the node's discovery API, and those of them whose agent is draining.
-func discoverAgent(ctx context.Context, client *http.Client, base, name, self string) (peers, drained []string, err error) {
-	found, err := readDiscovery(ctx, client, base, name)
+func discoverAgent(ctx context.Context, client *http.Client, base string, name AgentName, self string) (peers, drained []string, err error) {
+	found, err := readDiscovery(ctx, client, base, name.String())
 	if err != nil {
 		return nil, nil, fmt.Errorf("look for %s on the network: %w", name, err)
 	}

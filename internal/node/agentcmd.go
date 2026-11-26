@@ -250,9 +250,9 @@ func runAgentRemove(args []string, out io.Writer) error {
 	case len(rest) == 1:
 		// Only a name the node takes names an agent here; a refused one is
 		// fixed or deleted in the settings file, as agent list says.
-		i := slices.IndexFunc(names, func(n string) bool { return takenAgentName(n) && n == rest[0] })
+		i := slices.IndexFunc(names, func(n string) bool { return caller.ValidAgentName(n) && n == rest[0] })
 		if i < 0 {
-			return fmt.Errorf("this machine offers no agent named %s; see 'agentiscaled agent list'", shownAgentName(rest[0]))
+			return fmt.Errorf("this machine offers no agent named %s; see 'agentiscaled agent list'", caller.QuotedAgentName(rest[0]))
 		}
 		name = names[i]
 	case len(names) == 0:
@@ -260,7 +260,7 @@ func runAgentRemove(args []string, out io.Writer) error {
 	case len(names) > 1:
 		shown := make([]string, len(names))
 		for i, n := range names {
-			shown[i] = shownAgentName(n)
+			shown[i] = caller.ShownAgentName(n)
 		}
 		return fmt.Errorf("name the agent to remove: %s", strings.Join(shown, ", "))
 	default:
@@ -268,8 +268,8 @@ func runAgentRemove(args []string, out io.Writer) error {
 	}
 	// However the agent was picked, a refused name is fixed or deleted in
 	// the settings file, as agent list says.
-	if !takenAgentName(name) {
-		return fmt.Errorf("agent %s has an invalid name; %s", shownAgentName(name), fixInSettings(dir))
+	if !caller.ValidAgentName(name) {
+		return fmt.Errorf("agent %s has an invalid name; %s", caller.ShownAgentName(name), fixInSettings(dir))
 	}
 	s.Agents = slices.DeleteFunc(s.Agents, func(a agentConfig) bool { return a.Name == name })
 	if err := saveSettings(dir, s); err != nil {
@@ -280,7 +280,7 @@ func runAgentRemove(args []string, out io.Writer) error {
 	if _, err := removeDrain(dir, name); err != nil {
 		fmt.Fprintf(out, "Could not lift its drain: %v\n", err)
 	}
-	fmt.Fprintf(out, "This machine no longer offers %s; its directory stays as it is.\n", shownAgentName(name))
+	fmt.Fprintf(out, "This machine no longer offers %s; its directory stays as it is.\n", caller.ShownAgentName(name))
 	return restartNode(dir, s, newService(dir), out)
 }
 
@@ -337,7 +337,7 @@ func runAgentList(args []string, out io.Writer) error {
 		name := a.effectiveName()
 		state := activityText(activity, running, name, now, loadDrain(drainPath(*dataDir, name)))
 		if agentNameError(name) != nil {
-			name = shownAgentName(name)
+			name = caller.ShownAgentName(name)
 			state = invalidNameState(*dataDir)
 		}
 		if !defined {
@@ -539,25 +539,27 @@ func runAgentDrain(ctx context.Context, args []string, out io.Writer, drain bool
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("load settings: %w", err)
 	}
-	var names []string
+	// A saved name the node refuses serves nothing, so there is nothing to
+	// drain; agent list shows it.
+	var names []caller.AgentName
 	for _, a := range s.Agents {
-		// A name the node refuses serves nothing, so there is nothing to
-		// drain; agent list shows it.
-		if takenAgentName(a.Name) {
-			names = append(names, a.Name)
+		if name, err := caller.ParseAgentName(a.Name); err == nil {
+			names = append(names, name)
 		}
 	}
 	switch {
 	case len(names) == 0:
 		return errors.New("this machine offers no agent")
-	case len(rest) == 1 && !slices.Contains(names, rest[0]):
-		return fmt.Errorf("this machine offers no agent named %q; see 'agentiscaled agent list'", rest[0])
 	case len(rest) == 1:
-		names = rest
+		name, err := caller.ParseAgentName(rest[0])
+		if err != nil || !slices.Contains(names, name) {
+			return fmt.Errorf("this machine offers no agent named %s; see 'agentiscaled agent list'", caller.QuotedAgentName(rest[0]))
+		}
+		names = []caller.AgentName{name}
 	}
 	if !drain {
 		for _, name := range names {
-			lifted, err := removeDrain(dir, name)
+			lifted, err := removeDrain(dir, name.String())
 			switch {
 			case err != nil:
 				return fmt.Errorf("undrain %s: %w", name, err)
@@ -572,15 +574,15 @@ func runAgentDrain(ctx context.Context, args []string, out io.Writer, drain bool
 	now := time.Now().UTC()
 	// held is when each drain began, as saved: the drain this command
 	// waits on, told apart from one lifted and set again.
-	held := make(map[string]time.Time, len(names))
+	held := make(map[caller.AgentName]time.Time, len(names))
 	for _, name := range names {
 		mark := drainMark{Reason: *reason, Since: now, By: caller.DrainSetOnNode}
 		// Draining again changes the reason; the drain still began when it
 		// first did.
-		if prior := loadDrain(drainPath(dir, name)); prior != nil && !prior.Since.IsZero() {
+		if prior := loadDrain(drainPath(dir, name.String())); prior != nil && !prior.Since.IsZero() {
 			mark.Since = prior.Since
 		}
-		if err := saveDrain(dir, name, mark); err != nil {
+		if err := saveDrain(dir, name.String(), mark); err != nil {
 			return fmt.Errorf("drain %s: %w", name, err)
 		}
 		held[name] = mark.Since
@@ -623,7 +625,7 @@ func runAgentDrain(ctx context.Context, args []string, out io.Writer, drain bool
 		return errors.New("the drain is saved, but the node did not answer whether it holds; check with 'agentiscaled agent list'")
 	}
 	for _, name := range names {
-		a, served := activity[name]
+		a, served := activity[name.String()]
 		switch {
 		case !served:
 			fmt.Fprintf(out, "%s is drained: it takes no new tasks.\n", name)
@@ -688,13 +690,22 @@ func restartAdvice(ctx context.Context, dir string, st settings, svc service) st
 	return "restart the node: " + foreground
 }
 
+// joinNames lists names for output.
+func joinNames(names []caller.AgentName) string {
+	shown := make([]string, len(names))
+	for i, n := range names {
+		shown[i] = n.String()
+	}
+	return strings.Join(shown, ", ")
+}
+
 // checkDrains checks that the node holds each drain this command saved
 // (held), for the agents it serves. A drain the node does not report is
 // told apart by its file: still saved, the node ignores drains (it is from
 // before them); gone or begun anew, someone lifted it.
-func checkDrains(ctx context.Context, dir string, st settings, activity map[string]agentActivity, held map[string]time.Time) error {
+func checkDrains(ctx context.Context, dir string, st settings, activity map[string]agentActivity, held map[caller.AgentName]time.Time) error {
 	for name, since := range held {
-		a, served := activity[name]
+		a, served := activity[name.String()]
 		switch {
 		case !served:
 			continue
@@ -703,7 +714,7 @@ func checkDrains(ctx context.Context, dir string, st settings, activity map[stri
 		case a.Drain != nil:
 			return fmt.Errorf("%s was undrained and drained again while this command waited", name)
 		}
-		if saved := loadDrain(drainPath(dir, name)); saved == nil || !saved.Since.Equal(since) {
+		if saved := loadDrain(drainPath(dir, name.String())); saved == nil || !saved.Since.Equal(since) {
 			return fmt.Errorf("%s was undrained while this command waited: it takes new tasks", name)
 		}
 		return errOldNode(ctx, dir, st)
@@ -724,7 +735,7 @@ var (
 // again while the node says work remains. Only the node's answer that the
 // drains hold and no task is left ends the wait with success. ctx carries
 // the -timeout, which timeout names for the error.
-func waitDrained(ctx context.Context, dir string, st settings, held map[string]time.Time, timeout time.Duration, out io.Writer, target string) error {
+func waitDrained(ctx context.Context, dir string, st settings, held map[caller.AgentName]time.Time, timeout time.Duration, out io.Writer, target string) error {
 	names := slices.Sorted(maps.Keys(held))
 	var left []string // nil until the node answers
 	heard := time.Now()
@@ -747,7 +758,7 @@ func waitDrained(ctx context.Context, dir string, st settings, held map[string]t
 			heard = time.Now()
 			switch answer.State {
 			case drainHeld:
-				fmt.Fprintf(out, "%s: no task left.\n", strings.Join(names, ", "))
+				fmt.Fprintf(out, "%s: no task left.\n", joinNames(names))
 				fmt.Fprintf(out, "'agentiscaled agent undrain%s' lets it take tasks again.\n", target)
 				return nil
 			case drainLifted:
@@ -780,7 +791,7 @@ func waitDrained(ctx context.Context, dir string, st settings, held map[string]t
 // hold and no task is left, or a drain is lifted, or it has waited long
 // enough (POST /agents/drain/wait). The kinds are askNodeActivity's;
 // nodeNoActivity is a node without this question.
-func askDrainWait(ctx context.Context, dir string, held map[string]time.Time, budget time.Duration) (drainWaitAnswer, nodeAnswer) {
+func askDrainWait(ctx context.Context, dir string, held map[caller.AgentName]time.Time, budget time.Duration) (drainWaitAnswer, nodeAnswer) {
 	// The node holds the request up to drainWaitLongest; a node that holds
 	// it much longer is not answering. Within budget, the node is asked to
 	// answer early enough for its answer to arrive.

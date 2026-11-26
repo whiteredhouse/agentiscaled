@@ -34,7 +34,7 @@ type Client struct {
 	Mesh    *http.Client
 	BaseURL string
 	Local   *http.Client
-	Self    string
+	Self    AgentName
 	Sent    SentTasks
 
 	// Zero uses the default for each interval.
@@ -58,8 +58,8 @@ func (t *Client) mayUse(target Target, id string) error {
 }
 
 type Target struct {
-	PeerID  string `json:"peer_id,omitempty" jsonschema:"Peer ID from discover_remote_services for a remote agent; omit for an agent from list_local_services on this node."`
-	Service string `json:"service" jsonschema:"The agent's name from list_local_services, or srv_name from discover_remote_services"`
+	PeerID  string    `json:"peer_id,omitempty" jsonschema:"Peer ID from discover_remote_services for a remote agent; omit for an agent from list_local_services on this node."`
+	Service AgentName `json:"service" jsonschema:"The agent's name from list_local_services, or srv_name from discover_remote_services"`
 }
 
 // Task is what the tools return about a task.
@@ -81,9 +81,9 @@ type Task struct {
 // ID, the names of the agents it serves, and the drains of those that take
 // no new tasks.
 type LocalInfo struct {
-	PeerID   string           `json:"peer_id"`
-	Services []string         `json:"services"`
-	Draining map[string]Drain `json:"draining,omitempty"`
+	PeerID   string              `json:"peer_id"`
+	Services []AgentName         `json:"services"`
+	Draining map[AgentName]Drain `json:"draining,omitempty"`
 }
 
 func (t *Client) TaskClient(ctx context.Context, target Target) (*a2aclient.Client, error) {
@@ -114,8 +114,8 @@ func (t *Client) selectRoute(ctx context.Context, target Target) (string, *http.
 	if _, err := peer.Decode(target.PeerID); target.PeerID != "" && err != nil {
 		return "", nil, fmt.Errorf("peer_id %q is not a peer ID", target.PeerID)
 	}
-	if !ValidAgentName(target.Service) {
-		return "", nil, fmt.Errorf("service %q is not a service name", target.Service)
+	if !ValidAgentName(string(target.Service)) {
+		return "", nil, fmt.Errorf("service %s is not a service name", ShownAgentName(string(target.Service)))
 	}
 	if t.Local != nil {
 		info, err := t.LocalInfo(ctx)
@@ -163,16 +163,29 @@ func (t *Client) LocalInfo(ctx context.Context) (LocalInfo, error) {
 	if len(data) > maxLocalInfoBytes {
 		return LocalInfo{}, errors.New("local agent catalog exceeds 1 MiB")
 	}
-	var info LocalInfo
-	if err := json.Unmarshal(data, &info); err != nil {
+	// The names are parsed one by one: a name outside the rule (from a
+	// node older than it) is left out on its own, so that the node's other
+	// agents stay reachable.
+	var raw struct {
+		PeerID   string           `json:"peer_id"`
+		Services []string         `json:"services"`
+		Draining map[string]Drain `json:"draining"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return LocalInfo{}, fmt.Errorf("invalid local agent catalog: %w", err)
+	}
+	info := LocalInfo{PeerID: raw.PeerID, Services: ParseAgentNames(raw.Services)}
+	for name, d := range raw.Draining {
+		if n, err := ParseAgentName(name); err == nil {
+			if info.Draining == nil {
+				info.Draining = map[AgentName]Drain{}
+			}
+			info.Draining[n] = d
+		}
 	}
 	if _, err := peer.Decode(info.PeerID); err != nil {
 		return info, fmt.Errorf("invalid local peer ID: %w", err)
 	}
-	// A name outside the rule (from a node older than it) is left out on
-	// its own, so that the node's other agents stay reachable.
-	info.Services = slices.DeleteFunc(info.Services, func(name string) bool { return !ValidAgentName(name) })
 	return info, nil
 }
 

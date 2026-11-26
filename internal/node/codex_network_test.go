@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/whiteredhouse/agentiscaled/internal/caller"
 )
 
 // codexNetworkNamespace is the network's MCP server as Codex names its
@@ -132,7 +133,7 @@ func fakeNodeNetworkServer(t *testing.T) (network *taskNetwork, calls func() str
 			http.Error(w, "the helper is busy", http.StatusServiceUnavailable)
 			return
 		}
-		json.NewEncoder(w).Encode(localAgentInfo{PeerID: testSender, Services: []string{"caller", "helper"}})
+		json.NewEncoder(w).Encode(localAgentInfo{PeerID: testSender, Services: []caller.AgentName{"caller", "helper"}})
 	})}
 	go api.Serve(ln)
 	t.Cleanup(func() { api.Close() })

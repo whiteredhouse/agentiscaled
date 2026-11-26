@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +23,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/whiteredhouse/agentiscaled/internal/caller"
 	"github.com/whiteredhouse/agentiscaled/internal/nodestate"
 )
 
@@ -272,11 +272,7 @@ func newAgents(ctx context.Context, c *config) ([]*hostedAgent, error) {
 		a := &c.agents[i]
 		a.Name = a.effectiveName()
 		if names[a.Name] {
-			shown := shownAgentName(a.Name)
-			if shown == a.Name {
-				shown = strconv.Quote(a.Name)
-			}
-			return nil, fmt.Errorf("two agents are named %s; each agent needs a name of its own", shown)
+			return nil, fmt.Errorf("two agents are named %s; each agent needs a name of its own", caller.QuotedAgentName(a.Name))
 		}
 		names[a.Name] = true
 		ownerConfig = ownerConfig || a.policy().OwnerConfig
@@ -313,10 +309,11 @@ func newAgents(ctx context.Context, c *config) ([]*hostedAgent, error) {
 // run. The node's environment is set up already (newAgents).
 func newAgent(ctx context.Context, a *agentConfig, dataDir string) (*agentService, error) {
 	if _, ok := runtimes[a.Runtime]; !ok {
-		return nil, fmt.Errorf("agent %s: unknown runtime %q (have %s)", shownAgentName(a.Name), a.Runtime, strings.Join(runtimeNames(), ", "))
+		return nil, fmt.Errorf("agent %s: unknown runtime %q (have %s)", caller.ShownAgentName(a.Name), a.Runtime, strings.Join(runtimeNames(), ", "))
 	}
 	a.Name = a.effectiveName()
-	if err := agentNameError(a.Name); err != nil {
+	name, err := caller.ParseAgentName(a.Name)
+	if err != nil {
 		return nil, err
 	}
 	if a.Dir == "" {
@@ -343,7 +340,7 @@ func newAgent(ctx context.Context, a *agentConfig, dataDir string) (*agentServic
 			return nil, fmt.Errorf("agent %s: %w", a.Name, err)
 		}
 	}
-	s, err := newAgentService(dir, rt, dataDir, a.Name)
+	s, err := newAgentService(dir, rt, dataDir, name)
 	if err != nil {
 		return nil, err
 	}
@@ -531,9 +528,9 @@ func run(ctx context.Context, c config) error {
 	}
 	defer srv.Close()
 	if len(agents) > 0 {
-		targets := map[string]string{}
+		targets := map[caller.AgentName]string{}
 		for _, a := range agents {
-			targets[a.Name] = a.target
+			targets[a.svc.name] = a.target
 		}
 		svcs := make([]*agentService, 0, len(agents))
 		for _, a := range agents {

@@ -36,7 +36,7 @@ func TestValidAgentName(t *testing.T) {
 	}
 	var listed []string
 	for _, row := range ListedAgents(LocalInfo{}, "", providers).Agents {
-		listed = append(listed, row.Service)
+		listed = append(listed, row.Service.String())
 	}
 	if want := slices.Sorted(slices.Values(taken)); !slices.Equal(listed, want) {
 		t.Fatalf("listed %q, want %q", listed, want)
@@ -53,13 +53,13 @@ func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f
 func TestLocalCatalogDropsOnlyInvalidNames(t *testing.T) {
 	t.Parallel()
 	const peerID = "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"
-	body, _ := json.Marshal(LocalInfo{PeerID: peerID, Services: []string{"codex", strings.Repeat("a", 64), "bot/x"}})
+	body, _ := json.Marshal(map[string]any{"peer_id": peerID, "services": []string{"codex", strings.Repeat("a", 64), "bot/x"}, "draining": map[string]Drain{"bot/x": {}, "codex": {Reason: "r"}}})
 	client := &Client{Local: &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Header: http.Header{}}, nil
 	})}}
 	info, err := client.LocalInfo(context.Background())
-	if err != nil || !slices.Equal(info.Services, []string{"codex"}) {
-		t.Fatalf("local info: %+v %v", info.Services, err)
+	if _, drained := info.Draining["codex"]; err != nil || !slices.Equal(info.Services, []AgentName{"codex"}) || len(info.Draining) != 1 || !drained {
+		t.Fatalf("local info: %+v %v", info, err)
 	}
 	endpoint, _, err := client.selectRoute(context.Background(), Target{Service: "codex"})
 	if err != nil || endpoint != "http://agentiscaled/a2a/"+peerID+"/codex" {

@@ -123,7 +123,7 @@ func TestHandEditedDrainFileStillFits(t *testing.T) {
 			t.Fatalf("%s: %q read back as %+v", tc.name, md[caller.DrainMetadataKey], d)
 		}
 		// The local agent API writes every agent's drain in one answer.
-		if _, err := json.Marshal(caller.LocalInfo{Draining: map[string]caller.Drain{"helper": *activity.Drain}}); err != nil {
+		if _, err := json.Marshal(caller.LocalInfo{Draining: map[caller.AgentName]caller.Drain{"helper": *activity.Drain}}); err != nil {
 			t.Fatalf("%s: /info: %v", tc.name, err)
 		}
 	}
@@ -471,7 +471,7 @@ func TestDrainWaitEndpoint(t *testing.T) {
 	if err := saveDrain(dir, "release.bot", drainMark{Since: since, By: caller.DrainSetOnNode}); err != nil {
 		t.Fatal(err)
 	}
-	ask := func(req drainWaitRequest) (int, drainWaitAnswer, time.Duration) {
+	ask := func(req any) (int, drainWaitAnswer, time.Duration) {
 		body, _ := json.Marshal(req)
 		rec := httptest.NewRecorder()
 		start := time.Now()
@@ -481,16 +481,16 @@ func TestDrainWaitEndpoint(t *testing.T) {
 		_ = json.Unmarshal(rec.Body.Bytes(), &answer)
 		return rec.Code, answer, took
 	}
-	if code, answer, _ := ask(drainWaitRequest{Agents: map[string]time.Time{"release.bot": since}}); code != http.StatusOK || answer.State != drainHeld {
+	if code, answer, _ := ask(drainWaitRequest{Agents: map[caller.AgentName]time.Time{"release.bot": since}}); code != http.StatusOK || answer.State != drainHeld {
 		t.Fatalf("DNS name: %d %+v", code, answer)
 	}
-	if code, _, _ := ask(drainWaitRequest{Agents: map[string]time.Time{"../x": since}}); code != http.StatusBadRequest {
+	if code, _, _ := ask(map[string]any{"agents": map[string]time.Time{"../x": since}}); code != http.StatusBadRequest {
 		t.Fatalf("bad name: %d", code)
 	}
 	svc.mu.Lock()
 	svc.current = &agentRun{taskID: "t1", started: time.Now()}
 	svc.mu.Unlock()
-	code, answer, took := ask(drainWaitRequest{Agents: map[string]time.Time{"release.bot": since}, WithinMS: 50})
+	code, answer, took := ask(drainWaitRequest{Agents: map[caller.AgentName]time.Time{"release.bot": since}, WithinMS: 50})
 	if code != http.StatusOK || answer.State != drainWorking || took > time.Second {
 		t.Fatalf("within 50ms: %d %+v after %s", code, answer, took)
 	}
