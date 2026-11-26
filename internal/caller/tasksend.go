@@ -113,7 +113,7 @@ func RunTaskSend(ctx context.Context, args []string, stdin io.Reader, out, errOu
 			return errors.New("task send takes an agent and a message")
 		}
 		agent = pos[0]
-		if !ServiceName.MatchString(agent) {
+		if !ValidAgentName(agent) {
 			return fmt.Errorf("%q is not an agent name", agent)
 		}
 	}

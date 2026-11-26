@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -148,16 +147,8 @@ func agentProfileDir(dataDir, name string) string {
 	return filepath.Join(agentStateDir(dataDir, name), "profile")
 }
 
-// agentName is a plain DNS name: labels of letters, digits, - and _, up to
-// 63 characters each, joined by dots, with an optional final dot (or _) as
-// the service registry takes. The registry takes more (a path after the
-// name, wildcards), but an agent's name is shown and pasted into commands,
-// so it is kept to what no common shell reads as syntax.
-var agentName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_-]{0,62}(\.[A-Za-z0-9_][A-Za-z0-9_-]{0,62})*[._]?$`)
-
 // agentNameError tells why a name cannot be an agent's service name in the
-// network: it must be a plain DNS name (agentName) that the node's service
-// registry also takes as a2a://<name>.
+// network (caller.ValidAgentName).
 func agentNameError(name string) error {
 	if !takenAgentName(name) {
 		return fmt.Errorf("agent name %s: the network takes a DNS name: letters, digits, - and _, in labels of up to 63 characters joined by dots", shownAgentName(name))
@@ -165,17 +156,16 @@ func agentNameError(name string) error {
 	return nil
 }
 
-// takenAgentName tells whether the node takes name (agentNameError).
+// takenAgentName tells whether the node takes name (agentNameError): the
+// network's one rule for agent names, caller.ValidAgentName.
 func takenAgentName(name string) bool {
-	return len(name) <= 253 && agentName.MatchString(name) && api.ValidateServiceFormat(api.ServiceTypeStringA2A+"://"+name) == nil
+	return caller.ValidAgentName(name)
 }
 
-// shownAgentName is how a saved or reported agent name is printed: a name
-// the node takes as it is, any other percent-encoded: every byte outside
-// letters, digits, '.', '_' and '-' as %XX, and an empty name as "%". The
-// encoded form has nothing any common shell changes, so it reaches a
-// command as printed, and it never equals a name the node takes, which has
-// no '%'.
+// shownAgentName is how a saved agent name is printed: a name the node
+// takes as it is, any other percent-encoded (every byte outside letters,
+// digits, '.', '_' and '-' as %XX, an empty name as "%"), so that a name
+// from a hand-edited settings file reaches no shell or terminal as syntax.
 func shownAgentName(name string) string {
 	if takenAgentName(name) {
 		return name

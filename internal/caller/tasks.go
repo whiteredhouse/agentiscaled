@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -21,8 +20,6 @@ import (
 // Match the node's remote-card ingestion budget, with a separate call deadline.
 const MaxAgentCardBytes = 1 << 20
 const agentCardTimeout = 30 * time.Second
-
-var ServiceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 const (
 	MetaTerminal       = "agentiscale.terminal"
@@ -117,7 +114,7 @@ func (t *Client) selectRoute(ctx context.Context, target Target) (string, *http.
 	if _, err := peer.Decode(target.PeerID); target.PeerID != "" && err != nil {
 		return "", nil, fmt.Errorf("peer_id %q is not a peer ID", target.PeerID)
 	}
-	if !ServiceName.MatchString(target.Service) {
+	if !ValidAgentName(target.Service) {
 		return "", nil, fmt.Errorf("service %q is not a service name", target.Service)
 	}
 	if t.Local != nil {
@@ -174,7 +171,7 @@ func (t *Client) LocalInfo(ctx context.Context) (LocalInfo, error) {
 		return info, fmt.Errorf("invalid local peer ID: %w", err)
 	}
 	for _, name := range info.Services {
-		if !ServiceName.MatchString(name) {
+		if !ValidAgentName(name) {
 			return info, errors.New("invalid local service name")
 		}
 	}

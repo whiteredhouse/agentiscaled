@@ -248,10 +248,9 @@ func runAgentRemove(args []string, out io.Writer) error {
 	var name string
 	switch {
 	case len(rest) == 1:
-		// Each agent is named as agent list shows it: a name the node
-		// takes as it is, a refused one only percent-encoded, so that no
-		// argument names two agents.
-		i := slices.IndexFunc(names, func(n string) bool { return shownAgentName(n) == rest[0] })
+		// Only a name the node takes names an agent here; a refused one is
+		// fixed or deleted in the settings file, as agent list says.
+		i := slices.IndexFunc(names, func(n string) bool { return takenAgentName(n) && n == rest[0] })
 		if i < 0 {
 			return fmt.Errorf("this machine offers no agent named %s; see 'agentiscaled agent list'", shownAgentName(rest[0]))
 		}
@@ -334,7 +333,7 @@ func runAgentList(args []string, out io.Writer) error {
 		state := activityText(activity, running, name, now, loadDrain(drainPath(*dataDir, name)))
 		if agentNameError(name) != nil {
 			name = shownAgentName(name)
-			state = "invalid name; the node does not start"
+			state = invalidNameState(*dataDir)
 		}
 		if !defined {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", name, state, a.Runtime, homeRelative(a.Dir))
@@ -347,6 +346,12 @@ func runAgentList(args []string, out io.Writer) error {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", name, state, a.Runtime, homeRelative(a.Dir), def)
 	}
 	return tw.Flush()
+}
+
+// invalidNameState is what agent list and status say of a saved agent whose
+// name the node refuses.
+func invalidNameState(dataDir string) string {
+	return "invalid name; the node does not start: fix or delete it in " + filepath.Join(dataDir, settingsFile)
 }
 
 // activityTimeout bounds `agent list`'s question to the running node.

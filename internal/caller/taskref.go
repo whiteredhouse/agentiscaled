@@ -31,7 +31,7 @@ func ParseTaskRef(s string) (TaskRef, error) {
 	if _, err := peer.Decode(parts[0]); err != nil {
 		return TaskRef{}, fmt.Errorf("%q is not a task reference: %q is not a peer ID", s, parts[0])
 	}
-	if !ServiceName.MatchString(parts[1]) {
+	if !ValidAgentName(parts[1]) {
 		return TaskRef{}, fmt.Errorf("%q is not a task reference: %q is not an agent name", s, parts[1])
 	}
 	if !taskID.MatchString(parts[2]) {

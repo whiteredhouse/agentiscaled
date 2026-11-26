@@ -61,7 +61,7 @@ func RunNetwork(ctx context.Context, args []string, stdin io.Reader, out, errOut
 	if card && len(pos) != 1 || !card && len(pos) != 0 {
 		return errors.New(networkUsage)
 	}
-	if card && !ServiceName.MatchString(pos[0]) {
+	if card && !ValidAgentName(pos[0]) {
 		return fmt.Errorf("%q is not an agent name", pos[0])
 	}
 	if err := nodestate.CheckHalt(*dir); err != nil {

@@ -693,7 +693,7 @@ func printSavedNodeStatus(out io.Writer, dir string, s settings) bool {
 	for _, a := range s.Agents {
 		name := a.effectiveName()
 		if agentNameError(name) != nil {
-			fmt.Fprintf(out, "Agent:    %s (%s) in %s, invalid name; the node does not start\n", shownAgentName(name), a.Runtime, a.Dir)
+			fmt.Fprintf(out, "Agent:    %s (%s) in %s, %s\n", shownAgentName(name), a.Runtime, a.Dir, invalidNameState(dir))
 			continue
 		}
 		fmt.Fprintf(out, "Agent:    %s (%s) in %s\n", name, a.Runtime, a.Dir)

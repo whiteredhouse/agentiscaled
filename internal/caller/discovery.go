@@ -38,7 +38,7 @@ func ListedAgents(info LocalInfo, self string, providers []*api.DiscoveredProvid
 	seen := make(map[Target]bool)
 	add := func(row AgentRow) {
 		target := Target{Service: row.Service, PeerID: row.PeerID}
-		if ServiceName.MatchString(row.Service) && !seen[target] {
+		if ValidAgentName(row.Service) && !seen[target] {
 			out.Agents = append(out.Agents, row)
 			seen[target] = true
 		}
