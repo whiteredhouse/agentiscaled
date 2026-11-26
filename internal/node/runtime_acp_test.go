@@ -488,7 +488,7 @@ func TestACPRuntimeRefusesNewerContract(t *testing.T) {
 }
 
 func TestACPRuntimeNotSignedIn(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it captures the process-wide log.
 	var logged tailBuffer
 	previous := log.Writer()
 	log.SetOutput(&logged)
@@ -676,7 +676,7 @@ func TestACPRuntimeResultOverLimit(t *testing.T) {
 }
 
 func TestACPRuntimeFailureKeepsDiagnosticsLocal(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it captures the process-wide log.
 	var logged bytes.Buffer
 	log.SetOutput(&logged)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })

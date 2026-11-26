@@ -115,7 +115,7 @@ func TestReportActivity(t *testing.T) {
 		case statuses <- st:
 		default:
 		}
-	})
+	}, func(string, map[string]string) {})
 	await := func(want api.ServiceState, waiting uint32) *api.ServiceStatus {
 		t.Helper()
 		deadline := time.After(5 * time.Second)
@@ -164,14 +164,31 @@ func TestActivityText(t *testing.T) {
 		"unknown": "idle",
 		"added":   "not served yet",
 	} {
-		if got := activityText(activity, true, name, now); got != want {
+		if got := activityText(activity, true, name, now, nil); got != want {
 			t.Errorf("%s: %q, want %q", name, got, want)
 		}
 	}
-	if got := activityText(nil, false, "idle", now); got != "node not running" {
+	drain := &drainMark{Reason: "reboot", Since: now.Add(-3 * time.Minute)}
+	for name, want := range map[string]string{
+		"idle": "drained (3m): reboot",
+		"both": "busy (5s), waiting for 2 answers (2h5m), draining (3m): reboot",
+	} {
+		if got := activityText(activity, true, name, now, drain); got != want {
+			t.Errorf("drained %s: %q, want %q", name, got, want)
+		}
+	}
+	// The running node's drain wins over the file's.
+	served := map[string]agentActivity{"idle": {Name: "idle", State: activityIdle, Drain: &drainMark{}}}
+	if got := activityText(served, true, "idle", now, nil); got != "drained" {
+		t.Errorf("drained by the node: %q", got)
+	}
+	if got := activityText(nil, false, "idle", now, drain); got != "node not running, drained (3m): reboot" {
+		t.Errorf("no node, drained: %q", got)
+	}
+	if got := activityText(nil, false, "idle", now, nil); got != "node not running" {
 		t.Errorf("no node: %q", got)
 	}
-	if got := activityText(nil, true, "idle", now); got != "-" {
+	if got := activityText(nil, true, "idle", now, nil); got != "-" {
 		t.Errorf("node without the activity API: %q", got)
 	}
 }

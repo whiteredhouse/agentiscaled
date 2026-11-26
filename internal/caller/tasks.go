@@ -67,6 +67,9 @@ type Target struct {
 
 // Task is what the tools return about a task.
 type Task struct {
+	// Ref is where the task is, PEER/AGENT/TASK-ID (TaskRef), which the
+	// task commands print and take; the tools leave it out.
+	Ref    string `json:"ref,omitempty"`
 	TaskID string `json:"task_id"`
 	State  string `json:"state"`
 	// Terminal is set once the task has ended: completed, rejected,
@@ -78,10 +81,12 @@ type Task struct {
 }
 
 // LocalInfo is what the local agent API says about the node: its peer
-// ID and the names of the agents it serves.
+// ID, the names of the agents it serves, and the drains of those that take
+// no new tasks.
 type LocalInfo struct {
-	PeerID   string   `json:"peer_id"`
-	Services []string `json:"services"`
+	PeerID   string           `json:"peer_id"`
+	Services []string         `json:"services"`
+	Draining map[string]Drain `json:"draining,omitempty"`
 }
 
 func (t *Client) TaskClient(ctx context.Context, target Target) (*a2aclient.Client, error) {

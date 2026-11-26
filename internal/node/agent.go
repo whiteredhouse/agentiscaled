@@ -13,6 +13,7 @@ import (
 	"io"
 	"iter"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -231,6 +232,9 @@ type agentService struct {
 	// delivered holds every request that started a task, so that a delivery
 	// retry never runs a task twice.
 	delivered *deliveries
+	// drainFile holds the owner's drain of the agent (agentiscaled agent
+	// drain), which the node reads for each new task.
+	drainFile string
 }
 
 type agentRun struct {
@@ -275,7 +279,15 @@ func newAgentService(dir string, rt runtime, dataDir, name string) (*agentServic
 	if err != nil {
 		return nil, err
 	}
-	return &agentService{dir: dir, rt: rt, name: name, deadline: taskDeadline, answerWait: defaultAnswerWait, life: context.Background(), delivered: delivered, waiting: map[a2a.TaskID]*waitingTask{}}, nil
+	return &agentService{dir: dir, rt: rt, name: name, deadline: taskDeadline, answerWait: defaultAnswerWait, life: context.Background(), delivered: delivered, waiting: map[a2a.TaskID]*waitingTask{}, drainFile: drainPath(dataDir, name)}, nil
+}
+
+// drain is the owner's drain of the agent, or nil while it takes new tasks.
+func (s *agentService) drain() *drainMark {
+	if s.drainFile == "" {
+		return nil
+	}
+	return loadDrain(s.drainFile)
 }
 
 // deliveries records the requests that started a task, keyed by the sender
@@ -708,6 +720,12 @@ func (s *agentService) wait(id a2a.TaskID, w waitingTask) (why string) {
 // the same critical section as expiry. A refused answer returns its pending
 // question if the caller can still retry.
 func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, from taskSender, fromErr error, request string, cancel context.CancelCauseFunc) (run *agentRun, prior *waitingTask, reason string, metadata map[string]any) {
+	// A drained agent finishes its tasks, answers to its questions
+	// included, but takes no new one.
+	var drained *drainMark
+	if execCtx.StoredTask == nil {
+		drained = s.drain()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if execCtx.StoredTask != nil {
@@ -732,6 +750,9 @@ func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, from taskSender, f
 	}
 	if first, ok := s.delivered.first(sender, execCtx.Message.ID); ok {
 		return nil, prior, fmt.Sprintf("refused: message %s was already delivered as task %s", execCtx.Message.ID, first), map[string]any{metaDuplicateOf: string(first)}
+	}
+	if drained != nil {
+		return nil, prior, "refused: " + s.name + " " + drained.Text() + "; it takes no new tasks", nil
 	}
 	if s.current != nil {
 		return nil, prior, "refused: a task is already running; try again when it ends", nil
@@ -764,6 +785,9 @@ type agentActivity struct {
 	// one asked.
 	Waiting      int        `json:"waiting,omitempty"`
 	WaitingSince *time.Time `json:"waiting_since,omitempty"`
+	// Drain, when set, is the owner's drain: the agent finishes its tasks
+	// and takes no new one.
+	Drain *drainMark `json:"drain,omitempty"`
 }
 
 const (
@@ -773,9 +797,10 @@ const (
 
 // activity says what the agent is doing now.
 func (s *agentService) activity() agentActivity {
+	drain := s.drain()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	a := agentActivity{Name: s.name, State: activityIdle}
+	a := agentActivity{Name: s.name, State: activityIdle, Drain: drain}
 	if s.current != nil {
 		a.State = activityBusy
 		started := s.current.started
@@ -816,13 +841,30 @@ func (a agentActivity) serviceStatus() *api.ServiceStatus {
 // own, at most once per a few seconds.
 var activityEvery = time.Second
 
-// reportActivity hands each agent's activity to set until ctx ends.
-func reportActivity(ctx context.Context, agents []*agentService, set func(name string, status *api.ServiceStatus)) {
+// serviceMetadata is the agent's service metadata, which callers see when
+// they discover it and the owner's console with its catalog: its drain.
+func (a agentActivity) serviceMetadata() map[string]string {
+	if a.Drain == nil {
+		return nil
+	}
+	return map[string]string{caller.DrainMetadataKey: a.Drain.Metadata()}
+}
+
+// reportActivity hands each agent's activity to setStatus, and its
+// metadata to setMetadata when it changes, until ctx ends.
+func reportActivity(ctx context.Context, agents []*agentService, setStatus func(name string, status *api.ServiceStatus), setMetadata func(name string, metadata map[string]string)) {
 	ticker := time.NewTicker(activityEvery)
 	defer ticker.Stop()
+	reported := map[string]map[string]string{}
 	for {
 		for _, s := range agents {
-			set(s.name, s.activity().serviceStatus())
+			a := s.activity()
+			setStatus(s.name, a.serviceStatus())
+			md := a.serviceMetadata()
+			if last, ok := reported[s.name]; !ok || !maps.Equal(last, md) {
+				setMetadata(s.name, md)
+				reported[s.name] = md
+			}
 		}
 		select {
 		case <-ctx.Done():

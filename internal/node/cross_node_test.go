@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -86,7 +88,7 @@ func TestTaskTokensAcrossNodes(t *testing.T) {
 		}
 	}
 	a, _ := node("node-a", nil)
-	_, peerB := node("node-b", []agentConfig{{Runtime: "codex", Name: "helper", Dir: t.TempDir(), Command: helper, Env: []string{"CODEX_HOME=" + codexHome}}})
+	dirB, peerB := node("node-b", []agentConfig{{Runtime: "codex", Name: "helper", Dir: t.TempDir(), Command: helper, Env: []string{"CODEX_HOME=" + codexHome}}})
 
 	socketA, agentSocketA := filepath.Join(a, "agentmesh.sock"), filepath.Join(a, localAgentSocketName)
 	minter := &taskNetwork{node: nodeclient.SocketClient(socketA)}
@@ -173,5 +175,39 @@ func TestTaskTokensAcrossNodes(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	if code := card(short); code != http.StatusForbidden {
 		t.Errorf("an expired token reached B: HTTP %d", code)
+	}
+
+	// B's owner drains its helper: A's discovery shows the drain soon
+	// after, and a new task from A is refused with the reason.
+	if err := saveDrain(dirB, "helper", drainMark{Reason: "reboot", Since: time.Now().UTC(), By: caller.DrainSetOnNode}); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var out strings.Builder
+		if err := caller.RunNetwork(ctx, []string{"agent", "list", "-data-dir", a, "-json"}, nil, &out, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		var list caller.AgentList
+		if err := json.Unmarshal([]byte(out.String()), &list); err != nil {
+			t.Fatal(err)
+		}
+		if i := slices.IndexFunc(list.Agents, func(r caller.AgentRow) bool { return r.PeerID == peerB && r.Service == "helper" }); i >= 0 && list.Agents[i].Draining != nil {
+			if d := list.Agents[i].Draining; d.Reason != "reboot" || d.By != "node" || d.Since.IsZero() {
+				t.Fatalf("drain at A: %+v", d)
+			}
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("A never saw B's drain: %s", out.String())
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	fresh := as(mint("agentiscale-task/1/drained", time.Minute))
+	_, refused, err := fresh.SendTool(ctx, nil, caller.SendInput{Target: helperTarget, Text: "after the drain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, got, err := fresh.GetTool(ctx, nil, in(refused.TaskID, 10)); err != nil || got.Terminal != "rejected" || !strings.Contains(got.Message, "helper is draining: reboot") {
+		t.Errorf("a new task for a drained agent: %+v %v", got, err)
 	}
 }

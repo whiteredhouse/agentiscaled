@@ -30,16 +30,16 @@ func startTaskCancel(args ...string) *sendRun {
 func TestTaskCancelStopsRunningTasks(t *testing.T) {
 	t.Parallel()
 	_, fix, tasks, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
-	done := sendNoWait(t, "-data-dir", dir, "helper", "quick")
+	doneRef, done := sendNoWait(t, "-data-dir", dir, "helper", "quick")
 	<-fix.prompts
 	fix.release <- "ok"
-	if err := startTaskWait("-data-dir", dir, "helper", done).wait(t); err != nil {
+	if err := startTaskWait("-data-dir", dir, doneRef).wait(t); err != nil {
 		t.Fatal(err)
 	}
-	running := sendNoWait(t, "-data-dir", dir, "helper", "take forever")
+	runningRef, running := sendNoWait(t, "-data-dir", dir, "helper", "take forever")
 	<-fix.prompts
 
-	run := startTaskCancel("-data-dir", dir, "helper", running, "", done)
+	run := startTaskCancel("-data-dir", dir, runningRef, "", doneRef)
 	if err := run.wait(t); err != nil {
 		t.Fatalf("task cancel: %v\n%s", err, run.errOut)
 	}
@@ -53,16 +53,16 @@ func TestTaskCancelStopsRunningTasks(t *testing.T) {
 	}
 
 	// Waiting for it now reports the cancellation.
-	if err := startTaskWait("-data-dir", dir, "helper", running).wait(t); caller.ExitCode(err) != 2 {
+	if err := startTaskWait("-data-dir", dir, runningRef).wait(t); caller.ExitCode(err) != 2 {
 		t.Fatalf("wait after cancel: %v (exit %d)", err, caller.ExitCode(err))
 	}
 
-	run = startTaskCancel("-data-dir", dir, "-json", "helper", running)
+	run = startTaskCancel("-data-dir", dir, "-json", runningRef)
 	if err := run.wait(t); err != nil {
 		t.Fatal(err)
 	}
 	var shown []caller.Task
-	if err := json.Unmarshal([]byte(run.out.String()), &shown); err != nil || len(shown) != 1 || shown[0].TaskID != running || shown[0].Terminal != "cancelled" {
+	if err := json.Unmarshal([]byte(run.out.String()), &shown); err != nil || len(shown) != 1 || shown[0].TaskID != running || shown[0].Ref != runningRef || shown[0].Terminal != "cancelled" {
 		t.Fatalf("json %q: %+v %v", run.out.String(), shown, err)
 	}
 }
@@ -72,10 +72,10 @@ func TestTaskCancelStopsRunningTasks(t *testing.T) {
 func TestTaskCancelReportsAnUnknownTask(t *testing.T) {
 	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
-	running := sendNoWait(t, "-data-dir", dir, "helper", "take forever")
+	runningRef, running := sendNoWait(t, "-data-dir", dir, "helper", "take forever")
 	<-fix.prompts
 	unknown := "0f9a7c52-0000-4000-8000-000000000000"
-	run := startTaskCancel("-data-dir", dir, "helper", unknown, running)
+	run := startTaskCancel("-data-dir", dir, strings.TrimSuffix(runningRef, running)+unknown, runningRef)
 	err := run.wait(t)
 	if caller.ExitCode(err) != 1 || !strings.Contains(err.Error(), "1 of 2 tasks not cancelled") {
 		t.Fatalf("got %v (exit %d)", err, caller.ExitCode(err))
@@ -87,19 +87,18 @@ func TestTaskCancelReportsAnUnknownTask(t *testing.T) {
 
 func TestTaskCancelUsage(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir, p := t.TempDir(), randomPeer(t)
 	for _, args := range [][]string{
 		{"-data-dir", dir},
-		{"-data-dir", dir, "helper"},
-		{"-data-dir", dir, "bad name", "abc"},
-		{"-data-dir", dir, "-timeout", "0s", "helper", "abc"},
+		{"-data-dir", dir, "-peer", p, p + "/helper/abc"},
+		{"-data-dir", dir, "-timeout", "0s", p + "/helper/abc"},
 	} {
 		if err := startTaskCancel(args...).wait(t); err == nil {
 			t.Errorf("%q: no error", args)
 		}
 	}
-	// Only empty IDs: nothing to do, and no node needed.
-	run := startTaskCancel("-data-dir", dir, "helper", "", "")
+	// Only empty references: nothing to do, and no node needed.
+	run := startTaskCancel("-data-dir", dir, "", "")
 	if err := run.wait(t); err != nil || run.out.String() != "" {
 		t.Fatalf("empty IDs: %v %q", err, run.out.String())
 	}
@@ -111,10 +110,10 @@ func TestTaskCancelUsage(t *testing.T) {
 func TestTaskCancelGoesOnPastBadTasks(t *testing.T) {
 	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
-	running := sendNoWait(t, "-data-dir", dir, "helper", "take forever")
+	runningRef, running := sendNoWait(t, "-data-dir", dir, "helper", "take forever")
 	<-fix.prompts
 	unknown := "0f9a7c52-0000-4000-8000-000000000000"
-	run := startTaskCancel("-data-dir", dir, "-json", "helper", "not an id", unknown, running)
+	run := startTaskCancel("-data-dir", dir, "-json", "not an id", strings.TrimSuffix(runningRef, running)+unknown, runningRef)
 	err := run.wait(t)
 	if caller.ExitCode(err) != 1 || !strings.Contains(err.Error(), "2 of 3 tasks not cancelled") {
 		t.Fatalf("got %v (exit %d)", err, caller.ExitCode(err))
@@ -126,7 +125,7 @@ func TestTaskCancelGoesOnPastBadTasks(t *testing.T) {
 	if err := json.Unmarshal([]byte(run.out.String()), &shown); err != nil || len(shown) != 3 {
 		t.Fatalf("json %q: %v", run.out.String(), err)
 	}
-	if shown[0].TaskID != "not an id" || shown[0].Error != "not a task ID" ||
+	if shown[0].TaskID != "not an id" || shown[0].Error != "not a task reference" ||
 		shown[1].TaskID != unknown || !strings.Contains(shown[1].Error, "not found at helper") ||
 		shown[2].TaskID != running || shown[2].Terminal != "cancelled" || shown[2].Error != "" {
 		t.Fatalf("json: %+v", shown)
@@ -140,7 +139,7 @@ func TestTaskCancelIsNotHeldUpByASlowAnswer(t *testing.T) {
 	remote := randomPeer(t)
 	net.offer(remote)
 	net.route(remote, h.url)
-	running := sendNoWait(t, "-data-dir", net.dir, "helper", "take forever")
+	runningRef, running := sendNoWait(t, "-data-dir", net.dir, "helper", "take forever")
 	<-h.fix.prompts
 
 	// The agent's node holds any call about the slow task.
@@ -161,7 +160,7 @@ func TestTaskCancelIsNotHeldUpByASlowAnswer(t *testing.T) {
 	})
 	net.mu.Unlock()
 
-	run := startTaskCancel("-data-dir", net.dir, "-timeout", "2s", "helper", slow, running)
+	run := startTaskCancel("-data-dir", net.dir, "-timeout", "2s", strings.TrimSuffix(runningRef, running)+slow, runningRef)
 	err := run.wait(t)
 	if caller.ExitCode(err) != 1 || !strings.Contains(err.Error(), "1 of 2 tasks not cancelled") {
 		t.Fatalf("got %v (exit %d)\n%s", err, caller.ExitCode(err), run.out)
@@ -175,13 +174,13 @@ func TestTaskCancelIsNotHeldUpByASlowAnswer(t *testing.T) {
 func TestTaskCancelStopsATaskThatAsks(t *testing.T) {
 	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
-	id := sendNoWait(t, "-data-dir", dir, "helper", "double a number")
+	ref, id := sendNoWait(t, "-data-dir", dir, "helper", "double a number")
 	<-fix.prompts
 	fix.ask <- "Which number?"
-	if err := startTaskWait("-data-dir", dir, "helper", id).wait(t); caller.ExitCode(err) != 3 {
+	if err := startTaskWait("-data-dir", dir, ref).wait(t); caller.ExitCode(err) != 3 {
 		t.Fatalf("wait: %v (exit %d)", err, caller.ExitCode(err))
 	}
-	run := startTaskCancel("-data-dir", dir, "helper", id)
+	run := startTaskCancel("-data-dir", dir, ref)
 	if err := run.wait(t); err != nil || run.out.String() != "task "+id+" cancelled\n" {
 		t.Fatalf("cancel: %v %q", err, run.out.String())
 	}
@@ -196,18 +195,19 @@ func TestTaskCancelStopsATaskThatAsks(t *testing.T) {
 	}
 }
 
-// After --, a value that starts with a dash is a task ID that fails alone.
+// After --, a value that starts with a dash is a task reference that fails
+// alone.
 func TestTaskCancelTakesDashedValuesAfterDoubleDash(t *testing.T) {
 	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
-	running := sendNoWait(t, "-data-dir", dir, "helper", "take forever")
+	runningRef, running := sendNoWait(t, "-data-dir", dir, "helper", "take forever")
 	<-fix.prompts
-	run := startTaskCancel("-data-dir", dir, "--", "helper", "-bad-id", running)
+	run := startTaskCancel("-data-dir", dir, "--", "-bad-id", runningRef)
 	err := run.wait(t)
 	if caller.ExitCode(err) != 1 || !strings.Contains(err.Error(), "1 of 2 tasks not cancelled") {
 		t.Fatalf("got %v (exit %d)", err, caller.ExitCode(err))
 	}
-	if out := run.out.String(); out != "\"-bad-id\" is not a task ID\ntask "+running+" cancelled\n" {
+	if out := run.out.String(); out != "\"-bad-id\" is not a task reference: task send prints one as PEER/AGENT/TASK\ntask "+running+" cancelled\n" {
 		t.Fatalf("stdout %q", out)
 	}
 }
@@ -224,8 +224,8 @@ func TestTaskCancelKeepsTheCancelError(t *testing.T) {
 		http.Error(w, "mesh route down", http.StatusBadGateway)
 	})
 	net.mu.Unlock()
-	id := "0f9a7c52-0000-4000-8000-000000000000"
-	run := startTaskCancel("-data-dir", net.dir, "-json", "helper", id)
+	ref := remote + "/helper/0f9a7c52-0000-4000-8000-000000000000"
+	run := startTaskCancel("-data-dir", net.dir, "-json", ref)
 	if err := run.wait(t); caller.ExitCode(err) != 1 {
 		t.Fatalf("got %v", err)
 	}

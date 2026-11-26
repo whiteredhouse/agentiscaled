@@ -22,21 +22,23 @@ func startTaskWait(args ...string) *sendRun {
 	return r
 }
 
-// sendNoWait sends a task with -no-wait and returns its ID.
-func sendNoWait(t *testing.T, args ...string) string {
+// sendNoWait sends a task with -no-wait and returns its reference and its
+// ID.
+func sendNoWait(t *testing.T, args ...string) (string, string) {
 	t.Helper()
 	run := startTaskSend("", append([]string{"-no-wait"}, args...)...)
 	if err := run.wait(t); err != nil {
 		t.Fatalf("task send -no-wait: %v\n%s", err, run.errOut)
 	}
-	id := strings.TrimSuffix(run.out.String(), "\n")
-	if err := uuid.Validate(id); err != nil {
-		t.Fatalf("task send -no-wait printed %q, want the task ID alone", run.out.String())
+	s := strings.TrimSuffix(run.out.String(), "\n")
+	ref, err := caller.ParseTaskRef(s)
+	if err != nil || ref.Service != "helper" || uuid.Validate(ref.ID) != nil {
+		t.Fatalf("task send -no-wait printed %q, want the task's reference alone: %v", run.out.String(), err)
 	}
-	if !strings.Contains(run.errOut.String(), "follow it with: agentiscaled task wait ") || !strings.HasSuffix(run.errOut.String(), " helper "+id+"\n") {
+	if !strings.Contains(run.errOut.String(), "follow it with: agentiscaled task wait ") || !strings.HasSuffix(run.errOut.String(), " "+s+"\n") {
 		t.Fatalf("stderr: %s", run.errOut)
 	}
-	return id
+	return s, ref.ID
 }
 
 // A task sent without waiting runs on; task wait then prints its steps and
@@ -44,11 +46,11 @@ func sendNoWait(t *testing.T, args ...string) string {
 func TestTaskWaitFollowsATaskSentWithoutWaiting(t *testing.T) {
 	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
-	id := sendNoWait(t, "-data-dir", dir, "helper", "Review the changes")
+	ref, id := sendNoWait(t, "-data-dir", dir, "helper", "Review the changes")
 	if p := <-fix.prompts; p.Text != "Review the changes" {
 		t.Fatalf("the agent got %q", p.Text)
 	}
-	run := startTaskWait("-data-dir", dir, "helper", id)
+	run := startTaskWait("-data-dir", dir, ref)
 	fix.steps <- "Running go test ./...\x1b[2J"
 	waitFor(t, func() bool { return strings.Contains(run.errOut.String(), "helper: Running go test ./...\n") })
 	fix.release <- "No findings"
@@ -60,12 +62,12 @@ func TestTaskWaitFollowsATaskSentWithoutWaiting(t *testing.T) {
 	}
 
 	// Waiting for a task that has ended answers at once.
-	run = startTaskWait("-data-dir", dir, "-json", "helper", id)
+	run = startTaskWait("-data-dir", dir, "-json", ref)
 	if err := run.wait(t); err != nil {
 		t.Fatal(err)
 	}
 	var got caller.Task
-	if err := json.Unmarshal([]byte(run.out.String()), &got); err != nil || got.TaskID != id || got.Terminal != "completed" || got.Result != "No findings" {
+	if err := json.Unmarshal([]byte(run.out.String()), &got); err != nil || got.TaskID != id || got.Ref != ref || got.Terminal != "completed" || got.Result != "No findings" {
 		t.Fatalf("json %q: %+v %v", run.out.String(), got, err)
 	}
 }
@@ -75,21 +77,21 @@ func TestTaskWaitFollowsATaskSentWithoutWaiting(t *testing.T) {
 func TestTaskWaitStopsAtAQuestion(t *testing.T) {
 	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
-	id := sendNoWait(t, "-data-dir", dir, "helper", "double a number")
+	ref, _ := sendNoWait(t, "-data-dir", dir, "helper", "double a number")
 	<-fix.prompts
 	fix.ask <- "Which number?"
-	err := startTaskWait("-data-dir", dir, "helper", id).wait(t)
-	if caller.ExitCode(err) != 3 || !strings.Contains(err.Error(), "helper asks: Which number?") || !strings.Contains(err.Error(), "-task "+id+" helper -- ") {
+	err := startTaskWait("-data-dir", dir, ref).wait(t)
+	if caller.ExitCode(err) != 3 || !strings.Contains(err.Error(), "helper asks: Which number?") || !strings.Contains(err.Error(), "-task "+ref+" -- ") {
 		t.Fatalf("got %v (exit %d)", err, caller.ExitCode(err))
 	}
 
-	if again := sendNoWait(t, "-data-dir", dir, "-task", id, "helper", "21"); again != id {
-		t.Fatalf("the answer went to task %s, want %s", again, id)
+	if again, _ := sendNoWait(t, "-data-dir", dir, "-task", ref, "21"); again != ref {
+		t.Fatalf("the answer went to task %s, want %s", again, ref)
 	}
 	if p := <-fix.prompts; p.Text != "21" {
 		t.Fatalf("answer reached the agent as %+v", p)
 	}
-	run := startTaskWait("-data-dir", dir, "helper", id)
+	run := startTaskWait("-data-dir", dir, ref)
 	fix.release <- "42"
 	if err := run.wait(t); err != nil || run.out.String() != "42\n" {
 		t.Fatalf("wait after the answer: %v %q", err, run.out.String())
@@ -100,9 +102,9 @@ func TestTaskWaitStopsAtAQuestion(t *testing.T) {
 func TestTaskWaitTimesOutWithoutStoppingTheTask(t *testing.T) {
 	t.Parallel()
 	_, fix, tasks, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
-	id := sendNoWait(t, "-data-dir", dir, "helper", "take a while")
+	ref, id := sendNoWait(t, "-data-dir", dir, "helper", "take a while")
 	<-fix.prompts
-	run := startTaskWait("-data-dir", dir, "-timeout", "1s", "-json", "helper", id)
+	run := startTaskWait("-data-dir", dir, "-timeout", "1s", "-json", ref)
 	err := run.wait(t)
 	if caller.ExitCode(err) != 4 || !strings.Contains(err.Error(), "is still working: no answer within 1s; it goes on, wait again with: agentiscaled task wait ") {
 		t.Fatalf("got %v (exit %d)", err, caller.ExitCode(err))
@@ -116,7 +118,7 @@ func TestTaskWaitTimesOutWithoutStoppingTheTask(t *testing.T) {
 		t.Fatalf("task after the wait timed out: %+v %v", got, gerr)
 	}
 	fix.release <- "done"
-	if err := startTaskWait("-data-dir", dir, "helper", id).wait(t); err != nil {
+	if err := startTaskWait("-data-dir", dir, ref).wait(t); err != nil {
 		t.Fatalf("second wait: %v", err)
 	}
 }
@@ -126,9 +128,9 @@ func TestTaskWaitReportsAFailedTask(t *testing.T) {
 	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
 	fix.err = errors.New("the runtime crashed")
-	id := sendNoWait(t, "-data-dir", dir, "helper", "do it")
+	ref, id := sendNoWait(t, "-data-dir", dir, "helper", "do it")
 	<-fix.prompts
-	err := startTaskWait("-data-dir", dir, "helper", id).wait(t)
+	err := startTaskWait("-data-dir", dir, ref).wait(t)
 	if caller.ExitCode(err) != 2 || !strings.Contains(err.Error(), "task "+id+" ended failed") {
 		t.Fatalf("got %v (exit %d)", err, caller.ExitCode(err))
 	}
@@ -136,8 +138,11 @@ func TestTaskWaitReportsAFailedTask(t *testing.T) {
 
 func TestTaskWaitFailsForAnUnknownTask(t *testing.T) {
 	t.Parallel()
-	_, _, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
-	err := startTaskWait("-data-dir", dir, "helper", "0f9a7c52-0000-4000-8000-000000000000").wait(t)
+	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
+	ref, id := sendNoWait(t, "-data-dir", dir, "helper", "do it")
+	<-fix.prompts
+	fix.release <- "done"
+	err := startTaskWait("-data-dir", dir, strings.TrimSuffix(ref, id)+"0f9a7c52-0000-4000-8000-000000000000").wait(t)
 	if caller.ExitCode(err) != 1 || !strings.Contains(err.Error(), "task 0f9a7c52-0000-4000-8000-000000000000 not found at helper") {
 		t.Fatalf("got %v (exit %d)", err, caller.ExitCode(err))
 	}
@@ -145,15 +150,17 @@ func TestTaskWaitFailsForAnUnknownTask(t *testing.T) {
 
 func TestTaskWaitUsage(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir, p := t.TempDir(), randomPeer(t)
 	for _, args := range [][]string{
 		{"-data-dir", dir},
 		{"-data-dir", dir, "helper"},
-		{"-data-dir", dir, "helper", "a", "b"},
-		{"-data-dir", dir, "bad name", "abc"},
-		{"-data-dir", dir, "helper", "-bad id"},
-		{"-data-dir", dir, "helper", "abc def"},
-		{"-data-dir", dir, "-timeout", "0s", "helper", "abc"},
+		{"-data-dir", dir, "helper", "abc"},
+		{"-data-dir", dir, p + "/helper/a", p + "/helper/b"},
+		{"-data-dir", dir, p + "/bad name/abc"},
+		{"-data-dir", dir, "--", p + "/helper/-bad id"},
+		{"-data-dir", dir, p + "/helper/abc def"},
+		{"-data-dir", dir, "-peer", p, p + "/helper/abc"},
+		{"-data-dir", dir, "-timeout", "0s", p + "/helper/abc"},
 	} {
 		if err := startTaskWait(args...).wait(t); err == nil || caller.ExitCode(err) != 1 {
 			t.Errorf("%q: %v", args, err)
@@ -185,7 +192,7 @@ func TestTaskTimeoutCoversWaitingForTheNode(t *testing.T) {
 	t.Parallel()
 	dir := shortTempDir(t)
 	for name, run := range map[string]*sendRun{
-		"wait": startTaskWait("-data-dir", dir, "-timeout", "200ms", "helper", "abc"),
+		"wait": startTaskWait("-data-dir", dir, "-timeout", "200ms", randomPeer(t)+"/helper/abc"),
 		"send": startTaskSend("", "-data-dir", dir, "-timeout", "200ms", "helper", "hi"),
 	} {
 		start := time.Now()
@@ -204,9 +211,9 @@ func TestTaskTimeoutCoversWaitingForTheNode(t *testing.T) {
 func TestTaskWaitReportsTheTaskWhenTimingOutEarly(t *testing.T) {
 	t.Parallel()
 	_, fix, _, dir := localAgentFixture(t, localAgentRole(), time.Now().Add(time.Hour), &meshnode.NodeConfigComplete{})
-	id := sendNoWait(t, "-data-dir", dir, "helper", "take a while")
+	ref, id := sendNoWait(t, "-data-dir", dir, "helper", "take a while")
 	<-fix.prompts
-	run := startTaskWait("-data-dir", dir, "-timeout", "50ms", "-json", "helper", id)
+	run := startTaskWait("-data-dir", dir, "-timeout", "50ms", "-json", ref)
 	err := run.wait(t)
 	if caller.ExitCode(err) != 4 || !strings.Contains(err.Error(), "wait again with: agentiscaled task wait ") {
 		t.Fatalf("got %v (exit %d)", err, caller.ExitCode(err))

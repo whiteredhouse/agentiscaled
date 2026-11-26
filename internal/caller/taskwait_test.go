@@ -40,17 +40,18 @@ func TestTaskWaitReportsTheTaskWhenItsStateCannotBeRead(t *testing.T) {
 	defer close(hang)
 	const remote = "12D3KooWRBy97UB99e3J6hiPesre1MZeuNQvfan4gBziswrRJsNK"
 	const id = "0f9a7c52-0000-4000-8000-000000000000"
-	o := taskSendOptions{dataDir: t.TempDir(), peer: remote, json: true, timeout: 300 * time.Millisecond}
+	o := taskSendOptions{dataDir: t.TempDir(), json: true, timeout: 300 * time.Millisecond}
+	ref := TaskRef{Target{PeerID: remote, Service: "helper"}, id}
 	deadline := time.Now().Add(o.timeout)
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 	var out strings.Builder
-	err := waitForTask(ctx, deadline, &Client{Mesh: server.Client(), BaseURL: server.URL}, "helper", id, o, &out, io.Discard)
-	if ExitCode(err) != exitTimeout || !strings.Contains(err.Error(), "task "+id+" has not settled") || !strings.Contains(err.Error(), "wait again with: agentiscaled task wait -data-dir ") || !strings.Contains(err.Error(), "-peer "+remote+" helper "+id+"\nor cancel it with: agentiscaled task cancel -data-dir ") {
+	err := waitForTask(ctx, deadline, &Client{Mesh: server.Client(), BaseURL: server.URL}, ref, o, &out, io.Discard)
+	if ExitCode(err) != exitTimeout || !strings.Contains(err.Error(), "task "+id+" has not settled") || !strings.Contains(err.Error(), "wait again with: agentiscaled task wait -data-dir ") || !strings.Contains(err.Error(), " "+ref.String()+"\nor cancel it with: agentiscaled task cancel -data-dir ") {
 		t.Fatalf("got %v (exit %d)", err, ExitCode(err))
 	}
 	var shown Task
-	if err := json.Unmarshal([]byte(out.String()), &shown); err != nil || shown.TaskID != id {
+	if err := json.Unmarshal([]byte(out.String()), &shown); err != nil || shown.TaskID != id || shown.Ref != ref.String() {
 		t.Fatalf("json %q: %+v %v", out.String(), shown, err)
 	}
 }

@@ -73,6 +73,16 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 		}
 		info := localAgentInfo{PeerID: node.Host.ID().String(), Services: names}
 		if r.Method == http.MethodGet && r.URL.Path == "/info" {
+			if activity != nil {
+				for _, a := range activity() {
+					if a.Drain != nil {
+						if info.Draining == nil {
+							info.Draining = map[string]drainMark{}
+						}
+						info.Draining[a.Name] = *a.Drain
+					}
+				}
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(info)
 			return

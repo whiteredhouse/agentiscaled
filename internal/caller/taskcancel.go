@@ -15,14 +15,14 @@ import (
 	"github.com/whiteredhouse/agentiscaled/internal/nodestate"
 )
 
-const taskCancelUsage = `usage: agentiscaled task cancel [flags] AGENT TASK...
+const taskCancelUsage = `usage: agentiscaled task cancel [flags] TASK...
 
-Cancels tasks of AGENT that this node sent, such as ones sent with task send
--no-wait that a script no longer waits for, so that the agent stops working
-on them and can take other tasks. A task that has already ended is left as
-it is. An empty TASK is skipped, so that a cleanup step can pass the IDs of
-tasks that may not have been sent. Put -- before AGENT when a TASK could
-start with a dash, so that it is taken as a task ID, not a flag.
+Cancels tasks this node sent, such as ones sent with task send -no-wait that
+a script no longer waits for, so that their agents stop working on them and
+can take other tasks. A task that has already ended is left as it is. TASK
+is the reference task send printed, PEER/AGENT/TASK-ID; an empty TASK is
+skipped, so that a cleanup step can pass the references of tasks that may
+not have been sent.
 
 The tasks are cancelled together, so a slow answer about one does not hold
 up the others. It prints one line for each task, and exits 0 when each task
@@ -44,23 +44,18 @@ func RunTaskCancel(ctx context.Context, args []string, out, errOut io.Writer) er
 		fs.PrintDefaults()
 	}
 	fs.StringVar(&o.dataDir, "data-dir", nodestate.DefaultDataDir(), "Data directory of the running node that sent the tasks")
-	fs.StringVar(&o.peer, "peer", "", "Peer ID of the node that offers AGENT, when several do")
 	fs.DurationVar(&o.timeout, "timeout", cancelWait, "Give up after this long")
-	fs.BoolVar(&o.json, "json", false, "Print each task's ID, state and result as a JSON array")
+	fs.BoolVar(&o.json, "json", false, "Print each task's reference, ID, state and result as a JSON array")
 	pos, err := cli.ParseInterleaved(fs, args)
 	if err != nil {
 		return err
 	}
-	if len(pos) < 2 {
+	if len(pos) < 1 {
 		fs.Usage()
-		return errors.New("task cancel takes an agent and one or more task IDs")
-	}
-	agent := pos[0]
-	if !ServiceName.MatchString(agent) {
-		return fmt.Errorf("%q is not an agent name", agent)
+		return errors.New("task cancel takes one or more task references, as task send printed them")
 	}
 	var ids []string
-	for _, id := range pos[1:] {
+	for _, id := range pos {
 		if id != "" {
 			ids = append(ids, id)
 		}
@@ -85,7 +80,7 @@ func RunTaskCancel(ctx context.Context, args []string, out, errOut io.Writer) er
 	if err != nil {
 		return err
 	}
-	return safeError(cancelTasks(ctx, tasks, agent, ids, o, out))
+	return safeError(cancelTasks(ctx, tasks, ids, o, out))
 }
 
 // cancelled is what task cancel prints about a task with -json: the task,
@@ -95,38 +90,37 @@ type cancelled struct {
 	Error string `json:"error,omitempty"`
 }
 
-// cancelTasks finds agent and cancels each of its tasks ids, all at once,
+// cancelTasks cancels each task its reference in refs names, all at once,
 // reporting each in order; it fails if any task could not be cancelled.
-func cancelTasks(ctx context.Context, tasks *Client, agent string, ids []string, o taskSendOptions, out io.Writer) error {
-	target, _, err := findAgent(ctx, tasks, agent, o.peer, 0)
-	if err != nil {
-		return err
-	}
-	shown := make([]cancelled, len(ids))
-	lines := make([]string, len(ids))
+func cancelTasks(ctx context.Context, tasks *Client, refs []string, o taskSendOptions, out io.Writer) error {
+	shown := make([]cancelled, len(refs))
+	lines := make([]string, len(refs))
 	var wg sync.WaitGroup
-	for i, id := range ids {
+	for i, s := range refs {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if !taskID.MatchString(id) {
-				// Not an ID this command can name: the others still go.
-				shown[i] = cancelled{Task{TaskID: id}, "not a task ID"}
-				lines[i] = fmt.Sprintf("%q is not a task ID", id)
-				return
-			}
-			task, line, err := cancelOne(ctx, tasks, target, id)
+			ref, err := ParseTaskRef(s)
 			if err != nil {
-				shown[i] = cancelled{Task{TaskID: id}, err.Error()}
-				lines[i] = fmt.Sprintf("task %s: %v", id, err)
+				// Not a reference this command can follow: the others
+				// still go.
+				shown[i] = cancelled{Task{TaskID: s}, "not a task reference"}
+				lines[i] = err.Error()
 				return
 			}
+			task, line, err := cancelOne(ctx, tasks, ref.Target, ref.ID)
+			if err != nil {
+				shown[i] = cancelled{Task{Ref: s, TaskID: ref.ID}, err.Error()}
+				lines[i] = fmt.Sprintf("task %s: %v", ref.ID, err)
+				return
+			}
+			task.Ref = s
 			shown[i], lines[i] = cancelled{Task: task}, line
 		}()
 	}
 	wg.Wait()
 	failed := 0
-	for i := range ids {
+	for i := range refs {
 		if shown[i].Error != "" {
 			failed++
 		}
@@ -139,7 +133,7 @@ func cancelTasks(ctx context.Context, tasks *Client, agent string, ids []string,
 		fmt.Fprintf(out, "%s\n", b)
 	}
 	if failed > 0 {
-		return fmt.Errorf("%d of %d tasks not cancelled", failed, len(ids))
+		return fmt.Errorf("%d of %d tasks not cancelled", failed, len(refs))
 	}
 	return nil
 }

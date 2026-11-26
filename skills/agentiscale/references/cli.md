@@ -13,6 +13,10 @@ agentiscaled network agent card AGENT            # its current card: what it doe
   the person which one they mean, and pass `-peer <peer ID>` to
   `network agent card` and to every task command about it. Without `-peer`, an
   agent of that name on this node comes first.
+- An entry with `draining` is an agent its owner is taking out of service: it
+  refuses new tasks, and `draining.reason` says why. Tell the person rather than
+  sending it work; `task send` passes over it when another node offers the same
+  name.
 - An agent that is not in the list is offline or not shared: check the name
   with the person rather than guessing others. `-wait-agent 2m` on `task send`
   waits for a remote agent that is not online yet.
@@ -22,7 +26,7 @@ agentiscaled network agent card AGENT            # its current card: what it doe
 ```sh
 agentiscaled task send AGENT "request"           # answer on stdout, steps on stderr
 git diff | agentiscaled task send AGENT -        # request from standard input
-agentiscaled task send -json AGENT "request"     # task_id, state, message, result as JSON
+agentiscaled task send -json AGENT "request"     # ref, task_id, state, message, result as JSON
 ```
 
 1. `task send` waits until the task ends or asks a question, printing the
@@ -30,12 +34,14 @@ agentiscaled task send -json AGENT "request"     # task_id, state, message, resu
    tell the person what it is doing on a long task.
 2. `-timeout 5m` gives up and cancels the task after that long. The default is
    longer than most tool-call limits, so set it when your shell call has one.
-3. For a long task, or to run several at once, `-no-wait` prints the task ID and
-   returns; `agentiscaled task wait -timeout 2m AGENT <task ID>` then waits for
-   it. Its timeout leaves the task running: call it again to keep waiting.
-4. Use the same `AGENT` (and `-peer`) for every command about a task.
+3. For a long task, or to run several at once, `-no-wait` prints the task's
+   reference (`<peer ID>/<agent>/<task ID>`) and returns;
+   `agentiscaled task wait -timeout 2m <task reference>` then waits for it. Its
+   timeout leaves the task running: call it again to keep waiting.
+4. Every later command about a task takes its reference, which says where the
+   task went: keep it as the command printed it.
 
-`agentiscaled task cancel -- AGENT <task ID>` stops a task you no longer need,
+`agentiscaled task cancel <task reference>` stops a task you no longer need,
 for example when the person changes their mind. `-data-dir DIR` selects a node
 that does not use the default data directory.
 
@@ -45,7 +51,7 @@ settled.
 | Exit status | What to do |
 | --- | --- |
 | 0 | The task completed: the answer is on standard output. Check it before you rely on it, and tell the person what the agent did. |
-| 3 | The agent asks a question, printed with the command that answers it: `agentiscaled task send -task <task ID> AGENT -- "<answer>"`. Ask the person when only they know the answer. |
+| 3 | The agent asks a question, printed with the command that answers it: `agentiscaled task send -task <task reference> -- "<answer>"`. Ask the person when only they know the answer. |
 | 4 | `-timeout` passed. After `task send` the task is cancelled; after `task wait` it still runs, so wait again or cancel it. |
 | 2 | The task failed, was rejected (for example another task is running, or the owner stopped tasks) or was cancelled. Report the message to the person. Do not resend the same task in a loop. |
 | 1 | The command failed, for example the agent cannot be reached or the node is not running. See the fallback in SKILL.md. |

@@ -16,15 +16,19 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/whiteredhouse/agentiscaled/internal/caller"
 	"github.com/whiteredhouse/agentiscaled/internal/nodeclient"
 )
 
-const agentUsage = `usage: agentiscaled agent add|remove|list
+const agentUsage = `usage: agentiscaled agent add|remove|list|drain|undrain
 
   add [RUNTIME] [-dir DIR] [-name NAME] ...  offer an agent from this machine to your network
                                               (-definition FILE gives it a subagent's role)
   remove [NAME]                               stop offering an agent
   list                                        show the agents this machine offers
+  drain [NAME] [-reason TEXT]                 let an agent finish its tasks but take no new ones
+                                              (without NAME, every agent this machine offers)
+  undrain [NAME]                              let a drained agent take new tasks again
 
 Run 'agentiscaled agent add -h' for its flags.`
 
@@ -41,6 +45,10 @@ func RunAgent(ctx context.Context, args []string, out io.Writer) error {
 		return runAgentRemove(args[1:], out)
 	case "list":
 		return runAgentList(args[1:], out)
+	case "drain":
+		return runAgentDrain(args[1:], out, true)
+	case "undrain":
+		return runAgentDrain(args[1:], out, false)
 	}
 	return fmt.Errorf("unknown agent command %q\n%s", args[0], agentUsage)
 }
@@ -252,6 +260,10 @@ func runAgentRemove(args []string, out io.Writer) error {
 		return fmt.Errorf("save settings: %w", err)
 	}
 	removeDefinitionCopies(dir, name)
+	// An agent offered again starts out taking tasks.
+	if _, err := removeDrain(dir, name); err != nil {
+		fmt.Fprintf(out, "Could not lift its drain: %v\n", err)
+	}
 	fmt.Fprintf(out, "This machine no longer offers %q; its directory stays as it is.\n", name)
 	return restartNode(dir, s, newService(dir), out)
 }
@@ -304,7 +316,7 @@ func runAgentList(args []string, out io.Writer) error {
 	}
 	now := time.Now()
 	for _, a := range s.Agents {
-		state := activityText(activity, running, a.Name, now)
+		state := activityText(activity, running, a.Name, now, loadDrain(drainPath(*dataDir, a.Name)))
 		if !defined {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Name, state, a.Runtime, homeRelative(a.Dir))
 			continue
@@ -352,9 +364,30 @@ func nodeActivity(dataDir string) (activity map[string]agentActivity, running bo
 	return activity, true
 }
 
-// activityText is what `agent list` shows in an agent's STATE column.
-func activityText(activity map[string]agentActivity, running bool, name string, now time.Time) string {
+// activityText is what `agent list` shows in an agent's STATE column:
+// what it is doing, and last its drain, which drain is when the node does
+// not say.
+func activityText(activity map[string]agentActivity, running bool, name string, now time.Time, drain *drainMark) string {
+	drainText := func(busy bool) string {
+		if drain == nil {
+			return ""
+		}
+		text := "drained"
+		if busy {
+			text = "draining"
+		}
+		if !drain.Since.IsZero() {
+			text += sinceText(&drain.Since, now)
+		}
+		if drain.Reason != "" {
+			text += ": " + drain.Reason
+		}
+		return text
+	}
 	if !running {
+		if drain != nil {
+			return "node not running, " + drainText(false)
+		}
 		return "node not running"
 	}
 	if activity == nil {
@@ -364,6 +397,9 @@ func activityText(activity map[string]agentActivity, running bool, name string, 
 	if !ok {
 		// Added since the node started; a restart serves it.
 		return "not served yet"
+	}
+	if a.Drain != nil {
+		drain = a.Drain
 	}
 	var parts []string
 	if a.State == activityBusy {
@@ -375,10 +411,132 @@ func activityText(activity map[string]agentActivity, running bool, name string, 
 	case a.Waiting > 1:
 		parts = append(parts, fmt.Sprintf("waiting for %d answers", a.Waiting)+sinceText(a.WaitingSince, now))
 	}
+	if drain != nil {
+		parts = append(parts, drainText(len(parts) > 0))
+	}
 	if len(parts) == 0 {
 		return activityIdle
 	}
 	return strings.Join(parts, ", ")
+}
+
+// runAgentDrain is `agent drain` (drain) and `agent undrain`. A drained
+// agent finishes the tasks it has, answers to its questions included, but
+// refuses new ones with the reason. The node reads the drain for each new
+// task, so it takes effect at once, without a restart, and outlasts one.
+func runAgentDrain(args []string, out io.Writer, drain bool) error {
+	verb := "undrain"
+	if drain {
+		verb = "drain"
+	}
+	fs := flag.NewFlagSet("agent "+verb, flag.ContinueOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "Data directory of the node that offers the agent")
+	var reason *string
+	if drain {
+		reason = fs.String("reason", "", "Why the agent takes no new tasks, which callers see when it refuses one (one line, up to 200 bytes)")
+	}
+	fs.Usage = func() {
+		if drain {
+			fmt.Fprint(fs.Output(), "usage: agentiscaled agent drain [NAME] [-reason TEXT]\n\nThe agent finishes the tasks it has, answers to its questions included, and refuses new ones.\nWithout NAME, every agent this machine offers drains; agents added later do not.\n\n")
+		} else {
+			fmt.Fprint(fs.Output(), "usage: agentiscaled agent undrain [NAME]\n\nThe agent takes new tasks again. Without NAME, every agent this machine offers does.\n\n")
+		}
+		fs.PrintDefaults()
+	}
+	rest, err := parseInterleaved(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(rest) > 1 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(rest[1:], " "))
+	}
+	if drain {
+		*reason = strings.TrimSpace(*reason)
+		if why := caller.DrainReasonError(*reason); why != "" {
+			return fmt.Errorf("-reason %s", why)
+		}
+	}
+	dir, err := filepath.Abs(*dataDir)
+	if err != nil {
+		return err
+	}
+	s, err := loadSettings(dir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("load settings: %w", err)
+	}
+	var names []string
+	for _, a := range s.Agents {
+		names = append(names, a.Name)
+	}
+	switch {
+	case len(names) == 0:
+		return errors.New("this machine offers no agent")
+	case len(rest) == 1 && !slices.Contains(names, rest[0]):
+		return fmt.Errorf("this machine offers no agent named %q; see 'agentiscaled agent list'", rest[0])
+	case len(rest) == 1:
+		names = rest
+	}
+	if !drain {
+		for _, name := range names {
+			lifted, err := removeDrain(dir, name)
+			switch {
+			case err != nil:
+				return fmt.Errorf("undrain %s: %w", name, err)
+			case lifted:
+				fmt.Fprintf(out, "%s takes new tasks again.\n", name)
+			default:
+				fmt.Fprintf(out, "%s was not drained; it takes new tasks.\n", name)
+			}
+		}
+		return nil
+	}
+	now := time.Now().UTC()
+	for _, name := range names {
+		mark := drainMark{Reason: *reason, Since: now, By: caller.DrainSetOnNode}
+		// Draining again changes the reason; the drain still began when it
+		// first did.
+		if prior := loadDrain(drainPath(dir, name)); prior != nil && !prior.Since.IsZero() {
+			mark.Since = prior.Since
+		}
+		if err := saveDrain(dir, name, mark); err != nil {
+			return fmt.Errorf("drain %s: %w", name, err)
+		}
+	}
+	activity, running := nodeActivity(dir)
+	for _, name := range names {
+		a, served := activity[name]
+		switch {
+		case !running:
+			fmt.Fprintf(out, "%s is drained: its node is not running, and when it starts the agent takes no new tasks.\n", name)
+		case !served:
+			fmt.Fprintf(out, "%s is drained: it takes no new tasks.\n", name)
+		case a.State == activityBusy || a.Waiting > 0:
+			fmt.Fprintf(out, "%s is draining: it finishes %s and takes no new tasks.\n", name, unfinishedText(a))
+		default:
+			fmt.Fprintf(out, "%s is drained: it has no task and takes no new ones.\n", name)
+		}
+	}
+	target := ""
+	if len(rest) == 1 {
+		target = " " + rest[0]
+	}
+	fmt.Fprintf(out, "'agentiscaled agent list' shows when it is drained; 'agentiscaled agent undrain%s' lets it take tasks again.\n", target)
+	return nil
+}
+
+// unfinishedText names the tasks a draining agent still finishes.
+func unfinishedText(a agentActivity) string {
+	var parts []string
+	if a.State == activityBusy {
+		parts = append(parts, "its running task")
+	}
+	switch {
+	case a.Waiting == 1:
+		parts = append(parts, "the task that waits for an answer")
+	case a.Waiting > 1:
+		parts = append(parts, fmt.Sprintf("%d tasks that wait for answers", a.Waiting))
+	}
+	return strings.Join(parts, " and ")
 }
 
 // sinceText is how long ago t was, rounded for a glance: " (45s)",

@@ -22,6 +22,9 @@ type AgentRow struct {
 	Service     string `json:"service"`
 	PeerID      string `json:"peer_id,omitempty"`
 	Description string `json:"description,omitempty"`
+	// Draining, when set, says that the agent finishes the tasks it has
+	// but takes no new ones, and why.
+	Draining *Drain `json:"draining,omitempty"`
 }
 
 type AgentList struct {
@@ -42,7 +45,11 @@ func ListedAgents(info LocalInfo, self string, providers []*api.DiscoveredProvid
 	}
 	for _, name := range info.Services {
 		if name != self {
-			add(AgentRow{Service: name})
+			row := AgentRow{Service: name}
+			if d, ok := info.Draining[name]; ok {
+				row.Draining = &d
+			}
+			add(row)
 		}
 	}
 	for _, p := range providers {
@@ -53,7 +60,7 @@ func ListedAgents(info LocalInfo, self string, providers []*api.DiscoveredProvid
 		if _, err := peer.Decode(id); err != nil {
 			continue
 		}
-		add(AgentRow{Service: p.GetSrvName(), PeerID: id, Description: p.GetSrvDescription()})
+		add(AgentRow{Service: p.GetSrvName(), PeerID: id, Description: p.GetSrvDescription(), Draining: DrainFromMetadata(p.GetSrvMetadata())})
 	}
 	slices.SortFunc(out.Agents, func(a, b AgentRow) int {
 		return cmp.Or(cmp.Compare(a.Service, b.Service), cmp.Compare(a.PeerID, b.PeerID))
