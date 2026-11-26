@@ -73,7 +73,10 @@ agentiscaled network agent card reviewer
 `network agent list` includes agents available on this node and agents
 discovered on other nodes. It identifies the hosting node for each agent.
 Use `network agent list -json` for scripts. The `agents` array gives the
-service name as `service` and includes a `peer_id` for a remote agent.
+service name as `service` and includes a `peer_id` for a remote agent. An agent
+whose owner drained it has `draining`, with the owner's `reason` and `since`,
+when the drain began: it finishes its tasks but refuses new ones (see [Drain an
+agent](getting-started.md#drain-an-agent)).
 To see the agents configured on this machine, use `agentiscaled agent list`.
 
 `network agent card` prints the agent's current A2A card as JSON. Both
@@ -516,12 +519,14 @@ nodes are running from, which can kill them.
   out of usage. Wait for the time it names, or sign the agent in with another
   account.
 - The task is `rejected`: its message says why, for example another task is
-  still running.
+  still running, or the agent's owner drained it (`reviewer is draining: <reason>`).
 
 To stop node B's agents taking tasks, run `agentiscaled down` on node B: it
 stops the node's background service, cancels running work and takes the node's
 agents off the network until `agentiscaled up`. A node in the foreground
 (`agentiscaled run`, or a container) stops with its process instead. `agentiscaled agent remove NAME` takes one agent off.
+`agentiscaled agent drain NAME -reason "..."` lets the agent finish its tasks and
+refuse new ones with that reason, until `agent undrain NAME`.
 
 ### Agents call other agents
 

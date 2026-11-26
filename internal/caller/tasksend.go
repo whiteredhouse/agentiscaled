@@ -156,7 +156,7 @@ func readMessage(ctx context.Context, stdin io.Reader) ([]byte, error) {
 // sendAndFollow finds agent, sends it text and follows the task until it
 // settles or the deadline, which ends ctx, passes.
 func sendAndFollow(ctx context.Context, deadline time.Time, tasks *Client, agent, text string, o taskSendOptions, out, errOut io.Writer) error {
-	target, where, err := findAgent(ctx, tasks, agent, o.peer, o.waitAgent)
+	target, where, err := findAgent(ctx, tasks, agent, o.peer, o.waitAgent, true)
 	if err != nil {
 		return timedOut(err, ctx, o.timeout)
 	}
@@ -332,13 +332,18 @@ func timedOut(err error, ctx context.Context, timeout time.Duration) error {
 
 // findAgent picks the agent to call: one this node hosts, unless peer names
 // another node; else the one node of the network that offers it. It says
-// where the agent is, for the caller.
-func findAgent(ctx context.Context, tasks *Client, agent, peer string, wait time.Duration) (Target, string, error) {
+// where the agent is, for the caller. For a new task (fresh), an agent that
+// is draining counts only when no other agent of the name takes tasks:
+// the drained one then refuses the task with its owner's reason. A task
+// that exists already stays with its agent, drained or not.
+func findAgent(ctx context.Context, tasks *Client, agent, peer string, wait time.Duration, fresh bool) (Target, string, error) {
 	if peer != "" {
 		return Target{PeerID: peer, Service: agent}, "on node " + peer, nil
 	}
 	info, err := tasks.LocalInfo(ctx)
-	if err == nil && slices.Contains(info.Services, agent) {
+	_, localDrained := info.Draining[agent]
+	local := err == nil && slices.Contains(info.Services, agent)
+	if local && (!fresh || !localDrained) {
 		return Target{Service: agent}, "on this node", nil
 	}
 	// -wait-agent bounds the search, lookups included, and leaves room for
@@ -352,11 +357,20 @@ func findAgent(ctx context.Context, tasks *Client, agent, peer string, wait time
 	}
 	var missing error
 	for {
-		peers, err := discoverAgent(find, tasks.Mesh, tasks.BaseURL, agent, info.PeerID)
+		peers, drained, err := discoverAgent(find, tasks.Mesh, tasks.BaseURL, agent, info.PeerID)
+		if err == nil && fresh && len(peers) > len(drained) {
+			peers = slices.DeleteFunc(peers, func(p string) bool { return slices.Contains(drained, p) })
+		} else if err == nil && local {
+			// Every other agent of the name drains too: this node's
+			// refuses the task with its reason.
+			return Target{Service: agent}, "on this node", nil
+		}
 		switch {
 		case err != nil && find.Err() != nil && ctx.Err() == nil && missing != nil:
 			// The search's own time ran out during a lookup.
 			return Target{}, "", missing
+		case err != nil && local:
+			return Target{Service: agent}, "on this node", nil
 		case err != nil:
 		case len(peers) == 1:
 			return Target{PeerID: peers[0], Service: agent}, "on node " + peers[0], nil
@@ -378,19 +392,21 @@ func findAgent(ctx context.Context, tasks *Client, agent, peer string, wait time
 }
 
 // discoverAgent lists the other nodes that offer A2A agent name, through
-// the node's discovery API.
-func discoverAgent(ctx context.Context, client *http.Client, base, name, self string) ([]string, error) {
+// the node's discovery API, and those of them whose agent is draining.
+func discoverAgent(ctx context.Context, client *http.Client, base, name, self string) (peers, drained []string, err error) {
 	found, err := readDiscovery(ctx, client, base, name)
 	if err != nil {
-		return nil, fmt.Errorf("look for %s on the network: %w", name, err)
+		return nil, nil, fmt.Errorf("look for %s on the network: %w", name, err)
 	}
-	var peers []string
 	for _, row := range ListedAgents(LocalInfo{PeerID: self}, "", found).Agents {
 		if row.Service == name {
 			peers = append(peers, row.PeerID)
+			if row.Draining != nil {
+				drained = append(drained, row.PeerID)
+			}
 		}
 	}
-	return peers, nil
+	return peers, drained, nil
 }
 
 // escapeSequence is a terminal escape sequence: CSI (colours, cursor and

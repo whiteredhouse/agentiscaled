@@ -256,6 +256,40 @@ container) stops with its process: press Ctrl-C or stop the container.
 `agent remove <name>` takes one agent off, and `agentiscaled task cancel`
 stops one task.
 
+### Drain an agent
+
+To take an agent out of service gently, for example before you change its
+definition, sign its runtime in again or restart the machine, drain it:
+
+```sh
+agentiscaled agent drain reviewer -reason "re-login, back at 14:00"
+```
+
+A drained agent finishes the task it runs and the tasks that wait for an
+answer to its question, but refuses every new task with its reason:
+`refused: reviewer is draining: re-login, back at 14:00`. Nothing is
+cancelled, and the agent stays on the network. It takes effect at once, with no
+restart, and lasts until you lift it, also when the node restarts:
+
+```sh
+agentiscaled agent undrain reviewer
+```
+
+Without a name, `agent drain` and `agent undrain` apply to every agent this
+machine offers; an agent added later is not drained. The reason is one line of
+up to 200 bytes, and everyone in your network can read it.
+
+`agent list` shows a drained agent as `draining` while it still has work, then
+as `drained`, with how long ago the drain began and its reason. Callers see the
+drain too: `network agent list` marks the agent `(draining: <reason>)`, the
+`draining` field of its entry in `network agent list -json` and of the
+`list_agents` tool gives the reason and when it began, and `task send` passes
+over a drained agent when another node offers one of the same name. Your
+console shows it as Draining.
+
+To restart a machine without cutting tasks off, drain its agents, wait until
+`agent list` shows them `drained`, then run `agentiscaled down`.
+
 Agent questions, runtime login and validation finish before `up` or `agent add` stops an existing
 service. If a later enrollment, save or startup step fails, agentiscaled attempts to restore
 the old settings and restart a previously running service; recovery errors are

@@ -92,6 +92,58 @@ func TestNetworkAgentListIncludesLocalAndRemote(t *testing.T) {
 	}
 }
 
+// Drained agents stay listed, with their drain, here and on other nodes.
+func TestNetworkAgentListShowsDrains(t *testing.T) {
+	t.Parallel()
+	dir := shortTempDir(t)
+	local, remote := randomPeer(t), randomPeer(t)
+	since := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	serveDiscoveryFixture(t, dir, localAgentSocketName, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(localAgentInfo{PeerID: local, Services: []string{"helper", "open"}, Draining: map[string]drainMark{"helper": {Reason: "re-login", Since: since, By: "node"}}})
+	})
+	serveDiscoveryFixture(t, dir, meshnode.DefaultSocketName, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]*api.DiscoveredProvider{
+			{SrvName: "reviewer", PeerId: remote, SrvDescription: "reviews", SrvMetadata: map[string]string{caller.DrainMetadataKey: `{"reason":"reboot","since":"2026-01-02T03:04:05Z","by":"node"}`}},
+			{SrvName: "broken", PeerId: remote, SrvMetadata: map[string]string{caller.DrainMetadataKey: "not json"}},
+			{SrvName: "other", PeerId: remote, SrvMetadata: map[string]string{"something.else": "x"}},
+		})
+	})
+	var out bytes.Buffer
+	if err := caller.RunNetwork(context.Background(), []string{"agent", "list", "-data-dir", dir, "-json"}, nil, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	var result caller.AgentList
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	drains := map[string]*caller.Drain{}
+	for _, row := range result.Agents {
+		drains[row.Service] = row.Draining
+	}
+	want := map[string]*caller.Drain{
+		"helper":   {Reason: "re-login", Since: since, By: "node"},
+		"open":     nil,
+		"reviewer": {Reason: "reboot", Since: since, By: "node"},
+		"broken":   {},
+		"other":    nil,
+	}
+	for name, w := range want {
+		got, ok := drains[name]
+		if !ok || (got == nil) != (w == nil) || (got != nil && *got != *w) {
+			t.Errorf("%s: %+v, want %+v", name, got, w)
+		}
+	}
+	out.Reset()
+	if err := caller.RunNetwork(context.Background(), []string{"agent", "list", "-data-dir", dir}, nil, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{"(draining: re-login)", "(draining: reboot) reviews", "(draining)"} {
+		if !strings.Contains(out.String(), line) {
+			t.Errorf("table lacks %q:\n%s", line, out.String())
+		}
+	}
+}
+
 func TestNetworkAgentListReadsLargeLocalCatalog(t *testing.T) {
 	t.Parallel()
 	var names []string

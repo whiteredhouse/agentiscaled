@@ -13,6 +13,10 @@ agentiscaled network agent card AGENT            # its current card: what it doe
   the person which one they mean, and pass `-peer <peer ID>` to
   `network agent card` and to every task command about it. Without `-peer`, an
   agent of that name on this node comes first.
+- An entry with `draining` is an agent its owner is taking out of service: it
+  refuses new tasks, and `draining.reason` says why. Tell the person rather than
+  sending it work; `task send` passes over it when another node offers the same
+  name.
 - An agent that is not in the list is offline or not shared: check the name
   with the person rather than guessing others. `-wait-agent 2m` on `task send`
   waits for a remote agent that is not online yet.

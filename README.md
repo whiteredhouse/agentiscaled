@@ -63,6 +63,7 @@ token](docs/getting-started.md#nodes-that-join-with-a-workload-token).
 | `agentiscaled up` | Sign in if needed, join, and start the node as a background service; in a terminal it first asks which agent apps to connect and whether to offer an agent |
 | `agentiscaled client list\|connect\|disconnect` | Connect your agent apps (Claude Desktop, Codex CLI) to the node, or disconnect them |
 | `agentiscaled agent add\|remove\|list` | Offer an agent (Codex, Claude Code, or any agent that speaks ACP) from this machine to your network, or stop offering it |
+| `agentiscaled agent drain\|undrain` | Let an agent finish its tasks but take no new ones, for example before maintenance, and let it take tasks again ([Drain an agent](docs/getting-started.md#drain-an-agent)) |
 | `agentiscaled runtime list` | List supported agent runtimes, their executables on `PATH`, and their config directories for the current shell |
 | `agentiscaled runtime check` | Check that an agent that speaks ACP keeps the agentiscale runtime contract ([Add agentiscale support to your agent](docs/add-agentiscale-support.md)) |
 | `agentiscaled status` | Show the node, its network and its mesh connection |
@@ -75,6 +76,8 @@ token](docs/getting-started.md#nodes-that-join-with-a-workload-token).
 work and takes its agents off the network until `agentiscaled up`. A node in the
 foreground (`agentiscaled run`, or a container) stops with its process: press
 Ctrl-C or stop the container. `agent remove NAME` takes one agent off.
+`agent drain NAME -reason "..."` lets an agent finish what it has and refuse new
+tasks with that reason, without stopping anything.
 
 ### Use the network
 

@@ -98,7 +98,7 @@ type cancelled struct {
 // cancelTasks finds agent and cancels each of its tasks ids, all at once,
 // reporting each in order; it fails if any task could not be cancelled.
 func cancelTasks(ctx context.Context, tasks *Client, agent string, ids []string, o taskSendOptions, out io.Writer) error {
-	target, _, err := findAgent(ctx, tasks, agent, o.peer, 0)
+	target, _, err := findAgent(ctx, tasks, agent, o.peer, 0, false)
 	if err != nil {
 		return err
 	}

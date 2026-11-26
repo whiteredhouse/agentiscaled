@@ -74,7 +74,7 @@ func RunNetwork(ctx context.Context, args []string, stdin io.Reader, out, errOut
 		return err
 	}
 	if card {
-		target, _, err := findAgent(ctx, client, pos[0], peer, 0)
+		target, _, err := findAgent(ctx, client, pos[0], peer, 0, false)
 		if err != nil {
 			return safeError(err)
 		}
@@ -109,6 +109,10 @@ func RunNetwork(ctx context.Context, args []string, stdin io.Reader, out, errOut
 			where = "local"
 		}
 		description := strings.Join(strings.Fields(terminalSafe(agent.Description)), " ")
+		if agent.Draining != nil {
+			// The reason is a single line of printable text (Drain).
+			description = strings.TrimSpace("(" + strings.TrimPrefix(terminalSafe(agent.Draining.Text()), "is ") + ") " + description)
+		}
 		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", agent.Service, where, description); err != nil {
 			return err
 		}

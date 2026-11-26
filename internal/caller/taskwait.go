@@ -152,7 +152,7 @@ var lastReadTimeout = cancelTimeout
 // waitForTask finds agent and follows its task id until the task settles or
 // the deadline, which ends ctx, passes, and reports it.
 func waitForTask(ctx context.Context, deadline time.Time, tasks *Client, agent, id string, o taskSendOptions, out, errOut io.Writer) error {
-	target, _, err := findAgent(ctx, tasks, agent, o.peer, 0)
+	target, _, err := findAgent(ctx, tasks, agent, o.peer, 0, false)
 	if err != nil {
 		return timedOut(err, ctx, o.timeout)
 	}

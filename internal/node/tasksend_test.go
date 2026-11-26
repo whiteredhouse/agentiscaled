@@ -198,6 +198,42 @@ func TestTaskSendNeedsAPeerWhenSeveralNodesOfferTheAgent(t *testing.T) {
 	}
 }
 
+// A new task goes to the node whose agent takes tasks, past one whose
+// agent drains; with no other, the drained agent refuses it with its reason.
+func TestTaskSendPassesADrainingAgent(t *testing.T) {
+	t.Parallel()
+	net := newFakeNetwork(t)
+	h := newAgentHarness(t, testSender)
+	drained, open := randomPeer(t), randomPeer(t)
+	net.route(open, h.url)
+	net.offer(drained)
+	net.offer(open)
+	net.mu.Lock()
+	net.drained = map[string]string{drained: "reboot"}
+	net.mu.Unlock()
+	run := startTaskSend("", "-data-dir", net.dir, "helper", "hello")
+	<-h.fix.prompts
+	h.fix.release <- "done"
+	if err := run.wait(t); err != nil || !strings.Contains(run.errOut.String(), "to helper on node "+open) {
+		t.Fatalf("send: %v\n%s", err, run.errOut)
+	}
+
+	only := newFakeNetwork(t)
+	d := newAgentHarness(t, testSender)
+	if err := saveDrain(d.dir, "helper", drainMark{Reason: "reboot"}); err != nil {
+		t.Fatal(err)
+	}
+	only.route(drained, d.url)
+	only.offer(drained)
+	only.mu.Lock()
+	only.drained = map[string]string{drained: "reboot"}
+	only.mu.Unlock()
+	err := startTaskSend("", "-data-dir", only.dir, "helper", "hello").wait(t)
+	if err == nil || !strings.Contains(err.Error(), "helper is draining: reboot") {
+		t.Fatalf("drained only: %v", err)
+	}
+}
+
 func TestTaskSendUsage(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -220,6 +256,7 @@ type fakeNetwork struct {
 	dir     string
 	mu      sync.Mutex
 	offers  []string
+	drained map[string]string
 	routes  map[string]http.Handler
 	lookups atomic.Int32
 }
@@ -239,9 +276,13 @@ func newFakeNetwork(t *testing.T) *fakeNetwork {
 		}
 		n.mu.Lock()
 		defer n.mu.Unlock()
-		found := []map[string]string{}
+		found := []map[string]any{}
 		for _, p := range n.offers {
-			found = append(found, map[string]string{"peer_id": p, "srv_name": "helper", "local_proxy_url": "http://x"})
+			row := map[string]any{"peer_id": p, "srv_name": "helper", "local_proxy_url": "http://x"}
+			if reason, ok := n.drained[p]; ok {
+				row["srv_metadata"] = map[string]string{caller.DrainMetadataKey: caller.Drain{Reason: reason}.Metadata()}
+			}
+			found = append(found, row)
 		}
 		json.NewEncoder(w).Encode(found)
 	})

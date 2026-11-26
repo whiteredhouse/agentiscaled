@@ -484,6 +484,9 @@ func run(ctx context.Context, c config) error {
 				Name:        a.Name,
 				Description: a.svc.card(a.Name).Description,
 				TargetURL:   target,
+				// A drained agent is never listed as taking tasks, also
+				// not before its first activity report.
+				Metadata: a.svc.activity().serviceMetadata(),
 			})
 		}
 		if err := node.RegisterStaticServices(ctx, services); err != nil {
@@ -500,6 +503,11 @@ func run(ctx context.Context, c config) error {
 			// a refusal would mean a clock past year 9999.
 			if err := node.SetServiceStatus(api.ServiceType_SERVICE_TYPE_A2A, name, status); err != nil {
 				log.Printf("agent %s: status not reported: %v", name, err)
+			}
+		}, func(name string, metadata map[string]string) {
+			// The drain's value always fits (drainMark.Metadata).
+			if err := node.SetServiceMetadata(api.ServiceType_SERVICE_TYPE_A2A, name, metadata); err != nil {
+				log.Printf("agent %s: drain not published: %v", name, err)
 			}
 		})
 	}
