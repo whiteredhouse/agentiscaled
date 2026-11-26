@@ -19,9 +19,9 @@ import (
 )
 
 type AgentRow struct {
-	Service     string `json:"service"`
-	PeerID      string `json:"peer_id,omitempty"`
-	Description string `json:"description,omitempty"`
+	Service     AgentName `json:"service"`
+	PeerID      string    `json:"peer_id,omitempty"`
+	Description string    `json:"description,omitempty"`
 	// Draining, when set, says that the agent finishes the tasks it has
 	// but takes no new ones, and why.
 	Draining *Drain `json:"draining,omitempty"`
@@ -33,12 +33,12 @@ type AgentList struct {
 
 // ListedAgents combines local services and the remote mesh catalog. Each
 // (name, peer) is separately addressable, even when peers share a name.
-func ListedAgents(info LocalInfo, self string, providers []*api.DiscoveredProvider) AgentList {
+func ListedAgents(info LocalInfo, self AgentName, providers []*api.DiscoveredProvider) AgentList {
 	out := AgentList{Agents: []AgentRow{}}
 	seen := make(map[Target]bool)
 	add := func(row AgentRow) {
 		target := Target{Service: row.Service, PeerID: row.PeerID}
-		if ServiceName.MatchString(row.Service) && !seen[target] {
+		if !seen[target] {
 			out.Agents = append(out.Agents, row)
 			seen[target] = true
 		}
@@ -60,7 +60,13 @@ func ListedAgents(info LocalInfo, self string, providers []*api.DiscoveredProvid
 		if _, err := peer.Decode(id); err != nil {
 			continue
 		}
-		add(AgentRow{Service: p.GetSrvName(), PeerID: id, Description: p.GetSrvDescription(), Draining: DrainFromMetadata(p.GetSrvMetadata())})
+		// A peer's name is parsed on its own: one that breaks the rule
+		// hides only itself.
+		name, err := ParseAgentName(p.GetSrvName())
+		if err != nil {
+			continue
+		}
+		add(AgentRow{Service: name, PeerID: id, Description: p.GetSrvDescription(), Draining: DrainFromMetadata(p.GetSrvMetadata())})
 	}
 	slices.SortFunc(out.Agents, func(a, b AgentRow) int {
 		return cmp.Or(cmp.Compare(a.Service, b.Service), cmp.Compare(a.PeerID, b.PeerID))

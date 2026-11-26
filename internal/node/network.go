@@ -299,7 +299,7 @@ func (n *taskNetwork) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // (err), so that a run whose process lasts into a later turn, which may get
 // one, knows it: its tool calls then fail until then. access is nil only
 // when the endpoint itself cannot be made.
-func (n *taskNetwork) grant(ctx context.Context, agent string, task a2a.TaskID, ttl time.Duration, depth int) (access *networkAccess, release func(), err error) {
+func (n *taskNetwork) grant(ctx context.Context, agent caller.AgentName, task a2a.TaskID, ttl time.Duration, depth int) (access *networkAccess, release func(), err error) {
 	g, err := n.grantFor(agent, task)
 	if err != nil {
 		return nil, nil, err
@@ -331,7 +331,7 @@ func (n *taskNetwork) grant(ctx context.Context, agent string, task a2a.TaskID, 
 }
 
 // grantFor is task's grant, made on its first turn.
-func (n *taskNetwork) grantFor(agent string, task a2a.TaskID) (*networkGrant, error) {
+func (n *taskNetwork) grantFor(agent caller.AgentName, task a2a.TaskID) (*networkGrant, error) {
 	n.mu.Lock()
 	g := n.byTask[task]
 	n.mu.Unlock()
@@ -389,7 +389,7 @@ func (n *taskNetwork) forget(task a2a.TaskID) {
 // token, until expires or until close, with the token as the caller's
 // credential for every call, and only the tasks in sent to follow, answer or
 // cancel.
-func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Time) (access *networkAccess, close func()) {
+func (n *taskNetwork) open(token string, agent caller.AgentName, sent *sentTasks, expires time.Time) (access *networkAccess, close func()) {
 	g, err := n.newGrant(agent, sent)
 	if err != nil {
 		// Only a failing source of randomness gets here.
@@ -407,7 +407,7 @@ func (n *taskNetwork) open(token, agent string, sent *sentTasks, expires time.Ti
 
 // newGrant makes a grant of agent's whose tools may use only the tasks in
 // sent, with no turn yet.
-func (n *taskNetwork) newGrant(agent string, sent *sentTasks) (*networkGrant, error) {
+func (n *taskNetwork) newGrant(agent caller.AgentName, sent *sentTasks) (*networkGrant, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return nil, err

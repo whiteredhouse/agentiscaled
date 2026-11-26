@@ -19,7 +19,7 @@ type TaskRef struct {
 
 // String is the reference as task send prints it.
 func (r TaskRef) String() string {
-	return r.PeerID + "/" + r.Service + "/" + r.ID
+	return r.PeerID + "/" + r.Service.String() + "/" + r.ID
 }
 
 // ParseTaskRef reads a reference task send printed.
@@ -31,11 +31,12 @@ func ParseTaskRef(s string) (TaskRef, error) {
 	if _, err := peer.Decode(parts[0]); err != nil {
 		return TaskRef{}, fmt.Errorf("%q is not a task reference: %q is not a peer ID", s, parts[0])
 	}
-	if !ServiceName.MatchString(parts[1]) {
-		return TaskRef{}, fmt.Errorf("%q is not a task reference: %q is not an agent name", s, parts[1])
+	name, err := ParseAgentName(parts[1])
+	if err != nil {
+		return TaskRef{}, fmt.Errorf("%s is not a task reference: %s is not an agent name", ShownAgentName(s), ShownAgentName(parts[1]))
 	}
 	if !taskID.MatchString(parts[2]) {
 		return TaskRef{}, fmt.Errorf("%q is not a task reference: %q is not a task ID", s, parts[2])
 	}
-	return TaskRef{Target{PeerID: parts[0], Service: parts[1]}, parts[2]}, nil
+	return TaskRef{Target{PeerID: parts[0], Service: name}, parts[2]}, nil
 }

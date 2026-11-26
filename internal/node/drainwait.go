@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"slices"
 	"time"
+
+	"github.com/whiteredhouse/agentiscaled/internal/caller"
 )
 
 // The node answers agent drain -wait itself: it owns the drains and the
@@ -19,8 +21,8 @@ import (
 // drain file the command saved says. WithinMS, when set, is how long the
 // command can wait for this answer, so the node answers within it.
 type drainWaitRequest struct {
-	Agents   map[string]time.Time `json:"agents"`
-	WithinMS int64                `json:"within_ms,omitempty"`
+	Agents   map[caller.AgentName]time.Time `json:"agents"`
+	WithinMS int64                          `json:"within_ms,omitempty"`
 }
 
 // What the node answers about the drains a command waits on.
@@ -49,16 +51,16 @@ var drainWaitEveryCheck = 100 * time.Millisecond
 // the drain under the same lock before it takes the running slot; an agent
 // the node does not serve has no task, and only its file says whether its
 // drain still holds.
-func drainState(agents []*agentService, dataDir string, held map[string]time.Time) drainWaitAnswer {
-	served := map[string]agentActivity{}
+func drainState(agents []*agentService, dataDir string, held map[caller.AgentName]time.Time) drainWaitAnswer {
+	served := map[caller.AgentName]agentActivity{}
 	var named []*agentService
 	for _, s := range agents {
 		if _, ok := held[s.name]; ok {
 			named = append(named, s)
 		}
 	}
-	for _, a := range agentsActivity(named) {
-		served[a.Name] = a
+	for i, a := range agentsActivity(named) {
+		served[named[i].name] = a
 	}
 	answer := drainWaitAnswer{State: drainHeld}
 	for _, name := range slices.Sorted(maps.Keys(held)) {
@@ -68,14 +70,14 @@ func drainState(agents []*agentService, dataDir string, held map[string]time.Tim
 		if ok {
 			drain = a.Drain
 		} else {
-			drain = loadDrain(drainPath(dataDir, name))
+			drain = loadDrain(drainPath(dataDir, name.String()))
 		}
 		if drain == nil || !drain.Since.Equal(since) {
-			return drainWaitAnswer{State: drainLifted, Agent: name}
+			return drainWaitAnswer{State: drainLifted, Agent: name.String()}
 		}
 		if ok && (a.State == activityBusy || a.Waiting > 0) {
 			answer.State = drainWorking
-			answer.Left = append(answer.Left, name)
+			answer.Left = append(answer.Left, name.String())
 		}
 	}
 	return answer
@@ -83,7 +85,7 @@ func drainState(agents []*agentService, dataDir string, held map[string]time.Tim
 
 // waitDrainsHeld answers once the drains hold and no agent has a task, a
 // drain is lifted, ctx ends or longest passes; it checks every so often.
-func waitDrainsHeld(ctx context.Context, agents []*agentService, dataDir string, held map[string]time.Time, longest, every time.Duration) drainWaitAnswer {
+func waitDrainsHeld(ctx context.Context, agents []*agentService, dataDir string, held map[caller.AgentName]time.Time, longest, every time.Duration) drainWaitAnswer {
 	ctx, cancel := context.WithTimeout(ctx, longest)
 	defer cancel()
 	tick := time.NewTicker(every)
@@ -109,17 +111,11 @@ func serveDrainWait(w http.ResponseWriter, r *http.Request, agents []*agentServi
 // serveDrainWaitEvery is serveDrainWait holding a request up to longest
 // and checking every so often.
 func serveDrainWaitEvery(w http.ResponseWriter, r *http.Request, agents []*agentService, dataDir string, longest, every time.Duration) {
+	// Decoding parses each name (caller.AgentName).
 	var req drainWaitRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil || len(req.Agents) == 0 {
-		http.Error(w, "the request names no drain", http.StatusBadRequest)
+		http.Error(w, "the request names no drain of an agent", http.StatusBadRequest)
 		return
-	}
-	// The names a node registers, not only the ones the wizard offers.
-	for name := range req.Agents {
-		if agentNameError(name) != nil {
-			http.Error(w, "the request names no agent of this node's form", http.StatusBadRequest)
-			return
-		}
 	}
 	if within := time.Duration(req.WithinMS) * time.Millisecond; req.WithinMS > 0 && within < longest {
 		longest = within

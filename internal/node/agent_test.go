@@ -831,7 +831,7 @@ func TestAgentsKeepDeliveriesApart(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	seen := map[string]bool{}
-	for _, name := range []string{"helper", "writer", "Helper", "other/../helper"} {
+	for _, name := range []caller.AgentName{"helper", "writer", "Helper", "helper.team"} {
 		svc, err := newAgentService(t.TempDir(), newFixture(), dir, name)
 		if err != nil {
 			t.Fatal(err)
@@ -849,6 +849,22 @@ func TestAgentsKeepDeliveriesApart(t *testing.T) {
 		}
 		if err := svc.delivered.record("sender", "message", a2a.TaskID(name)); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+// An agent's name is a plain DNS name, so that no shell reads any of it as
+// syntax when the name is pasted into a command.
+func TestAgentNameRule(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"codex", "release.bot", "x_y", "Reviewer", "a-1.b-2", "release.bot.", "a_", strings.Repeat("a", 63)} {
+		if err := agentNameError(name); err != nil {
+			t.Errorf("%q refused: %v", name, err)
+		}
+	}
+	for _, name := range []string{"", "bot/x", "bot/$(id)", `a/b\'c`, "*", "*.x", "x.*", "a b", "a;b", "-a", ".a", "a..b", "a.._", strings.Repeat("a", 64), strings.Repeat("a.", 127) + "a"} {
+		if err := agentNameError(name); err == nil {
+			t.Errorf("%q taken", name)
 		}
 	}
 }

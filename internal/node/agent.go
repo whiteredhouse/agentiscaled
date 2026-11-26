@@ -132,8 +132,8 @@ type agentPolicy struct {
 }
 
 // agentStateDir is the node's state for one hosted service. Ordinary offer
-// names are already safe path components. Other accepted names can contain
-// paths or differ only by case; hashing the exact name keeps them distinct
+// names are already safe path components. Other accepted names can differ
+// only by case or be dot names; hashing the exact name keeps them distinct
 // even on a case-insensitive filesystem.
 func agentStateDir(dataDir, name string) string {
 	if !validAgentName(name) {
@@ -148,12 +148,10 @@ func agentProfileDir(dataDir, name string) string {
 }
 
 // agentNameError tells why a name cannot be an agent's service name in the
-// network, by the rule the node's service registry applies to a2a://<name>.
+// network (caller.ParseAgentName).
 func agentNameError(name string) error {
-	if err := api.ValidateServiceFormat(api.ServiceTypeStringA2A + "://" + name); err != nil {
-		return fmt.Errorf("agent name %q: the network takes a DNS name, of labels up to 63 characters", name)
-	}
-	return nil
+	_, err := caller.ParseAgentName(name)
+	return err
 }
 
 // runtimes defines each runtime's default service name, command and sign-in
@@ -218,7 +216,7 @@ type agentService struct {
 	life context.Context
 	// name is the agent's service name, and network, when set, opens the
 	// network to each turn of its tasks that may delegate.
-	name    string
+	name    caller.AgentName
 	network *taskNetwork
 
 	mu      sync.Mutex
@@ -270,8 +268,8 @@ var (
 
 // newAgentService keeps the named agent's delivery history in its service
 // directory. All agents on the node share the owner's stop file.
-func newAgentService(dir string, rt runtime, dataDir, name string) (*agentService, error) {
-	state := agentStateDir(dataDir, name)
+func newAgentService(dir string, rt runtime, dataDir string, name caller.AgentName) (*agentService, error) {
+	state := agentStateDir(dataDir, name.String())
 	if err := os.MkdirAll(state, 0o700); err != nil {
 		return nil, err
 	}
@@ -279,7 +277,7 @@ func newAgentService(dir string, rt runtime, dataDir, name string) (*agentServic
 	if err != nil {
 		return nil, err
 	}
-	return &agentService{dir: dir, rt: rt, name: name, deadline: taskDeadline, answerWait: defaultAnswerWait, life: context.Background(), delivered: delivered, waiting: map[a2a.TaskID]*waitingTask{}, drainFile: drainPath(dataDir, name)}, nil
+	return &agentService{dir: dir, rt: rt, name: name, deadline: taskDeadline, answerWait: defaultAnswerWait, life: context.Background(), delivered: delivered, waiting: map[a2a.TaskID]*waitingTask{}, drainFile: drainPath(dataDir, name.String())}, nil
 }
 
 // drain is the owner's drain of the agent, or nil while it takes new tasks.
@@ -754,7 +752,7 @@ func (s *agentService) admit(execCtx *a2asrv.ExecutorContext, from taskSender, f
 		return nil, prior, fmt.Sprintf("refused: message %s was already delivered as task %s", execCtx.Message.ID, first), map[string]any{metaDuplicateOf: string(first)}
 	}
 	if drained != nil {
-		return nil, prior, "refused: " + s.name + " " + drained.Text() + "; it takes no new tasks", nil
+		return nil, prior, "refused: " + s.name.String() + " " + drained.Text() + "; it takes no new tasks", nil
 	}
 	if s.current != nil {
 		return nil, prior, "refused: a task is already running; try again when it ends", nil
@@ -834,7 +832,7 @@ func agentsActivity(agents []*agentService) []agentActivity {
 // that ended after it. A waiting question counts until now reaches its
 // expiry, whatever the clock says by the time it is read.
 func (s *agentService) activityLocked(now time.Time) agentActivity {
-	a := agentActivity{Name: s.name, State: activityIdle, Drain: s.drain()}
+	a := agentActivity{Name: s.name.String(), State: activityIdle, Drain: s.drain()}
 	if s.current != nil {
 		a.State = activityBusy
 		started := s.current.started
@@ -889,14 +887,14 @@ func (a agentActivity) serviceMetadata() map[string]string {
 func reportActivity(ctx context.Context, agents []*agentService, setStatus func(name string, status *api.ServiceStatus), setMetadata func(name string, metadata map[string]string)) {
 	ticker := time.NewTicker(activityEvery)
 	defer ticker.Stop()
-	reported := map[string]map[string]string{}
+	reported := map[caller.AgentName]map[string]string{}
 	for {
 		for _, s := range agents {
 			a := s.activity()
-			setStatus(s.name, a.serviceStatus())
+			setStatus(s.name.String(), a.serviceStatus())
 			md := a.serviceMetadata()
 			if last, ok := reported[s.name]; !ok || !maps.Equal(last, md) {
-				setMetadata(s.name, md)
+				setMetadata(s.name.String(), md)
 				reported[s.name] = md
 			}
 		}

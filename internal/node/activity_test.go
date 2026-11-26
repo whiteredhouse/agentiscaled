@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -242,4 +243,91 @@ func TestAgentListShowsActivity(t *testing.T) {
 			t.Fatalf("node without the activity API: %q", line)
 		}
 	}
+}
+
+// A saved name the node refuses is shown percent-encoded and labelled
+// wherever saved names are printed, so that it cannot be copied into a
+// command as it is; an agent saved without a name has the one the node
+// gives it.
+func TestSavedAgentNamesShownSafely(t *testing.T) {
+	t.Parallel()
+	dir := shortTempDir(t)
+	bad := "bot/$(id)\n'x'"
+	encoded := "bot%2F%24%28id%29%0A%27x%27"
+	writeSettings(t, dir, settings{Control: "https://control.test", Agents: []agentConfig{
+		{Runtime: "codex", Dir: t.TempDir()},
+		{Runtime: "acp", Command: "/opt/My Apps/my-agent", Dir: t.TempDir()},
+		{Runtime: "claude", Name: "release.bot.", Dir: t.TempDir()},
+		{Runtime: "claude", Name: bad, Dir: t.TempDir()},
+		// A taken name, and a refused name that is the encoded form itself.
+		{Runtime: "claude", Name: "botx2fx24x28idx29x0ax27xx27", Dir: t.TempDir()},
+		{Runtime: "claude", Name: encoded, Dir: t.TempDir()},
+	}})
+	got, err := runAgentOut(dir, "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	want := []struct{ prefix, state string }{
+		{"codex ", ""}, {"my-agent ", ""}, {"release.bot. ", ""}, {encoded + " ", "invalid"},
+		{"botx2fx24x28idx29x0ax27xx27 ", ""}, {"bot%252F%2524%2528id%2529%250A%2527x%2527 ", "invalid"},
+	}
+	if len(lines) != len(want)+1 || strings.Contains(got, "$(id)") {
+		t.Fatalf("agent list:\n%s", got)
+	}
+	for i, w := range want {
+		if line := lines[i+1]; !strings.HasPrefix(line, w.prefix) || strings.Contains(line, "invalid name; the node does not start: fix or delete it in "+filepath.Join(dir, settingsFile)) != (w.state != "") {
+			t.Fatalf("agent list line %d %q, want %q:\n%s", i+1, line, w.prefix, got)
+		}
+	}
+	var status bytes.Buffer
+	if err := RunStatus(context.Background(), []string{"-data-dir", dir}, &status); err != nil {
+		t.Fatal(err)
+	}
+	if st := status.String(); !strings.Contains(st, "Agent:    codex (codex)") || !strings.Contains(st, "Agent:    my-agent (acp)") ||
+		!strings.Contains(st, "Agent:    "+encoded+" (claude)") || !strings.Contains(st, "invalid name; the node does not start") || strings.Contains(st, "$(id)") {
+		t.Fatalf("status:\n%s", st)
+	}
+	// Draining every agent leaves out the refused ones, which serve nothing.
+	if out, _ := runAgentOut(dir, "drain"); strings.Contains(out, "$(id)") || strings.Contains(out, "%2F") {
+		t.Fatalf("drain all: %q", out)
+	}
+	// Only a name the node takes names an agent to remove: a refused one is
+	// fixed in the settings file, and its encoded form names nothing.
+	if _, err := runAgentOut(dir, "remove", encoded); err == nil {
+		t.Fatal("remove took the encoded form of a refused name")
+	}
+	if _, err := runAgentOut(dir, "remove", bad); err == nil || !strings.Contains(err.Error(), "agent "+encoded+" has an invalid name; fix or delete it in "+filepath.Join(dir, settingsFile)) {
+		t.Fatalf("remove of a refused name: %v", err)
+	}
+	if out, err := runAgentOut(dir, "remove", "botx2fx24x28idx29x0ax27xx27"); err != nil || !strings.Contains(out, "no longer offers botx2fx24x28idx29x0ax27xx27;") {
+		t.Fatalf("remove: %q %v", out, err)
+	}
+	s, err := loadSettings(dir)
+	if err != nil || len(s.Agents) != 5 || !slices.ContainsFunc(s.Agents, func(a agentConfig) bool { return a.Name == bad }) {
+		t.Fatalf("after remove: %+v %v", s.Agents, err)
+	}
+}
+
+// A bare agent remove that picks the only saved agent refuses it too when
+// its name is refused, and says where to fix it.
+func TestRemoveSoleInvalidAgent(t *testing.T) {
+	t.Parallel()
+	dir := shortTempDir(t)
+	writeSettings(t, dir, settings{Control: "https://control.test", Agents: []agentConfig{
+		{Runtime: "claude", Name: "bot/$(id)", Dir: t.TempDir()},
+	}})
+	if _, err := runAgentOut(dir, "remove"); err == nil || !strings.Contains(err.Error(), "agent bot%2F%24%28id%29 has an invalid name; fix or delete it in "+filepath.Join(dir, settingsFile)) {
+		t.Fatalf("bare remove: %v", err)
+	}
+	if s, err := loadSettings(dir); err != nil || len(s.Agents) != 1 {
+		t.Fatalf("after bare remove: %+v %v", s.Agents, err)
+	}
+}
+
+// runAgentOut runs an agent command on dir and gives its output.
+func runAgentOut(dir string, args ...string) (string, error) {
+	var out bytes.Buffer
+	err := RunAgent(context.Background(), append(args, "-data-dir", dir), &out)
+	return out.String(), err
 }

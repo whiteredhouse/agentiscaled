@@ -67,11 +67,11 @@ func localAgentsFixture(t *testing.T, role *api.PolicyRole, expiry time.Time, cf
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { sidecar.Close() })
-	fixes, targets := map[string]*fixture{}, map[string]string{}
+	fixes, targets := map[string]*fixture{}, map[caller.AgentName]string{}
 	var agents []*agentService
 	for _, name := range names {
 		fix := newFixture()
-		agent, err := newAgentService(t.TempDir(), fix, dir, name)
+		agent, err := newAgentService(t.TempDir(), fix, dir, caller.AgentName(name))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -79,7 +79,7 @@ func localAgentsFixture(t *testing.T, role *api.PolicyRole, expiry time.Time, cf
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixes[name], targets[name] = fix, target
+		fixes[name], targets[caller.AgentName(name)] = fix, target
 		agents = append(agents, agent)
 	}
 	server, err := serveLocalAgent(ctx, n, cfg, targets, dir, func() []agentActivity {
@@ -144,12 +144,12 @@ func TestLocalTasksReachEachAgent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	info, err := tasks.LocalInfo(ctx)
-	if err != nil || !slices.Equal(info.Services, []string{"helper", "writer"}) {
+	if err != nil || !slices.Equal(info.Services, []caller.AgentName{"helper", "writer"}) {
 		t.Fatalf("local info: %+v %v", info, err)
 	}
 	for _, name := range []string{"writer", "helper"} {
 		fixes[name].release <- "answer from " + name
-		target := caller.Target{Service: name}
+		target := caller.Target{Service: caller.AgentName(name)}
 		_, sent, err := tasks.SendTool(ctx, nil, caller.SendInput{Target: target, Text: "work"})
 		if err != nil {
 			t.Fatal(err)
@@ -343,7 +343,7 @@ func TestLocalAgentTransportStreamsAndRejectsTCP(t *testing.T) {
 	if err := os.Symlink(filepath.Join(authDir, meshnode.DefaultSocketName), filepath.Join(dir, meshnode.DefaultSocketName)); err != nil {
 		t.Fatal(err)
 	}
-	server, err := serveLocalAgent(ctx, n, &meshnode.NodeConfigComplete{}, map[string]string{"helper": target}, dir, nil, nil)
+	server, err := serveLocalAgent(ctx, n, &meshnode.NodeConfigComplete{}, map[caller.AgentName]string{"helper": target}, dir, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,6 +23,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/whiteredhouse/agentiscaled/internal/caller"
 	"github.com/whiteredhouse/agentiscaled/internal/nodestate"
 )
 
@@ -153,6 +154,21 @@ func (a *agentConfig) splitCommand() error {
 	return nil
 }
 
+// effectiveName is the agent's name: its own, else the one the node gives
+// an agent of its runtime and command (runtimeDefaultName). Everything that
+// starts, checks or shows a saved agent uses this name.
+func (a agentConfig) effectiveName() string {
+	if a.Name != "" {
+		return a.Name
+	}
+	if _, ok := runtimes[a.Runtime]; !ok {
+		return ""
+	}
+	// Saved ACP agents keep the program apart from its arguments, so
+	// Command is the program's whole path, spaces and all.
+	return runtimeDefaultName(a.Runtime, a.Command)
+}
+
 func (a agentConfig) policy() agentPolicy {
 	return agentPolicy{DirInstructions: !a.IgnoreDirInstructions, DirSkills: !a.IgnoreDirSkills, OwnerConfig: !a.OwnConfig}
 }
@@ -184,11 +200,7 @@ func agentFlags(fs *flag.FlagSet) func() *agentConfig {
 			// An empty command fails when the agent is checked.
 			a.splitCommand()
 		}
-		if a.Name == "" {
-			if _, ok := runtimes[a.Runtime]; ok {
-				a.Name = runtimeDefaultName(a.Runtime, a.Command)
-			}
-		}
+		a.Name = a.effectiveName()
 		return &a
 	}
 }
@@ -258,11 +270,9 @@ func newAgents(ctx context.Context, c *config) ([]*hostedAgent, error) {
 	names := map[string]bool{}
 	for i := range c.agents {
 		a := &c.agents[i]
-		if a.Name == "" {
-			a.Name = runtimeDefaultName(a.Runtime, a.Command)
-		}
+		a.Name = a.effectiveName()
 		if names[a.Name] {
-			return nil, fmt.Errorf("two agents are named %q; each agent needs a name of its own", a.Name)
+			return nil, fmt.Errorf("two agents are named %s; each agent needs a name of its own", caller.QuotedAgentName(a.Name))
 		}
 		names[a.Name] = true
 		ownerConfig = ownerConfig || a.policy().OwnerConfig
@@ -299,12 +309,11 @@ func newAgents(ctx context.Context, c *config) ([]*hostedAgent, error) {
 // run. The node's environment is set up already (newAgents).
 func newAgent(ctx context.Context, a *agentConfig, dataDir string) (*agentService, error) {
 	if _, ok := runtimes[a.Runtime]; !ok {
-		return nil, fmt.Errorf("agent %s: unknown runtime %q (have %s)", a.Name, a.Runtime, strings.Join(runtimeNames(), ", "))
+		return nil, fmt.Errorf("agent %s: unknown runtime %q (have %s)", caller.ShownAgentName(a.Name), a.Runtime, strings.Join(runtimeNames(), ", "))
 	}
-	if a.Name == "" {
-		a.Name = runtimeDefaultName(a.Runtime, a.Command)
-	}
-	if err := agentNameError(a.Name); err != nil {
+	a.Name = a.effectiveName()
+	name, err := caller.ParseAgentName(a.Name)
+	if err != nil {
 		return nil, err
 	}
 	if a.Dir == "" {
@@ -331,7 +340,7 @@ func newAgent(ctx context.Context, a *agentConfig, dataDir string) (*agentServic
 			return nil, fmt.Errorf("agent %s: %w", a.Name, err)
 		}
 	}
-	s, err := newAgentService(dir, rt, dataDir, a.Name)
+	s, err := newAgentService(dir, rt, dataDir, name)
 	if err != nil {
 		return nil, err
 	}
@@ -519,9 +528,9 @@ func run(ctx context.Context, c config) error {
 	}
 	defer srv.Close()
 	if len(agents) > 0 {
-		targets := map[string]string{}
+		targets := map[caller.AgentName]string{}
 		for _, a := range agents {
-			targets[a.Name] = a.target
+			targets[a.svc.name] = a.target
 		}
 		svcs := make([]*agentService, 0, len(agents))
 		for _, a := range agents {

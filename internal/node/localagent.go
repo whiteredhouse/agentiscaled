@@ -46,8 +46,8 @@ type agentSocketContextKey struct{}
 // activity, when set, says what each agent is doing now (GET /agents), and
 // drains, when set, are the agents whose drains POST /agents/drain/wait
 // waits on.
-func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, targets map[string]string, dataDir string, activity func() []agentActivity, drains []*agentService) (*http.Server, error) {
-	proxies := map[string]*httputil.ReverseProxy{}
+func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *meshnode.NodeConfigComplete, targets map[caller.AgentName]string, dataDir string, activity func() []agentActivity, drains []*agentService) (*http.Server, error) {
+	proxies := map[caller.AgentName]*httputil.ReverseProxy{}
 	for name, target := range targets {
 		backend, err := url.Parse(target)
 		if err != nil || backend == nil || backend.User == nil {
@@ -78,10 +78,14 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 			if activity != nil {
 				for _, a := range activity() {
 					if a.Drain != nil {
-						if info.Draining == nil {
-							info.Draining = map[string]drainMark{}
+						name, err := caller.ParseAgentName(a.Name)
+						if err != nil {
+							continue
 						}
-						info.Draining[a.Name] = *a.Drain
+						if info.Draining == nil {
+							info.Draining = map[caller.AgentName]drainMark{}
+						}
+						info.Draining[name] = *a.Drain
 					}
 				}
 			}
@@ -100,8 +104,12 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 		}
 		// /a2a/<peer>/<name>[/.well-known/agent-card.json]
 		rest, ok := strings.CutPrefix(r.URL.Path, "/a2a/"+info.PeerID+"/")
-		name, sub, _ := strings.Cut(rest, "/")
+		segment, sub, _ := strings.Cut(rest, "/")
+		name, err := caller.ParseAgentName(segment)
 		proxy := proxies[name]
+		if err != nil {
+			proxy = nil
+		}
 		backendPath, allowedMethod := "/", http.MethodPost
 		switch {
 		case !ok || proxy == nil:
@@ -130,7 +138,7 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 			}
 			callerToken = strings.TrimSpace(bearer)
 		}
-		task, err := authorizeLocalAgent(r.Context(), node, cfg, name, r.Method, backendPath, authorization, callerToken)
+		task, err := authorizeLocalAgent(r.Context(), node, cfg, name.String(), r.Method, backendPath, authorization, callerToken)
 		if err != nil {
 			log.Printf("local agent %s refused: %v", name, err)
 			http.Error(w, "local agent authorization failed", http.StatusForbidden)
