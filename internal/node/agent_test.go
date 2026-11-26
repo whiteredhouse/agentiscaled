@@ -857,12 +857,12 @@ func TestAgentsKeepDeliveriesApart(t *testing.T) {
 // syntax when the name is pasted into a command.
 func TestAgentNameRule(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"codex", "release.bot", "x_y", "Reviewer", "a-1.b-2", strings.Repeat("a", 63)} {
+	for _, name := range []string{"codex", "release.bot", "x_y", "Reviewer", "a-1.b-2", "release.bot.", "a_", strings.Repeat("a", 63)} {
 		if err := agentNameError(name); err != nil {
 			t.Errorf("%q refused: %v", name, err)
 		}
 	}
-	for _, name := range []string{"", "bot/x", "bot/$(id)", `a/b\'c`, "*", "*.x", "x.*", "a b", "a;b", "-a", "a.", ".a", "a..b", strings.Repeat("a", 64), strings.Repeat("a.", 127) + "a"} {
+	for _, name := range []string{"", "bot/x", "bot/$(id)", `a/b\'c`, "*", "*.x", "x.*", "a b", "a;b", "-a", ".a", "a..b", "a.._", strings.Repeat("a", 64), strings.Repeat("a.", 127) + "a"} {
 		if err := agentNameError(name); err == nil {
 			t.Errorf("%q taken", name)
 		}

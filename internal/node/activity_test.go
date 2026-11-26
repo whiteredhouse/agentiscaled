@@ -243,3 +243,26 @@ func TestAgentListShowsActivity(t *testing.T) {
 		}
 	}
 }
+
+// A saved name the node refuses is listed escaped and labelled, so that it
+// cannot be copied into a command as it is.
+func TestAgentListShowsInvalidNameEscaped(t *testing.T) {
+	t.Parallel()
+	dir := shortTempDir(t)
+	writeSettings(t, dir, settings{Control: "https://control.test", Agents: []agentConfig{
+		{Runtime: "codex", Name: "release.bot.", Dir: t.TempDir()},
+		{Runtime: "claude", Name: "bot/$(id)\n'x'", Dir: t.TempDir()},
+	}})
+	var out bytes.Buffer
+	if err := RunAgent(context.Background(), []string{"list", "-data-dir", dir}, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, `bot\x2f\x24\x28id\x29\x0a\x27x\x27`) || !strings.Contains(got, "invalid name; the node does not start") ||
+		strings.Contains(got, "$(id)") || strings.Count(got, "\n") != 3 {
+		t.Fatalf("invalid name:\n%s", got)
+	}
+	if line := strings.Split(got, "\n")[1]; !strings.HasPrefix(line, "release.bot. ") || strings.Contains(line, "invalid") {
+		t.Fatalf("valid name with a final dot: %q", line)
+	}
+}

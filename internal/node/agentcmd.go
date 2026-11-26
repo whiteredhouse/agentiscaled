@@ -319,16 +319,23 @@ func runAgentList(args []string, out io.Writer) error {
 	}
 	now := time.Now()
 	for _, a := range s.Agents {
+		name := a.Name
 		state := activityText(activity, running, a.Name, now, loadDrain(drainPath(*dataDir, a.Name)))
+		// A saved name the node refuses is shown escaped, so that it cannot
+		// be copied into a command as it is.
+		if agentNameError(a.Name) != nil {
+			name = escapedName(a.Name)
+			state = "invalid name; the node does not start"
+		}
 		if !defined {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Name, state, a.Runtime, homeRelative(a.Dir))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", name, state, a.Runtime, homeRelative(a.Dir))
 			continue
 		}
 		def := "-"
 		if a.Definition != "" {
 			def = homeRelative(definitionCopy(*dataDir, a.Name, a.Definition))
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", a.Name, state, a.Runtime, homeRelative(a.Dir), def)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", name, state, a.Runtime, homeRelative(a.Dir), def)
 	}
 	return tw.Flush()
 }

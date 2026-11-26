@@ -149,19 +149,36 @@ func agentProfileDir(dataDir, name string) string {
 }
 
 // agentName is a plain DNS name: labels of letters, digits, - and _, up to
-// 63 characters each, joined by dots. The service registry takes more (a
-// path after the name, wildcards), but an agent's name is shown and pasted
-// into commands, so it is kept to what no common shell reads as syntax.
-var agentName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_-]{0,62}(\.[A-Za-z0-9_][A-Za-z0-9_-]{0,62})*$`)
+// 63 characters each, joined by dots, with an optional final dot (or _) as
+// the service registry takes. The registry takes more (a path after the
+// name, wildcards), but an agent's name is shown and pasted into commands,
+// so it is kept to what no common shell reads as syntax.
+var agentName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_-]{0,62}(\.[A-Za-z0-9_][A-Za-z0-9_-]{0,62})*[._]?$`)
 
 // agentNameError tells why a name cannot be an agent's service name in the
 // network: it must be a plain DNS name (agentName) that the node's service
 // registry also takes as a2a://<name>.
 func agentNameError(name string) error {
 	if len(name) > 253 || !agentName.MatchString(name) || api.ValidateServiceFormat(api.ServiceTypeStringA2A+"://"+name) != nil {
-		return fmt.Errorf("agent name %q: the network takes a DNS name: letters, digits, - and _, in labels of up to 63 characters joined by dots", name)
+		return fmt.Errorf("agent name %s: the network takes a DNS name: letters, digits, - and _, in labels of up to 63 characters joined by dots", escapedName(name))
 	}
 	return nil
+}
+
+// escapedName shows a name that may not be an agent's as text that no
+// shell reads as syntax: every byte outside letters, digits, '.', '_' and
+// '-' is written as \xHH.
+func escapedName(name string) string {
+	var b strings.Builder
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-' {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, `\x%02x`, c)
+		}
+	}
+	return b.String()
 }
 
 // runtimes defines each runtime's default service name, command and sign-in
