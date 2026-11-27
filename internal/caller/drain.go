@@ -35,7 +35,7 @@ type Drain struct {
 	By string `json:"by,omitempty"`
 	// Drained says that the agent has no task left: none running and none
 	// waiting for an answer. The node sets it from what the agent is doing
-	// each time it publishes the drain; a drain file's is ignored. Without
+	// each time it publishes the drain, and never saves it in a drain file. Without
 	// it the agent is still draining, also when its node is too old to say.
 	Drained bool `json:"drained,omitempty"`
 }

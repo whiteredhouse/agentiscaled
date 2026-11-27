@@ -80,6 +80,46 @@ func TestDrainedAgentFinishesItsTasksAndRefusesNewOnes(t *testing.T) {
 	}
 }
 
+// Whether the agent still has work comes from its activity, never from the
+// drain file: a busy agent whose file says drained refuses new tasks as
+// draining, and the node never saves the field.
+func TestDrainFileDrainedIsIgnored(t *testing.T) {
+	t.Parallel()
+	h := newAgentHarness(t, testSender)
+	running := h.send(t, "", "review", nil)
+	<-h.fix.prompts
+	path := drainPath(h.dir, "helper")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"reason":"reboot","since":"2026-01-02T03:04:05Z","by":"node","drained":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if d := loadDrain(path); d == nil || d.Drained || d.Reason != "reboot" {
+		t.Fatalf("loaded drain: %+v", d)
+	}
+	if d := h.svc.activity().Drain; d == nil || d.Drained {
+		t.Fatalf("busy agent's drain: %+v", d)
+	}
+	refused := h.send(t, "", "another", nil)
+	got := h.await(t, refused.ID, a2a.TaskStateRejected)
+	if text := statusText(got); text != "refused: helper is draining: reboot; it takes no new tasks" {
+		t.Fatalf("refusal: %q", text)
+	}
+	h.fix.release <- "done"
+	h.await(t, running.ID, a2a.TaskStateCompleted)
+	if d := h.svc.activity().Drain; d == nil || !d.Drained {
+		t.Fatalf("idle agent's drain: %+v", d)
+	}
+
+	if err := saveDrain(h.dir, "helper", drainMark{Reason: "reboot", By: caller.DrainSetOnNode, Drained: true}); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(path); err != nil || strings.Contains(string(b), "drained") {
+		t.Fatalf("saved drain file: %s %v", b, err)
+	}
+}
+
 // A drain file the node cannot read still drains the agent: the owner
 // meant it to take no new tasks.
 func TestUnreadableDrainStillDrains(t *testing.T) {
