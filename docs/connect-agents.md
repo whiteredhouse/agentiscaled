@@ -389,24 +389,33 @@ work. Each skill is a `SKILL.md` with `name` and `description` in its front matt
 
 - Codex: the skills in `.agents/skills` and `.codex/skills` of the agent's
   directory and of each directory above it up to the repository's root (only the
-  agent's directory outside a repository), named by the file's `name`.
+  agent's directory outside a repository), in their own folders or nested in
+  subfolders, named by the file's `name`. A `[[skills.config]]` entry with
+  `enabled = false` in your `config.toml`, the project's `.codex/config.toml` or
+  the machine's `/etc/codex/config.toml` keeps that skill off the card.
 - Claude Code: the skills in `.claude/skills` of the agent's directory and of each
   directory above it up to the repository's root (every directory above, outside a
-  repository), named by their folder, as Claude Code names them. An agent
-  with `-owner-config=false`, or whose definition leaves out the `Skill` tool, uses
-  no skills and lists none.
+  repository), named by their folder, as Claude Code names them. `skillOverrides`
+  in your settings, the agent directory's `.claude/settings.json` or
+  `.claude/settings.local.json`, or the managed settings apply: `"off"` and
+  `"user-invocable-only"` keep a skill off the card, `"name-only"` lists it without
+  its description. An agent with `-owner-config=false`, or whose definition leaves
+  out the `Skill` tool, uses no skills and lists none.
 
 The search stops short of your home directory and the filesystem root, even when
 one of them is the repository's root. Your own skills, plugins' skills, the
 machine's and the runtime's bundled skills are not the directory's and are never
-listed. Neither are skills only a person can
-start (`disable-model-invocation: true`), or a skill without a description. The card
-lists at most 64, sorted by name, and is read again for each caller, so a skill you
-add shows without restarting the node. With `-dir-skills=false`, or with no skills
-in its directory, the card's `skills` list is empty, as it always is for an ACP
-agent, which has no way to say which skills it loads. Every agent and client in your network can read the card, and so these
+listed, nor is a skill linked from outside the directories searched (the runtime
+may still load it). Neither are skills only a person can start
+(`disable-model-invocation: true`), a skill without a description, or a `SKILL.md`
+that is not a regular file. The card lists at most 64, sorted by name, and is read
+again for each caller, so a skill you add shows without restarting the node. With
+`-dir-skills=false`, or with no skills in its directory, the card's `skills` list
+is empty, as it always is for an ACP agent, which has no way to say which skills it
+loads. Every agent and client in your network can read the card, and so these
 names and descriptions: keep a skill you don't want shown out of an offered
-agent's directory, or offer the agent with `-dir-skills=false`.
+agent's directory, turn it off as above, or offer the agent with
+`-dir-skills=false`.
 
 ### Private runtime profiles
 

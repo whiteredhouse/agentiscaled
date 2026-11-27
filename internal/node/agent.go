@@ -954,7 +954,7 @@ func (s *agentService) card(name string) *a2a.AgentCard {
 		// caller's own URL.
 		Capabilities: a2a.AgentCapabilities{Streaming: true},
 	}
-	s.rt.Describe(card)
+	card.Description = s.cardDescription()
 	// The card lists only the skills the agent loads from its directory,
 	// and none (an empty list, as A2A requires the field) when it loads
 	// none or its runtime cannot say (acp).
@@ -964,10 +964,19 @@ func (s *agentService) card(name string) *a2a.AgentCard {
 			card.Skills = skills
 		}
 	}
-	if s.description != "" {
-		card.Description = s.description
-	}
 	return card
+}
+
+// cardDescription is the description on the agent's card: the owner's, else
+// the runtime's. Unlike the card's skills, it reads nothing in the agent's
+// directory.
+func (s *agentService) cardDescription() string {
+	if s.description != "" {
+		return s.description
+	}
+	var card a2a.AgentCard
+	s.rt.Describe(&card)
+	return card.Description
 }
 
 // handler serves the agent card and JSON-RPC, and only to the node, which

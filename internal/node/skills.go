@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"go.yaml.in/yaml/v3"
@@ -46,35 +47,121 @@ const (
 	namedByFolder
 )
 
-// directorySkills lists the skills in roots, which are skill directories
-// (each subdirectory holding a SKILL.md is a skill), for an agent card
-// tagged tag. Only a skill's name and description are read; a skill without
-// a valid name or description, or one only a person can invoke
-// (disable-model-invocation), is left out, as is a second skill of a name
-// already listed. The list is sorted by name and holds at most
-// maxCardSkills.
-func directorySkills(roots []string, naming skillNaming, tag string) []a2a.AgentSkill {
+// skillVisibility is what the runtime's settings let the model see of a
+// skill.
+type skillVisibility int
+
+const (
+	skillShown skillVisibility = iota
+	// skillNameOnly shows the model the skill's name, not its
+	// description.
+	skillNameOnly
+	// skillHidden keeps the skill from the model: turned off, or only a
+	// person may start it.
+	skillHidden
+)
+
+// Bounds on a scan, so that a card read stays cheap whatever the directory
+// holds.
+const (
+	// maxSkillDepth is how deep under a skill root a nested scan looks
+	// for skill folders.
+	maxSkillDepth = 4
+	// maxSkillScanEntries bounds the directory entries one scan reads.
+	maxSkillScanEntries = 4096
+)
+
+// skillScan finds the skills a runtime loads from an agent's directory.
+type skillScan struct {
+	// roots are the skill directories, nearest first. Each folder in one
+	// that holds a SKILL.md is a skill.
+	roots []string
+	// scope is the directory every skill must really be in, symlinks
+	// resolved: one linked from outside it, such as one of the owner's own
+	// skills, is not the directory's and is not listed.
+	scope  string
+	naming skillNaming
+	// nested also looks for skill folders in the subfolders of a root, as
+	// Codex does.
+	nested bool
+	tag    string
+	// visibility, if set, is what the runtime's settings show of the skill
+	// of name at path (the SKILL.md as found).
+	visibility func(name, path string) skillVisibility
+}
+
+// list lists the scan's skills for an agent card. Only a skill's name and
+// description are read; a skill without a valid name or description, one
+// only a person can invoke (disable-model-invocation), one the runtime's
+// settings hide, and a second skill of a name already listed are left out.
+// The list is sorted by name and holds at most maxCardSkills.
+func (sc skillScan) list() []a2a.AgentSkill {
+	scope, err := filepath.EvalSymlinks(sc.scope)
+	if err != nil {
+		return nil
+	}
 	seen := map[string]bool{}
+	visited := map[string]bool{}
+	budget := maxSkillScanEntries
 	var skills []a2a.AgentSkill
-	for _, root := range roots {
-		entries, err := os.ReadDir(root)
+	var scan func(dir string, depth int)
+	scan = func(dir string, depth int) {
+		real, err := filepath.EvalSymlinks(dir)
+		if err != nil || visited[real] || budget <= 0 {
+			return
+		}
+		visited[real] = true
+		entries, err := os.ReadDir(dir)
 		if err != nil {
-			continue
+			return
 		}
 		for _, e := range entries {
+			if budget--; budget < 0 {
+				return
+			}
 			if strings.HasPrefix(e.Name(), ".") {
 				continue
 			}
-			name, description, ok := readSkill(filepath.Join(root, e.Name(), "SKILL.md"))
-			if naming == namedByFolder {
+			folder := filepath.Join(dir, e.Name())
+			if info, err := os.Stat(folder); err != nil || !info.IsDir() {
+				continue
+			}
+			path := filepath.Join(folder, "SKILL.md")
+			if _, err := os.Lstat(path); err != nil {
+				if sc.nested && depth < maxSkillDepth {
+					scan(folder, depth+1)
+				}
+				continue
+			}
+			file, err := filepath.EvalSymlinks(path)
+			if err != nil || !within(file, scope) {
+				continue
+			}
+			name, description, ok := readSkill(file)
+			if sc.naming == namedByFolder {
 				name = e.Name()
 			}
 			if !ok || len(name) > maxSkillNameLen || !skillName.MatchString(name) || seen[name] {
 				continue
 			}
+			// The nearest skill of a name is the one the runtime takes,
+			// so a farther one stays out even when the nearer is hidden.
 			seen[name] = true
-			skills = append(skills, a2a.AgentSkill{ID: name, Name: name, Description: description, Tags: []string{tag}})
+			v := skillShown
+			if sc.visibility != nil {
+				v = sc.visibility(name, path)
+			}
+			switch v {
+			case skillHidden:
+				continue
+			case skillNameOnly:
+				description = ""
+			}
+			skills = append(skills, a2a.AgentSkill{ID: name, Name: name, Description: description, Tags: []string{sc.tag}})
 		}
+	}
+	for _, root := range sc.roots {
+		scan(root, 0)
 	}
 	slices.SortFunc(skills, func(a, b a2a.AgentSkill) int { return strings.Compare(a.ID, b.ID) })
 	if len(skills) > maxCardSkills {
@@ -83,19 +170,35 @@ func directorySkills(roots []string, naming skillNaming, tag string) []a2a.Agent
 	return skills
 }
 
-// readSkill reads the name and description in the front matter of the
-// SKILL.md at path.
-func readSkill(path string) (name, description string, ok bool) {
-	f, err := os.Open(path)
+// maxSettingsSize bounds a runtime settings file read for its skill
+// settings.
+const maxSettingsSize = 1 << 20
+
+// readRegularFile reads up to limit bytes of the regular file at path, and
+// says whether it could. Anything else is never opened in a way that waits:
+// a named pipe would block the open.
+func readRegularFile(path string, limit int64) ([]byte, bool) {
+	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+		return nil, false
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return "", "", false
+		return nil, false
 	}
 	defer f.Close()
+	// It may have changed since it was checked.
 	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
-		return "", "", false
+		return nil, false
 	}
-	b, err := io.ReadAll(io.LimitReader(f, maxSkillFrontMatter))
-	if err != nil {
+	b, err := io.ReadAll(io.LimitReader(f, limit))
+	return b, err == nil
+}
+
+// readSkill reads the name and description in the front matter of the
+// SKILL.md at path, which must be a regular file (readRegularFile).
+func readSkill(path string) (name, description string, ok bool) {
+	b, read := readRegularFile(path, maxSkillFrontMatter)
+	if !read {
 		return "", "", false
 	}
 	b = bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))

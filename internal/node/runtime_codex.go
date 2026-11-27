@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/google/uuid"
 )
@@ -197,19 +198,99 @@ func (r *codexRuntime) Describe(card *a2a.AgentCard) {
 
 // Skills lists the skills Codex loads from the directory: those in a skill
 // root (.agents/skills, .codex/skills) of dir and of each directory above it
-// up to its repository's root. Your own skills, the machine's and Codex's
-// bundled ones are not the directory's and are not listed.
+// up to its repository's root, in folders of the root or nested in its
+// subfolders. Your own skills, the machine's and Codex's bundled ones are not
+// the directory's and are not listed, nor is a skill linked from outside
+// those directories, or one a skills.config entry turns off.
 func (r *codexRuntime) Skills(dir string) []a2a.AgentSkill {
 	if !r.policy.DirSkills {
 		return nil
 	}
+	dirs := upToRepository(dir, false)
 	var roots []string
-	for _, d := range upToRepository(dir, false) {
+	for _, d := range dirs {
 		for _, root := range skillRoots {
 			roots = append(roots, filepath.Join(d, root))
 		}
 	}
-	return directorySkills(roots, namedInFile, "codex")
+	enabled := r.skillsEnabled(dirs)
+	return skillScan{
+		roots:  roots,
+		scope:  dirs[len(dirs)-1],
+		naming: namedInFile,
+		nested: true,
+		tag:    "codex",
+		visibility: func(_, path string) skillVisibility {
+			for _, p := range []string{path, filepath.Dir(path)} {
+				keys := []string{p}
+				if real, err := filepath.EvalSymlinks(p); err == nil {
+					keys = append(keys, real)
+				}
+				for _, k := range keys {
+					if on, ok := enabled[k]; ok && !on {
+						return skillHidden
+					}
+				}
+			}
+			return skillShown
+		},
+	}.list()
+}
+
+// codexSystemConfig is the machine's Codex configuration.
+const codexSystemConfig = "/etc/codex/config.toml"
+
+// skillsEnabled is what the skills.config entries of the run's
+// configuration say of each skill path, the path as given and with symlinks
+// resolved: the machine's, the owner's (with the owner's configuration) and
+// each .codex/config.toml in dirs, from the repository's root down, each
+// winning over the one before.
+func (r *codexRuntime) skillsEnabled(dirs []string) map[string]bool {
+	files := []string{codexSystemConfig}
+	if r.policy.OwnerConfig && r.home != "" {
+		files = append(files, filepath.Join(r.home, "config.toml"))
+	}
+	for i := len(dirs) - 1; i >= 0; i-- {
+		files = append(files, filepath.Join(dirs[i], ".codex", "config.toml"))
+	}
+	enabled := map[string]bool{}
+	for _, f := range files {
+		b, ok := readRegularFile(f, maxSettingsSize)
+		if !ok {
+			continue
+		}
+		var config struct {
+			Skills struct {
+				Config []struct {
+					Path    string `toml:"path"`
+					Enabled *bool  `toml:"enabled"`
+				} `toml:"config"`
+			} `toml:"skills"`
+		}
+		if toml.Unmarshal(b, &config) != nil {
+			continue
+		}
+		for _, c := range config.Skills.Config {
+			if c.Path == "" || c.Enabled == nil {
+				continue
+			}
+			p := c.Path
+			if rest, ok := strings.CutPrefix(p, "~/"); ok {
+				if home, err := os.UserHomeDir(); err == nil {
+					p = filepath.Join(home, rest)
+				}
+			}
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(filepath.Dir(filepath.Dir(f)), p)
+			}
+			p = filepath.Clean(p)
+			enabled[p] = *c.Enabled
+			if real, err := filepath.EvalSymlinks(p); err == nil {
+				enabled[real] = *c.Enabled
+			}
+		}
+	}
+	return enabled
 }
 
 // Run runs `codex exec` in dir:

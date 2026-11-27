@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -171,20 +172,78 @@ func claudeLogin(ctx context.Context, command, profileDir string, policy agentPo
 // Skills lists the skills Claude Code loads from the directory: those in
 // .claude/skills of dir and of each directory above it up to its
 // repository's root, or every one outside a repository, short of the home
-// directory and the root (upToRepository).
-// Claude Code names a skill by its folder. Your own skills and plugins' are
-// not the directory's and are not listed. A run that cannot use skills lists
-// none: a restricted one (-owner-config=false) loads none, and a definition
-// may leave out the Skill tool.
+// directory and the root (upToRepository). Claude Code names a skill by its
+// folder and does not look in its subfolders. Your own skills and plugins'
+// are not the directory's and are not listed, nor is a skill linked from
+// outside those directories, or one the settings' skillOverrides hide. A run
+// that cannot use skills lists none: a restricted one (-owner-config=false)
+// loads none, and a definition may leave out the Skill tool.
 func (r *claudeRuntime) Skills(dir string) []a2a.AgentSkill {
 	if !r.policy.DirSkills || !r.policy.OwnerConfig || !claudeCanUseSkills(r.def) {
 		return nil
 	}
+	dirs := upToRepository(dir, true)
 	var roots []string
-	for _, d := range upToRepository(dir, true) {
+	for _, d := range dirs {
 		roots = append(roots, filepath.Join(d, ".claude", "skills"))
 	}
-	return directorySkills(roots, namedByFolder, "claude")
+	overrides := claudeSkillOverrides(dir)
+	return skillScan{
+		roots:  roots,
+		scope:  dirs[len(dirs)-1],
+		naming: namedByFolder,
+		tag:    "claude",
+		visibility: func(name, _ string) skillVisibility {
+			switch overrides[name] {
+			case "off", "user-invocable-only":
+				return skillHidden
+			case "name-only":
+				return skillNameOnly
+			}
+			return skillShown
+		},
+	}.list()
+}
+
+// claudeManagedSettings is where Claude Code reads the machine's managed
+// settings.
+func claudeManagedSettings() string {
+	if goruntime.GOOS == "darwin" {
+		return "/Library/Application Support/ClaudeCode/managed-settings.json"
+	}
+	return "/etc/claude-code/managed-settings.json"
+}
+
+// claudeSkillOverrides is the skillOverrides that a run in dir with the
+// owner's configuration takes from its settings, each skill's from the
+// settings that win: the owner's, the project's (.claude/settings.json in
+// dir, the only one Claude Code reads), the local ones and the managed ones.
+func claudeSkillOverrides(dir string) map[string]string {
+	var files []string
+	if config, err := claudeOwnerConfigDir(); err == nil {
+		files = append(files, filepath.Join(config, "settings.json"))
+	}
+	files = append(files,
+		filepath.Join(dir, ".claude", "settings.json"),
+		filepath.Join(dir, ".claude", "settings.local.json"),
+		claudeManagedSettings())
+	overrides := map[string]string{}
+	for _, f := range files {
+		b, ok := readRegularFile(f, maxSettingsSize)
+		if !ok {
+			continue
+		}
+		var settings struct {
+			SkillOverrides map[string]string `json:"skillOverrides"`
+		}
+		if json.Unmarshal(b, &settings) != nil {
+			continue
+		}
+		for name, v := range settings.SkillOverrides {
+			overrides[name] = v
+		}
+	}
+	return overrides
 }
 
 // claudeSkillTool is Claude Code's tool that runs a skill.

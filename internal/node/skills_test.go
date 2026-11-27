@@ -2,13 +2,16 @@ package node
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 )
@@ -255,5 +258,172 @@ func TestHomeRepositorySkillsAreNotListed(t *testing.T) {
 	got := skillIDs((&codexRuntime{policy: agentPolicy{DirSkills: true}}).Skills(dir))
 	if want := []string{"here", "work"}; !slices.Equal(got, want) {
 		t.Fatalf("skills = %v, want %v", got, want)
+	}
+}
+
+// A SKILL.md or settings file that is a named pipe would block an open that
+// waits for a writer; the card skips it, so one directory cannot hold up
+// the card or the node's start.
+func TestSkillScanDoesNotWaitOnANamedPipe(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	dir := filepath.Join(home, "agent")
+	root := filepath.Join(dir, ".claude", "skills")
+	writeSkillFile(t, root, "ok", "---\ndescription: Fine.\n---\n")
+	if err := os.MkdirAll(filepath.Join(root, "pipe"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{filepath.Join(root, "pipe", "SKILL.md"), filepath.Join(dir, ".claude", "settings.json")} {
+		if err := syscall.Mkfifo(p, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := make(chan []a2a.AgentSkill, 1)
+	go func() {
+		done <- (&claudeRuntime{policy: agentPolicy{DirSkills: true, OwnerConfig: true}}).Skills(dir)
+	}()
+	select {
+	case skills := <-done:
+		if got := skillIDs(skills); !slices.Equal(got, []string{"ok"}) {
+			t.Fatalf("skills = %v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the scan waits on a named pipe")
+	}
+}
+
+// A skill linked from outside the directories the runtime searches, such as
+// one of the owner's own, is not the directory's: the card leaves it out,
+// though a link inside them counts.
+func TestSkillLinkedFromOutsideIsNotListed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	personal := filepath.Join(home, ".claude", "skills")
+	writeSkillFile(t, personal, "secret", "---\ndescription: The owner's own.\n---\n")
+	writeSkillFile(t, personal, "file", "---\ndescription: The owner's own file.\n---\n")
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(repo, ".claude", "skills")
+	writeSkillFile(t, filepath.Join(repo, "shared"), "kept", "---\ndescription: In the repository.\n---\n")
+	if err := os.MkdirAll(filepath.Join(root, "own-file"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for link, target := range map[string]string{
+		filepath.Join(root, "secret"):               filepath.Join(personal, "secret"),
+		filepath.Join(root, "own-file", "SKILL.md"): filepath.Join(personal, "file", "SKILL.md"),
+		filepath.Join(root, "kept"):                 filepath.Join(repo, "shared", "kept"),
+	} {
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := skillIDs((&claudeRuntime{policy: agentPolicy{DirSkills: true, OwnerConfig: true}}).Skills(repo))
+	if want := []string{"kept"}; !slices.Equal(got, want) {
+		t.Fatalf("skills = %v, want %v", got, want)
+	}
+}
+
+// Claude Code's skillOverrides hide a skill ("off", "user-invocable-only")
+// or its description ("name-only"), from the owner's settings, the
+// project's and the local ones, a later one winning.
+func TestClaudeCardFollowsSkillOverrides(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	config := filepath.Join(home, "claude-config")
+	t.Setenv("CLAUDE_CONFIG_DIR", config)
+	dir := filepath.Join(home, "agent")
+	for _, name := range []string{"shown", "off-user", "off-project", "person-only", "name-only", "back-on"} {
+		writeSkillFile(t, filepath.Join(dir, ".claude", "skills"), name, "---\ndescription: The "+name+" skill.\n---\n")
+	}
+	write := func(path, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(config, "settings.json"), `{"skillOverrides": {"off-user": "off", "back-on": "off"}}`)
+	write(filepath.Join(dir, ".claude", "settings.json"), `{"skillOverrides": {"off-project": "off", "name-only": "name-only"}}`)
+	write(filepath.Join(dir, ".claude", "settings.local.json"), `{"skillOverrides": {"person-only": "user-invocable-only", "back-on": "on"}}`)
+	skills := (&claudeRuntime{policy: agentPolicy{DirSkills: true, OwnerConfig: true}}).Skills(dir)
+	if got, want := skillIDs(skills), []string{"back-on", "name-only", "shown"}; !slices.Equal(got, want) {
+		t.Fatalf("skills = %v, want %v", got, want)
+	}
+	for _, s := range skills {
+		if want := "The " + s.ID + " skill."; s.ID == "name-only" && s.Description != "" || s.ID != "name-only" && s.Description != want {
+			t.Errorf("%s description = %q", s.ID, s.Description)
+		}
+	}
+}
+
+// A skills.config entry that turns a skill off, by its SKILL.md or its
+// folder, in the owner's Codex configuration or the project's, keeps it off
+// the card; the project's wins.
+func TestCodexCardFollowsSkillsConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	codexHome := filepath.Join(home, ".codex")
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(repo, ".agents", "skills")
+	for _, name := range []string{"shown", "off-by-file", "off-by-folder", "off-in-project", "back-on"} {
+		writeSkillFile(t, root, name, "---\nname: "+name+"\ndescription: The "+name+" skill.\n---\n")
+	}
+	write := func(path, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entry := func(path string, enabled bool) string {
+		return fmt.Sprintf("[[skills.config]]\npath = %q\nenabled = %t\n\n", path, enabled)
+	}
+	write(filepath.Join(codexHome, "config.toml"),
+		entry(filepath.Join(root, "off-by-file", "SKILL.md"), false)+
+			entry(filepath.Join(root, "off-by-folder"), false)+
+			entry(filepath.Join(root, "back-on", "SKILL.md"), false))
+	write(filepath.Join(repo, ".codex", "config.toml"),
+		entry(filepath.Join(root, "off-in-project", "SKILL.md"), false)+
+			entry(filepath.Join(root, "back-on", "SKILL.md"), true))
+	r := &codexRuntime{home: codexHome, policy: agentPolicy{DirSkills: true, OwnerConfig: true}}
+	if got, want := skillIDs(r.Skills(repo)), []string{"back-on", "shown"}; !slices.Equal(got, want) {
+		t.Fatalf("skills = %v, want %v", got, want)
+	}
+	// Without the owner's configuration, Codex ignores it.
+	r.policy.OwnerConfig = false
+	if got, want := skillIDs(r.Skills(repo)), []string{"back-on", "off-by-file", "off-by-folder", "shown"}; !slices.Equal(got, want) {
+		t.Fatalf("isolated skills = %v, want %v", got, want)
+	}
+}
+
+// Codex finds skill folders nested in a skill root's subfolders; Claude Code
+// looks only at the root's own folders.
+func TestNestedSkillFolders(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	dir := filepath.Join(home, "agent")
+	writeSkillFile(t, filepath.Join(dir, ".agents", "skills"), filepath.Join("group", "deep"), "---\nname: deep\ndescription: Nested.\n---\n")
+	writeSkillFile(t, filepath.Join(dir, ".agents", "skills"), "top", "---\nname: top\ndescription: Top.\n---\n")
+	// A skill's own subfolders are its files, not more skills.
+	writeSkillFile(t, filepath.Join(dir, ".agents", "skills"), filepath.Join("top", "inner"), "---\nname: inner\ndescription: Inside a skill.\n---\n")
+	if got, want := skillIDs((&codexRuntime{policy: agentPolicy{DirSkills: true}}).Skills(dir)), []string{"deep", "top"}; !slices.Equal(got, want) {
+		t.Fatalf("codex skills = %v, want %v", got, want)
+	}
+	writeSkillFile(t, filepath.Join(dir, ".claude", "skills"), filepath.Join("group", "deep"), "---\ndescription: Nested.\n---\n")
+	writeSkillFile(t, filepath.Join(dir, ".claude", "skills"), "top", "---\ndescription: Top.\n---\n")
+	if got, want := skillIDs((&claudeRuntime{policy: agentPolicy{DirSkills: true, OwnerConfig: true}}).Skills(dir)), []string{"top"}; !slices.Equal(got, want) {
+		t.Fatalf("claude skills = %v, want %v", got, want)
 	}
 }
