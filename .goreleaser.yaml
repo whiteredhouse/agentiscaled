@@ -88,10 +88,12 @@ homebrew_casks:
     hooks:
       post:
         # The binary is not notarized yet, so macOS would
-        # refuse to run a quarantined download.
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/agentiscaled"]
+        # refuse to run a quarantined download. Declarative steps
+        # (postflight_steps) replace the Ruby postflight block, which
+        # Homebrew deprecated.
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/agentiscaled"]
           end
 
 release:
