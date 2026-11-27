@@ -178,7 +178,9 @@ func readDirUpTo(dir string, n int) []os.DirEntry {
 	if info, err := os.Stat(dir); n <= 0 || err != nil || !info.IsDir() {
 		return nil
 	}
-	f, err := os.Open(dir)
+	// O_DIRECTORY: a path that turned into anything else since the check,
+	// a named pipe included, fails to open instead of waiting.
+	f, err := os.OpenFile(dir, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil
 	}

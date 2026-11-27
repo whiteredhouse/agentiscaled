@@ -364,8 +364,8 @@ func TestClaudeCardFollowsSkillOverrides(t *testing.T) {
 
 // Codex's [[skills.config]] entries decide which skills are on, the last
 // matching entry winning: a path names one SKILL.md (not its folder), a name
-// every skill of that name. A project's .codex/config.toml counts only for a
-// project the owner's configuration trusts.
+// every skill of that name. A project's .codex/config.toml does not count,
+// trusted or not, as in a task (TestCodexCardMatchesCodex).
 func TestCodexCardFollowsSkillsConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -404,12 +404,13 @@ func TestCodexCardFollowsSkillsConfig(t *testing.T) {
 			byName("back-on", true)+
 			byName("off-by-name", true))
 	r := &codexRuntime{home: codexHome, policy: agentPolicy{DirSkills: true, OwnerConfig: true}}
-	// Untrusted, the project cannot turn on what the owner turned off.
+	// The project cannot turn on what the owner turned off, nor off a skill.
 	if got, want := skillIDs(r.Skills(repo)), []string{"folder-entry", "off-in-project", "shown"}; !slices.Equal(got, want) {
 		t.Fatalf("untrusted project: skills = %v, want %v", got, want)
 	}
+	// Trusted, it still does not change which skills a task has.
 	write(filepath.Join(codexHome, "config.toml"), owner+fmt.Sprintf("[projects.%q]\ntrust_level = \"trusted\"\n", repo))
-	if got, want := skillIDs(r.Skills(repo)), []string{"back-on", "folder-entry", "off-by-name", "shown"}; !slices.Equal(got, want) {
+	if got, want := skillIDs(r.Skills(repo)), []string{"folder-entry", "off-in-project", "shown"}; !slices.Equal(got, want) {
 		t.Fatalf("trusted project: skills = %v, want %v", got, want)
 	}
 	// Without the owner's configuration, Codex reads neither it nor its

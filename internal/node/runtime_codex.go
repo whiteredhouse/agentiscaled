@@ -213,7 +213,7 @@ func (r *codexRuntime) Skills(dir string) []a2a.AgentSkill {
 			roots = append(roots, filepath.Join(d, root))
 		}
 	}
-	rules := r.skillRules(dirs)
+	rules := r.skillRules()
 	return skillScan{
 		roots:      roots,
 		scope:      dirs[len(dirs)-1],
@@ -258,24 +258,15 @@ func (rules codexSkillRules) visibility(name, path string) skillVisibility {
 	return skillShown
 }
 
-// skillRules reads the skills.config entries of the configuration a run in
-// dirs (upToRepository, nearest first) takes: the machine's, the owner's
-// with the owner's configuration, and the project's .codex/config.toml
-// files from its root down to the agent's directory, which Codex loads only
-// for a project the owner's configuration trusts. An entry names exactly one
-// of an absolute path of a SKILL.md, or a name.
-func (r *codexRuntime) skillRules(dirs []string) codexSkillRules {
+// skillRules reads the skills.config entries of the configuration a task
+// run takes them from: the machine's, then the owner's with the owner's
+// configuration. A project's .codex/config.toml is not one, trusted or not:
+// Codex runs a task with the skills those two leave on (TestCodexCardMatchesCodex).
+// An entry names exactly one of an absolute path of a SKILL.md, or a name.
+func (r *codexRuntime) skillRules() codexSkillRules {
 	files := []string{codexSystemConfig}
-	var owner []byte
 	if r.policy.OwnerConfig && r.home != "" {
-		f := filepath.Join(r.home, "config.toml")
-		owner, _ = readRegularFile(f, maxSettingsSize)
-		files = append(files, f)
-	}
-	if codexTrusts(owner, dirs) {
-		for i := len(dirs) - 1; i >= 0; i-- {
-			files = append(files, filepath.Join(dirs[i], ".codex", "config.toml"))
-		}
+		files = append(files, filepath.Join(r.home, "config.toml"))
 	}
 	var rules codexSkillRules
 	for _, f := range files {
@@ -308,7 +299,6 @@ func (r *codexRuntime) skillRules(dirs []string) codexSkillRules {
 					}
 				}
 				if !filepath.IsAbs(p) {
-					// Relative to the .codex folder of the file.
 					p = filepath.Join(filepath.Dir(f), p)
 				}
 				rule.path = filepath.Clean(p)
@@ -318,35 +308,6 @@ func (r *codexRuntime) skillRules(dirs []string) codexSkillRules {
 		}
 	}
 	return rules
-}
-
-// codexTrusts says whether the owner's Codex configuration owner trusts the
-// project of dirs (upToRepository): its root or the agent's directory with
-// trust_level = "trusted" under [projects."<path>"].
-func codexTrusts(owner []byte, dirs []string) bool {
-	if len(owner) == 0 {
-		return false
-	}
-	var config struct {
-		Projects map[string]struct {
-			TrustLevel string `toml:"trust_level"`
-		} `toml:"projects"`
-	}
-	if toml.Unmarshal(owner, &config) != nil {
-		return false
-	}
-	for _, d := range []string{dirs[len(dirs)-1], dirs[0]} {
-		keys := []string{d}
-		if real, err := filepath.EvalSymlinks(d); err == nil {
-			keys = append(keys, real)
-		}
-		for _, k := range keys {
-			if config.Projects[k].TrustLevel == "trusted" {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // Run runs `codex exec` in dir:

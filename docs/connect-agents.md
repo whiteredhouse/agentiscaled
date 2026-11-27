@@ -393,9 +393,10 @@ work. Each skill is a `SKILL.md` with `name` and `description` in its front matt
   subfolders, a skill's own included, named by the file's `name`. Codex's
   `[[skills.config]]` entries apply as Codex applies them, the last match winning:
   `path` names one `SKILL.md`, `name` every skill of that name, and `enabled = false`
-  keeps a skill off the card. They come from the machine's `/etc/codex/config.toml`,
-  your `config.toml` (with `-owner-config`, the default) and, for a project your
-  configuration trusts (`trust_level = "trusted"`), its `.codex/config.toml` files.
+  keeps a skill off the card. They come from the machine's `/etc/codex/config.toml`
+  and your `config.toml` (with `-owner-config`, the default). A project's
+  `.codex/config.toml` does not change which skills a task has, trusted or not, so
+  it does not change the card either.
 - Claude Code: the skills in `.claude/skills` of the agent's directory and of each
   directory above it up to the repository's root (every directory above, outside a
   repository), named by their folder, as Claude Code names them. `skillOverrides`
