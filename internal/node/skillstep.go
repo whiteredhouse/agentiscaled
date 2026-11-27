@@ -3,12 +3,16 @@ package node
 import (
 	"fmt"
 	"io"
+	iofs "io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/whiteredhouse/agentiscaled/internal/caller"
 	"github.com/whiteredhouse/agentiscaled/internal/cli"
+	"github.com/whiteredhouse/agentiscaled/skills"
 )
 
 // skillTarget is a runtime's user skills directory that `up` may keep the
@@ -17,6 +21,8 @@ type skillTarget struct {
 	runtime   string // claude or codex
 	dir       string
 	installed bool
+	// cli is whether the runtime's command is on PATH.
+	cli bool
 }
 
 // skillRuntimeNames name the skill's runtimes as the owner knows them.
@@ -34,13 +40,11 @@ func findSkillTargets() []skillTarget {
 		if err != nil {
 			continue
 		}
-		t := skillTarget{runtime: rt, dir: dir, installed: caller.SkillInstalled(dir)}
-		if !t.installed {
-			if _, err := exec.LookPath(runtimes[rt].defaultCommand); err != nil {
-				continue
-			}
+		_, err = exec.LookPath(runtimes[rt].defaultCommand)
+		t := skillTarget{runtime: rt, dir: dir, installed: caller.SkillInstalled(dir), cli: err == nil}
+		if t.installed || t.cli {
+			targets = append(targets, t)
 		}
-		targets = append(targets, t)
 	}
 	return targets
 }
@@ -69,7 +73,11 @@ func (s *skillStep) missing() []string {
 // offerSkill asks whether to install the skill for the runtimes without it,
 // yes by default.
 func (w *wizard) offerSkill(runtimes []string) (bool, error) {
-	yes, err := w.yesNo("\nInstall the agentiscale skill for "+strings.Join(runtimes, " and ")+", so that they know when and how to call your other agents?", true)
+	they := "they know"
+	if len(runtimes) == 1 {
+		they = "it knows"
+	}
+	yes, err := w.yesNo("\nInstall the agentiscale skill for "+strings.Join(runtimes, " and ")+", so that "+they+" when and how to call your other agents?", true)
 	return yes, ignoreEOF(err)
 }
 
@@ -80,10 +88,13 @@ func (s *skillStep) run(out io.Writer) {
 		return
 	}
 	targets := s.targets
-	if s.install && len(targets) == 0 {
+	if s.install && !slices.ContainsFunc(targets, func(t skillTarget) bool { return t.cli }) {
 		// Asked for with neither CLI found: install for both, as
-		// `skill install` does.
+		// `skill install` does, whichever already has a copy.
 		for _, rt := range caller.SkillRuntimes() {
+			if slices.ContainsFunc(targets, func(t skillTarget) bool { return t.runtime == rt }) {
+				continue
+			}
 			if dir, err := caller.UserSkillDir(rt); err == nil {
 				targets = append(targets, skillTarget{runtime: rt, dir: dir})
 			}
@@ -98,6 +109,14 @@ func (s *skillStep) run(out io.Writer) {
 			fmt.Fprintln(out, "\nThe agentiscale skill:")
 			printed = true
 		}
+		if link := skillLink(t.dir); link != "" {
+			// A linked copy is managed elsewhere, such as by a skill
+			// installer or the owner's dotfiles: writing through the link
+			// would change their files.
+			have = true
+			fmt.Fprintf(out, "  %s: %s is a link to %s; left it as it is. Update it yourself with 'agentiscaled skill install %s'.\n", skillRuntimeNames[t.runtime], cli.HomeRelative(link), cli.HomeRelative(skillLinkTarget(link)), t.runtime)
+			continue
+		}
 		did, err := caller.InstallSkillDir(t.dir)
 		if err != nil {
 			fmt.Fprintf(out, "  %s: %v. Install it yourself with 'agentiscaled skill install %s'.\n", skillRuntimeNames[t.runtime], err, t.runtime)
@@ -109,4 +128,31 @@ func (s *skillStep) run(out io.Writer) {
 	if !have && len(s.missing()) > 0 {
 		fmt.Fprintln(out, "\nTeach "+strings.Join(s.missing(), " and ")+" to call your other agents with 'agentiscaled skill install'.")
 	}
+}
+
+// skillLink is the first symbolic link among the skill's directory and its
+// files in dir, or "" when there is none.
+func skillLink(dir string) string {
+	paths := []string{dir}
+	_ = iofs.WalkDir(skills.AgentiscaleFiles, ".", func(name string, d iofs.DirEntry, err error) error {
+		if err == nil && name != "." {
+			paths = append(paths, filepath.Join(dir, filepath.FromSlash(name)))
+		}
+		return err
+	})
+	for _, p := range paths {
+		if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			return p
+		}
+	}
+	return ""
+}
+
+// skillLinkTarget is where a link leads, or the link itself when that
+// cannot be read.
+func skillLinkTarget(link string) string {
+	if target, err := filepath.EvalSymlinks(link); err == nil {
+		return target
+	}
+	return link
 }

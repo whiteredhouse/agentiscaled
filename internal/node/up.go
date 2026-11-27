@@ -266,7 +266,12 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 		skill = &skillStep{targets: skillTargets()}
 		switch {
 		case set["skill"]:
-			skill.install, skill.leave, noSkill = *installSkill, !*installSkill, !*installSkill
+			// -skill=false is for this run only; -skill also
+			// takes back an earlier no.
+			skill.install, skill.leave = *installSkill, !*installSkill
+			if *installSkill {
+				noSkill = false
+			}
 		case ask != nil && !noSkill && len(skill.missing()) > 0:
 			if skill.install, err = ask.offerSkill(skill.missing()); err != nil {
 				return err

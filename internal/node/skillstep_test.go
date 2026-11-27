@@ -100,6 +100,61 @@ func TestSkillStep(t *testing.T) {
 			t.Error("-skill with no CLI found should install for both, as skill install does")
 		}
 	})
+	t.Run("no CLI found, one copy", func(t *testing.T) {
+		claudeDir, codexDir := withSkillHome(t)
+		write(t, skillFile(codexDir), "old")
+		s := skillStep{targets: skillTargets(), install: true}
+		s.run(io.Discard)
+		if !currentSkill(t, claudeDir) || !currentSkill(t, codexDir) {
+			t.Error("an existing copy must not keep -skill from installing for both")
+		}
+	})
+}
+
+// up never writes through a link: a linked skill is managed elsewhere.
+func TestSkillStepLeavesLinks(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		link func(t *testing.T, codexDir, managed string)
+	}{
+		{"directory", func(t *testing.T, codexDir, managed string) {
+			if err := os.MkdirAll(filepath.Dir(codexDir), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(managed, codexDir); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"file", func(t *testing.T, codexDir, managed string) {
+			if err := os.MkdirAll(codexDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(skillFile(managed), skillFile(codexDir)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, codexDir := withSkillHome(t, "codex")
+			managed := t.TempDir()
+			write(t, skillFile(managed), "managed")
+			tc.link(t, codexDir, managed)
+			for _, install := range []bool{false, true} {
+				s := skillStep{targets: skillTargets(), install: install}
+				var out bytes.Buffer
+				s.run(&out)
+				if b, _ := os.ReadFile(skillFile(managed)); string(b) != "managed" {
+					t.Fatalf("install=%v wrote through the link:\n%s", install, &out)
+				}
+				if fi, err := os.Lstat(skillFile(codexDir)); tc.name == "file" && (err != nil || fi.Mode()&os.ModeSymlink == 0) {
+					t.Fatalf("install=%v replaced the linked file", install)
+				}
+				if !strings.Contains(out.String(), "left it as it is") {
+					t.Errorf("install=%v did not say it left the link: %q", install, &out)
+				}
+			}
+		})
+	}
 }
 
 // upWithInput runs `up` on a node that has joined, as if in a terminal
@@ -182,6 +237,14 @@ func TestUpInstallsSkill(t *testing.T) {
 		upWithInput(t, dir, "", "-skill=false")
 		if b, _ := os.ReadFile(skillFile(codexDir)); string(b) != "old" {
 			t.Error("-skill=false changed the installed copy")
+		}
+		// -skill=false is for that run only: a later up in a terminal
+		// still asks.
+		if s, _ := loadSettings(dir); s.NoSkill {
+			t.Error("-skill=false saved a no")
+		}
+		if out := upWithInput(t, dir, "n\nn\n"); !strings.Contains(out, "Install the agentiscale skill for Claude Code, so that it knows") {
+			t.Errorf("no question after -skill=false:\n%s", out)
 		}
 	})
 }
