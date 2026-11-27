@@ -84,7 +84,11 @@ type skillScan struct {
 	// nested also looks for skill folders in the subfolders of a root, as
 	// Codex does.
 	nested bool
-	tag    string
+	// personOnlyField leaves out a skill whose front matter says only a
+	// person may start it (disable-model-invocation), as Claude Code does;
+	// Codex ignores the field.
+	personOnlyField bool
+	tag             string
 	// visibility, if set, is what the runtime's settings show of the skill
 	// of name at path (the SKILL.md as found).
 	visibility func(name, path string) skillVisibility
@@ -92,7 +96,7 @@ type skillScan struct {
 
 // list lists the scan's skills for an agent card. Only a skill's name and
 // description are read; a skill without a valid name or description, one
-// only a person can invoke (disable-model-invocation), one the runtime's
+// only a person can invoke (personOnlyField), one the runtime's
 // settings hide, and a second skill of a name already listed are left out.
 // The list is sorted by name and holds at most maxCardSkills.
 func (sc skillScan) list() []a2a.AgentSkill {
@@ -148,7 +152,10 @@ func (sc skillScan) add(skills *[]a2a.AgentSkill, seen map[string]bool, scope, f
 	if err != nil || !within(file, scope) {
 		return
 	}
-	name, description, ok := readSkill(file)
+	name, description, manual, ok := readSkill(file)
+	if manual && sc.personOnlyField {
+		return
+	}
 	if sc.naming == namedByFolder {
 		name = folder
 	}
@@ -215,36 +222,37 @@ func readRegularFile(path string, limit int64) ([]byte, bool) {
 }
 
 // readSkill reads the name and description in the front matter of the
-// SKILL.md at path, which must be a regular file (readRegularFile).
-func readSkill(path string) (name, description string, ok bool) {
+// SKILL.md at path, which must be a regular file (readRegularFile), and
+// whether it says only a person may start it (disable-model-invocation).
+func readSkill(path string) (name, description string, personOnly, ok bool) {
 	b, read := readRegularFile(path, maxSkillFrontMatter)
 	if !read {
-		return "", "", false
+		return "", "", false, false
 	}
 	b = bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
 	b = bytes.TrimPrefix(b, []byte("\ufeff"))
 	rest, found := bytes.CutPrefix(b, []byte("---\n"))
 	if !found {
-		return "", "", false
+		return "", "", false, false
 	}
 	front, _, found := bytes.Cut(rest, []byte("\n---"))
 	if !found {
-		return "", "", false
+		return "", "", false, false
 	}
 	var m struct {
 		Name                   string `yaml:"name"`
 		Description            string `yaml:"description"`
 		DisableModelInvocation bool   `yaml:"disable-model-invocation"`
 	}
-	if yaml.Unmarshal(front, &m) != nil || m.DisableModelInvocation {
-		return "", "", false
+	if yaml.Unmarshal(front, &m) != nil {
+		return "", "", false, false
 	}
 	name = strings.TrimSpace(m.Name)
 	description = strings.Join(strings.Fields(m.Description), " ")
 	if description == "" || len([]rune(description)) > maxSkillDescriptionLen {
-		return "", "", false
+		return "", "", false, false
 	}
-	return name, description, true
+	return name, description, m.DisableModelInvocation, true
 }
 
 // upToRepository is dir and each directory above it up to the root of the

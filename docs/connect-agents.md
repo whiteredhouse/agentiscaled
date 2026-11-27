@@ -410,8 +410,8 @@ The search stops short of your home directory and the filesystem root, even when
 one of them is the repository's root. Your own skills, plugins' skills, the
 machine's and the runtime's bundled skills are not the directory's and are never
 listed, nor is a skill linked from outside the directories searched (the runtime
-may still load it). Neither are skills only a person can start
-(`disable-model-invocation: true`), a skill without a description, or a `SKILL.md`
+may still load it). Neither are Claude Code skills only a person can start
+(`disable-model-invocation: true`, a field Codex ignores), a skill without a description, or a `SKILL.md`
 that is not a regular file. The card lists at most 64, sorted by name, and is read
 again for each caller, so a skill you add shows without restarting the node. With
 `-dir-skills=false`, or with no skills in its directory, the card's `skills` list

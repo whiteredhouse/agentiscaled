@@ -189,10 +189,11 @@ func (r *claudeRuntime) Skills(dir string) []a2a.AgentSkill {
 	}
 	overrides := claudeSkillOverrides(dir)
 	return skillScan{
-		roots:  roots,
-		scope:  dirs[len(dirs)-1],
-		naming: namedByFolder,
-		tag:    "claude",
+		roots:           roots,
+		scope:           dirs[len(dirs)-1],
+		naming:          namedByFolder,
+		personOnlyField: true,
+		tag:             "claude",
 		visibility: func(name, _ string) skillVisibility {
 			switch overrides[name] {
 			case "off", "user-invocable-only":
