@@ -281,9 +281,10 @@ up to 200 bytes, and everyone in your network can read it.
 
 `agent list` shows a drained agent as `draining` while it still has work, then
 as `drained`, with how long ago the drain began and its reason. Callers see the
-drain too: `network agent list` marks the agent `(draining: <reason>)`, the
+drain too: the STATE column of `network agent list` shows it the same way, the
 `draining` field of its entry in `network agent list -json` and of the
-`list_agents` tool gives the reason and when it began, and `task send` passes
+`list_agents` tool gives the reason, when it began and `drained: true` once no
+task is left (a node too old to say shows as draining), and `task send` passes
 over a drained agent when another node offers one of the same name. Only new
 tasks go elsewhere: an answer with `task send -task`, `task wait` and
 `task cancel` take the task's reference, which says where it went.

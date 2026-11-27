@@ -424,7 +424,7 @@ func (n *taskNetwork) newGrant(agent caller.AgentName, sent *sentTasks) (*networ
 		&mcp.ServerOptions{Instructions: networkInstructions})
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_agents",
-		Description: "List the agents of your network that you can send tasks to: those on this node (no peer_id) and those on other nodes that are online now (with their peer_id). An agent with draining set finishes the tasks it has but refuses new ones; its reason says why. runtime, when present, says what runs the agent.",
+		Description: "List the agents of your network that you can send tasks to: those on this node (no peer_id) and those on other nodes that are online now (with their peer_id). An agent with draining set refuses new tasks; its reason says why, and drained says it has no task left (without it, it still finishes the ones it has). runtime, when present, says what runs the agent.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listAgentsOut, error) {
 		return n.listAgents(ctx, tasks)

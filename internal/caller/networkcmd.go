@@ -102,8 +102,9 @@ func RunNetwork(ctx context.Context, args []string, stdin io.Reader, out, errOut
 		_, err := fmt.Fprintln(out, "No agents found.")
 		return err
 	}
+	now := time.Now()
 	w := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "AGENT\tPEER\tRUNTIME\tDESCRIPTION"); err != nil {
+	if _, err := fmt.Fprintln(w, "AGENT\tPEER\tSTATE\tRUNTIME\tDESCRIPTION"); err != nil {
 		return err
 	}
 	for _, agent := range list.Agents {
@@ -112,9 +113,12 @@ func RunNetwork(ctx context.Context, args []string, stdin io.Reader, out, errOut
 			where = "local"
 		}
 		description := strings.Join(strings.Fields(terminalSafe(agent.Description)), " ")
+		// The same words as agent list: draining while the agent still
+		// has work, then drained. The reason is a single line of
+		// printable text (Drain).
+		state := "available"
 		if agent.Draining != nil {
-			// The reason is a single line of printable text (Drain).
-			description = strings.TrimSpace("(" + strings.TrimPrefix(terminalSafe(agent.Draining.Text()), "is ") + ") " + description)
+			state = terminalSafe(agent.Draining.State(now))
 		}
 		// Runtime is a plain word (ValidRuntime); a node too old to say
 		// shows "-".
@@ -122,7 +126,7 @@ func RunNetwork(ctx context.Context, args []string, stdin io.Reader, out, errOut
 		if runtime == "" {
 			runtime = "-"
 		}
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", agent.Service, where, runtime, description); err != nil {
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", agent.Service, where, state, runtime, description); err != nil {
 			return err
 		}
 	}

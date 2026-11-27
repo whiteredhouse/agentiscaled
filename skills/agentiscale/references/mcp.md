@@ -14,7 +14,8 @@ If several nodes offer an agent of the same name, pick by `peer_id` and its
 card, or ask the person which one they mean.
 
 An agent whose owner is taking it out of service is draining: it refuses new
-tasks. `list_agents` gives it `draining` with the owner's `reason`; Agent Mesh's
+tasks. `list_agents` gives it `draining` with the owner's `reason`, and
+`drained: true` once it has no task left; Agent Mesh's
 tools give the same mark as JSON under the `agentiscale.mark.drain` key of its
 `metadata` (`list_local_services`) or `srv_metadata`
 (`discover_remote_services`). Pick another agent, or tell the person.

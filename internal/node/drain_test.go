@@ -41,6 +41,10 @@ func TestDrainedAgentFinishesItsTasksAndRefusesNewOnes(t *testing.T) {
 	if text := statusText(got); text != "refused: helper is draining: reboot at noon; it takes no new tasks" || terminal(got) != "rejected" {
 		t.Fatalf("refusal: %q (terminal %q)", text, terminal(got))
 	}
+	// Callers see it draining while it has work left.
+	if d := caller.DrainFromMetadata(h.svc.activity().serviceMetadata()); d == nil || d.Drained {
+		t.Fatalf("busy agent's published drain: %+v", d)
+	}
 
 	h.fix.release <- "No findings"
 	h.await(t, running.ID, a2a.TaskStateCompleted)
@@ -51,8 +55,9 @@ func TestDrainedAgentFinishesItsTasksAndRefusesNewOnes(t *testing.T) {
 	h.fix.release <- "42"
 	h.await(t, asked.ID, a2a.TaskStateCompleted)
 
+	// The answer reopened work; done with it, the agent is drained.
 	a := h.svc.activity()
-	if a.Drain == nil || a.Drain.Reason != "reboot at noon" || !a.Drain.Since.Equal(since) {
+	if a.Drain == nil || a.Drain.Reason != "reboot at noon" || !a.Drain.Since.Equal(since) || !a.Drain.Drained {
 		t.Fatalf("activity drain: %+v", a.Drain)
 	}
 	md := a.serviceMetadata()
@@ -165,11 +170,19 @@ func TestReportActivityPublishesTheDrain(t *testing.T) {
 	if md := next(); !maps.Equal(md, facts) {
 		t.Fatalf("first: %v", md)
 	}
+	running := h.send(t, "", "review", nil)
+	<-h.fix.prompts
 	if err := saveDrain(h.dir, "helper", drainMark{Reason: "swap definition", Since: time.Now().UTC(), By: caller.DrainSetOnNode}); err != nil {
 		t.Fatal(err)
 	}
+	if d := caller.DrainFromMetadata(next()); d == nil || d.Reason != "swap definition" || d.Drained {
+		t.Fatalf("draining: %+v", d)
+	}
+	// The task ends: the mark says drained, without a new drain.
+	h.fix.release <- "done"
+	h.await(t, running.ID, a2a.TaskStateCompleted)
 	drained := next()
-	if d := caller.DrainFromMetadata(drained); d == nil || d.Reason != "swap definition" || d.By != "node" {
+	if d := caller.DrainFromMetadata(drained); d == nil || d.Reason != "swap definition" || d.By != "node" || !d.Drained {
 		t.Fatalf("drain: %+v", d)
 	}
 	if caller.RuntimeFromMetadata(drained) != "codex" {
@@ -209,12 +222,12 @@ func TestDrainMetadataFits(t *testing.T) {
 		if why := caller.DrainReasonError(reason); why != "" && r != " " {
 			t.Fatalf("%q: %s", r, why)
 		}
-		d := drainMark{Reason: reason, Since: time.Now(), By: caller.DrainSetOnNode}
+		d := drainMark{Reason: reason, Since: time.Now(), By: caller.DrainSetOnNode, Drained: true}
 		md := map[string]string{caller.DrainMetadataKey: d.Metadata()}
 		if err := api.ValidateServiceMetadata(md); err != nil {
 			t.Fatalf("%q: %v", r, err)
 		}
-		if got := caller.DrainFromMetadata(md); got == nil || got.Reason != reason {
+		if got := caller.DrainFromMetadata(md); got == nil || got.Reason != reason || !got.Drained {
 			t.Fatalf("%q: read back %+v", r, got)
 		}
 	}
