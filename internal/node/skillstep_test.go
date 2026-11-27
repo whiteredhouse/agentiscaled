@@ -281,9 +281,12 @@ func TestSkillStepLeavesWhatItDidNotInstall(t *testing.T) {
 		}
 	})
 	t.Run("linked skills directory", func(t *testing.T) {
+		// A copy someone else installed is left alone wherever it is;
+		// one agentiscaled installed is its to update, also through a
+		// link above it, such as to the owner's dotfiles.
 		_, codexDir := withSkillHome(t, "codex")
 		managed := t.TempDir()
-		staleSkillAs(t, filepath.Join(managed, "agentiscale"), "managed")
+		write(t, skillFile(filepath.Join(managed, "agentiscale")), "managed")
 		if err := os.MkdirAll(filepath.Dir(filepath.Dir(codexDir)), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -291,10 +294,24 @@ func TestSkillStepLeavesWhatItDidNotInstall(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, install := range []bool{false, true} {
-			out := untouched(t, skillStep{targets: skillTargets(), install: install}, skillFile(filepath.Join(managed, "agentiscale")))
-			if !strings.Contains(out, "which something else manages; left it as it is") {
-				t.Errorf("did not say it left the link: %q", out)
-			}
+			untouched(t, skillStep{targets: skillTargets(), install: install}, skillFile(filepath.Join(managed, "agentiscale")))
+		}
+		staleSkill(t, filepath.Join(managed, "agentiscale"))
+		(&skillStep{targets: skillTargets()}).run(io.Discard)
+		if !currentSkill(t, filepath.Join(managed, "agentiscale")) {
+			t.Error("a marked copy behind a linked skills directory was not updated")
+		}
+	})
+	t.Run("copy written after the targets were found", func(t *testing.T) {
+		_, codexDir := withSkillHome(t, "codex")
+		s := skillStep{targets: skillTargets(), install: true}
+		write(t, skillFile(codexDir), "managed")
+		out := untouched(t, s, skillFile(codexDir))
+		if !strings.Contains(out, "was not installed by agentiscaled") {
+			t.Errorf("did not say it left the copy: %q", out)
+		}
+		if _, err := os.Stat(filepath.Join(codexDir, ".agentiscaled")); err == nil {
+			t.Error("marked another installer's copy as its own")
 		}
 	})
 	t.Run("one copy shared by a link", func(t *testing.T) {

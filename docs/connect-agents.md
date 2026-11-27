@@ -224,8 +224,8 @@ installs it into a project instead (`.claude/skills` and `.agents/skills` there)
 for everyone who works in it. Run the command again after an update of
 agentiscaled to take the skill's new version; `up` does that for you for the copies
 in your user skills. `install` marks each copy it writes with a `.agentiscaled` file,
-and `up` updates only marked copies that it reaches without following a link. Remove
-the file to keep a copy as it is.
+and `up` updates only marked copies, never through a link in the skill directory.
+Remove the file to keep a copy as it is.
 
 The skill is a SKILL.md with what every agent needs, and one reference for each
 way in (`references/cli.md` for the shell, `references/mcp.md` for the MCP

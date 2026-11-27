@@ -102,7 +102,11 @@ func (s *skillStep) run(out io.Writer) {
 	}
 	printed, have := false, false
 	for _, t := range targets {
-		if !t.installed && !s.install {
+		// Look again now: the sign-in and setup since the targets were
+		// found take time, in which another installer may have written
+		// a copy.
+		installed := caller.SkillInstalled(t.dir)
+		if !installed && !s.install {
 			continue
 		}
 		if !printed {
@@ -112,13 +116,13 @@ func (s *skillStep) run(out io.Writer) {
 		name, shown := skillRuntimeNames[t.runtime], cli.HomeRelative(t.dir)
 		if link := skillLink(t.dir); link != "" {
 			// Something else manages the skill there, such as a skill
-			// installer or the owner's dotfiles: writing through the
-			// link, or over it, would change their files.
+			// installer or the owner's dotfiles: writing would follow
+			// the link, or replace it with a file.
 			have = true
 			fmt.Fprintf(out, "  %s: %s is a link to %s, which something else manages; left it as it is.\n", name, cli.HomeRelative(link), cli.HomeRelative(skillLinkTarget(link)))
 			continue
 		}
-		if t.installed && !caller.SkillManaged(t.dir) {
+		if installed && !caller.SkillManaged(t.dir) {
 			// A copy agentiscaled did not install, such as one a skill
 			// installer keeps, is left to whoever installed it.
 			have = true
@@ -138,12 +142,12 @@ func (s *skillStep) run(out io.Writer) {
 	}
 }
 
-// skillLink is the first symbolic link on the way to the skill's files in
-// dir, from the runtime's configuration directory (such as ~/.claude, whose
-// skills/agentiscale dir is) down to each file, or "" when there is none.
+// skillLink is the first symbolic link among the skill's directory and the
+// skill's files in it, or "" when there is none. Links above the directory,
+// such as a skills directory in the owner's dotfiles, do not matter: the
+// marker in the directory says who installed the copy, wherever it is.
 func skillLink(dir string) string {
-	skillsDir := filepath.Dir(dir)
-	paths := []string{filepath.Dir(skillsDir), skillsDir, dir}
+	paths := []string{dir}
 	_ = iofs.WalkDir(skills.AgentiscaleFiles, ".", func(name string, d iofs.DirEntry, err error) error {
 		if err == nil && name != "." {
 			paths = append(paths, filepath.Join(dir, filepath.FromSlash(name)))
