@@ -104,7 +104,7 @@ func RunNetwork(ctx context.Context, args []string, stdin io.Reader, out, errOut
 	}
 	now := time.Now()
 	w := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "AGENT\tPEER\tSTATE\tRUNTIME\tDESCRIPTION"); err != nil {
+	if _, err := fmt.Fprintln(w, "AGENT\tPEER\tSTATE\tRUNTIME\tMODEL\tDESCRIPTION"); err != nil {
 		return err
 	}
 	for _, agent := range list.Agents {
@@ -126,7 +126,9 @@ func RunNetwork(ctx context.Context, args []string, stdin io.Reader, out, errOut
 		if runtime == "" {
 			runtime = "-"
 		}
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", agent.Service, where, state, runtime, description); err != nil {
+		// The model is a plain word too (ValidModel): "default" when the
+		// runtime picks it, "-" when the node does not say.
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", agent.Service, where, state, runtime, ShownModel(agent.Model), description); err != nil {
 			return err
 		}
 	}
