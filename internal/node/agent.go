@@ -237,6 +237,9 @@ type agentService struct {
 	// runtimeName is what runs the agent's tasks, as its settings name it
 	// (codex, claude, acp), for callers and the owner's console.
 	runtimeName string
+	// skills names the skills the agent's card listed when the node last
+	// looked (refreshSkills), for its service metadata.
+	skills []string
 }
 
 type agentRun struct {
@@ -794,6 +797,9 @@ type agentActivity struct {
 	Drain *drainMark `json:"drain,omitempty"`
 	// Runtime is what runs the agent's tasks (codex, claude, acp).
 	Runtime string `json:"runtime,omitempty"`
+	// Skills names the skills the agent loads, as the node last looked
+	// (refreshSkills). Only the service metadata carries them.
+	Skills []string `json:"-"`
 }
 
 const (
@@ -838,7 +844,7 @@ func agentsActivity(agents []*agentService) []agentActivity {
 // that ended after it. A waiting question counts until now reaches its
 // expiry, whatever the clock says by the time it is read.
 func (s *agentService) activityLocked(now time.Time) agentActivity {
-	a := agentActivity{Name: s.name.String(), State: activityIdle, Drain: s.drain(), Runtime: s.runtimeName}
+	a := agentActivity{Name: s.name.String(), State: activityIdle, Drain: s.drain(), Runtime: s.runtimeName, Skills: s.skills}
 	if s.current != nil {
 		a.State = activityBusy
 		started := s.current.started
@@ -885,8 +891,9 @@ func (a agentActivity) serviceStatus() *api.ServiceStatus {
 var activityEvery = time.Second
 
 // serviceMetadata is the agent's service metadata, which callers see when
-// they discover it and the owner's console with its catalog: its runtime
-// and its drain. A runtime that is not a valid one is left out.
+// they discover it and the owner's console with its catalog: its runtime,
+// its drain and its skills. A runtime that is not a valid one is left out,
+// and the skills list as many names as the room the rest leaves allows.
 func (a agentActivity) serviceMetadata() map[string]string {
 	md := map[string]string{}
 	if caller.ValidRuntime(a.Runtime) {
@@ -895,7 +902,57 @@ func (a agentActivity) serviceMetadata() map[string]string {
 	if a.Drain != nil {
 		md[caller.DrainMetadataKey] = a.Drain.Metadata()
 	}
+	room := api.MaxServiceMetadataBytes - len(caller.SkillsMetadataKey)
+	for k, v := range md {
+		room -= len(k) + len(v)
+	}
+	if v := caller.SkillsMetadata(a.Skills, min(room, api.MaxServiceMetadataValueLen)); v != "" {
+		md[caller.SkillsMetadataKey] = v
+	}
 	return md
+}
+
+// skillsEvery is how often the node looks again at the skills its agents
+// load, which change only when their files do.
+var skillsEvery = 30 * time.Second
+
+// refreshSkills looks at the skills the agent's card lists now, for its
+// service metadata. It reads the agent's directory without the lock.
+func (s *agentService) refreshSkills() {
+	var names []string
+	if l, ok := s.rt.(skillLister); ok {
+		for _, skill := range l.Skills(s.dir) {
+			names = append(names, skill.ID)
+		}
+	}
+	s.mu.Lock()
+	s.skills = names
+	s.mu.Unlock()
+}
+
+// refreshSkillsEvery looks at each agent's skills at once and then again
+// every skillsEvery until ctx ends, one goroutine per agent: a directory
+// that is slow to read holds up only its own agent's skills, never the
+// node's start or the activity reports, which read the skills last found
+// (activity). It returns once every goroutine has.
+func refreshSkillsEvery(ctx context.Context, agents []*agentService) {
+	var wg sync.WaitGroup
+	every := skillsEvery
+	for _, s := range agents {
+		wg.Go(func() {
+			ticker := time.NewTicker(every)
+			defer ticker.Stop()
+			for {
+				s.refreshSkills()
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		})
+	}
+	wg.Wait()
 }
 
 // reportActivity hands each agent's activity to setStatus, and its
