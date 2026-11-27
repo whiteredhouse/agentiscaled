@@ -77,6 +77,10 @@ service name as `service` and includes a `peer_id` for a remote agent. An agent
 whose owner drained it has `draining`, with the owner's `reason` and `since`,
 when the drain began: it finishes its tasks but refuses new ones (see [Drain an
 agent](getting-started.md#drain-an-agent)).
+Each agent also shows what runs it, as its node says: the table's RUNTIME column
+and `runtime` in JSON (`codex`, `claude` or `acp`). An agent on a node too old to
+say has none, and the table shows `-`. The node writes this value itself, so it
+describes the agent but grants nothing.
 To see the agents configured on this machine, use `agentiscaled agent list`.
 
 `network agent card` prints the agent's current A2A card as JSON. Both

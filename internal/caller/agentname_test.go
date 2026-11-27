@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -64,5 +66,38 @@ func TestLocalCatalogDropsOnlyInvalidNames(t *testing.T) {
 	endpoint, _, err := client.selectRoute(context.Background(), Target{Service: "codex"})
 	if err != nil || endpoint != "http://agentiscaled/a2a/"+peerID+"/codex" {
 		t.Fatalf("route to codex: %q %v", endpoint, err)
+	}
+}
+
+// Runtimes only inform display: a malformed one is left out on its own, and
+// a runtimes field that is no object is ignored, without failing the
+// catalog, so the node's agents stay reachable.
+func TestLocalCatalogSkipsMalformedRuntimes(t *testing.T) {
+	t.Parallel()
+	const peerID = "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"
+	for name, runtimes := range map[string]string{
+		"entries": `{"codex":"codex","helper":7,"writer":{"name":"claude"},"reader":null,"other":"Not A Word"}`,
+		"number":  `7`,
+		"list":    `["codex"]`,
+	} {
+		body := fmt.Appendf(nil, `{"peer_id":%q,"services":["codex","helper"],"runtimes":%s}`, peerID, runtimes)
+		client := &Client{Local: &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Header: http.Header{}}, nil
+		})}}
+		info, err := client.LocalInfo(context.Background())
+		if err != nil || !slices.Equal(info.Services, []AgentName{"codex", "helper"}) {
+			t.Fatalf("%s: local info %+v %v", name, info, err)
+		}
+		want := map[AgentName]string{}
+		if name == "entries" {
+			want["codex"] = "codex"
+		}
+		if !maps.Equal(info.Runtimes, want) {
+			t.Fatalf("%s: runtimes %v, want %v", name, info.Runtimes, want)
+		}
+		endpoint, _, err := client.selectRoute(context.Background(), Target{Service: "helper"})
+		if err != nil || endpoint != "http://agentiscaled/a2a/"+peerID+"/helper" {
+			t.Fatalf("%s: route to helper: %q %v", name, endpoint, err)
+		}
 	}
 }

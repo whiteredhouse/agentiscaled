@@ -25,6 +25,9 @@ type AgentRow struct {
 	// Draining, when set, says that the agent finishes the tasks it has
 	// but takes no new ones, and why.
 	Draining *Drain `json:"draining,omitempty"`
+	// Runtime is what runs the agent (codex, claude, acp), as its node
+	// says; empty when the node does not say (one older than it).
+	Runtime string `json:"runtime,omitempty"`
 }
 
 type AgentList struct {
@@ -45,7 +48,7 @@ func ListedAgents(info LocalInfo, self AgentName, providers []*api.DiscoveredPro
 	}
 	for _, name := range info.Services {
 		if name != self {
-			row := AgentRow{Service: name}
+			row := AgentRow{Service: name, Runtime: info.Runtimes[name]}
 			if d, ok := info.Draining[name]; ok {
 				row.Draining = &d
 			}
@@ -66,7 +69,9 @@ func ListedAgents(info LocalInfo, self AgentName, providers []*api.DiscoveredPro
 		if err != nil {
 			continue
 		}
-		add(AgentRow{Service: name, PeerID: id, Description: p.GetSrvDescription(), Draining: DrainFromMetadata(p.GetSrvMetadata())})
+		md := p.GetSrvMetadata()
+		add(AgentRow{Service: name, PeerID: id, Description: p.GetSrvDescription(), Draining: DrainFromMetadata(md),
+			Runtime: RuntimeFromMetadata(md)})
 	}
 	slices.SortFunc(out.Agents, func(a, b AgentRow) int {
 		return cmp.Or(cmp.Compare(a.Service, b.Service), cmp.Compare(a.PeerID, b.PeerID))

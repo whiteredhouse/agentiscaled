@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -74,6 +75,11 @@ func localAgentsFixture(t *testing.T, role *api.PolicyRole, expiry time.Time, cf
 		agent, err := newAgentService(t.TempDir(), fix, dir, caller.AgentName(name))
 		if err != nil {
 			t.Fatal(err)
+		}
+		// Each agent says its runtime, as the node's settings name it.
+		agent.runtimeName = map[string]string{"writer": "claude"}[name]
+		if agent.runtimeName == "" {
+			agent.runtimeName = "codex"
 		}
 		target, _, err := serveAgent(ctx, agent, name)
 		if err != nil {
@@ -146,6 +152,9 @@ func TestLocalTasksReachEachAgent(t *testing.T) {
 	info, err := tasks.LocalInfo(ctx)
 	if err != nil || !slices.Equal(info.Services, []caller.AgentName{"helper", "writer"}) {
 		t.Fatalf("local info: %+v %v", info, err)
+	}
+	if want := map[caller.AgentName]string{"helper": "codex", "writer": "claude"}; !maps.Equal(info.Runtimes, want) {
+		t.Fatalf("local info runtimes %v, want %v", info.Runtimes, want)
 	}
 	for _, name := range []string{"writer", "helper"} {
 		fixes[name].release <- "answer from " + name

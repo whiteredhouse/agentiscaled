@@ -103,7 +103,7 @@ func RunNetwork(ctx context.Context, args []string, stdin io.Reader, out, errOut
 		return err
 	}
 	w := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "AGENT\tPEER\tDESCRIPTION"); err != nil {
+	if _, err := fmt.Fprintln(w, "AGENT\tPEER\tRUNTIME\tDESCRIPTION"); err != nil {
 		return err
 	}
 	for _, agent := range list.Agents {
@@ -116,7 +116,13 @@ func RunNetwork(ctx context.Context, args []string, stdin io.Reader, out, errOut
 			// The reason is a single line of printable text (Drain).
 			description = strings.TrimSpace("(" + strings.TrimPrefix(terminalSafe(agent.Draining.Text()), "is ") + ") " + description)
 		}
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", agent.Service, where, description); err != nil {
+		// Runtime is a plain word (ValidRuntime); a node too old to say
+		// shows "-".
+		runtime := agent.Runtime
+		if runtime == "" {
+			runtime = "-"
+		}
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", agent.Service, where, runtime, description); err != nil {
 			return err
 		}
 	}

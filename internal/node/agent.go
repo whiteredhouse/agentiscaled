@@ -233,6 +233,9 @@ type agentService struct {
 	// drainFile holds the owner's drain of the agent (agentiscaled agent
 	// drain), which the node reads for each new task.
 	drainFile string
+	// runtimeName is what runs the agent's tasks, as its settings name it
+	// (codex, claude, acp), for callers and the owner's console.
+	runtimeName string
 }
 
 type agentRun struct {
@@ -788,6 +791,8 @@ type agentActivity struct {
 	// Drain, when set, is the owner's drain: the agent finishes its tasks
 	// and takes no new one.
 	Drain *drainMark `json:"drain,omitempty"`
+	// Runtime is what runs the agent's tasks (codex, claude, acp).
+	Runtime string `json:"runtime,omitempty"`
 }
 
 const (
@@ -832,7 +837,7 @@ func agentsActivity(agents []*agentService) []agentActivity {
 // that ended after it. A waiting question counts until now reaches its
 // expiry, whatever the clock says by the time it is read.
 func (s *agentService) activityLocked(now time.Time) agentActivity {
-	a := agentActivity{Name: s.name.String(), State: activityIdle, Drain: s.drain()}
+	a := agentActivity{Name: s.name.String(), State: activityIdle, Drain: s.drain(), Runtime: s.runtimeName}
 	if s.current != nil {
 		a.State = activityBusy
 		started := s.current.started
@@ -874,12 +879,17 @@ func (a agentActivity) serviceStatus() *api.ServiceStatus {
 var activityEvery = time.Second
 
 // serviceMetadata is the agent's service metadata, which callers see when
-// they discover it and the owner's console with its catalog: its drain.
+// they discover it and the owner's console with its catalog: its runtime
+// and its drain. A runtime that is not a valid one is left out.
 func (a agentActivity) serviceMetadata() map[string]string {
-	if a.Drain == nil {
-		return nil
+	md := map[string]string{}
+	if caller.ValidRuntime(a.Runtime) {
+		md[caller.RuntimeMetadataKey] = a.Runtime
 	}
-	return map[string]string{caller.DrainMetadataKey: a.Drain.Metadata()}
+	if a.Drain != nil {
+		md[caller.DrainMetadataKey] = a.Drain.Metadata()
+	}
+	return md
 }
 
 // reportActivity hands each agent's activity to setStatus, and its
