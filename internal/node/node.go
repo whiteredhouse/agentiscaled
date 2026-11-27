@@ -509,6 +509,10 @@ func run(ctx context.Context, c config) error {
 		for _, a := range agents {
 			svcs = append(svcs, a.svc)
 		}
+		// The skills were read when each agent registered; they are read
+		// again on their own, so that a slow directory never holds up the
+		// activity reports.
+		go refreshSkillsEvery(nodeCtx, svcs)
 		go reportActivity(nodeCtx, svcs, func(name string, status *api.ServiceStatus) {
 			// The times are the node's clock, which JSON can always render;
 			// a refusal would mean a clock past year 9999.

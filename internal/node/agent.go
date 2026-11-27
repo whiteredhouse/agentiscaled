@@ -930,20 +930,38 @@ func (s *agentService) refreshSkills() {
 	s.mu.Unlock()
 }
 
+// refreshSkillsEvery looks at each agent's skills again every skillsEvery
+// until ctx ends, one goroutine per agent: a directory that is slow to read
+// holds up only its own agent's skills, never the activity reports, which
+// read the skills last found (activity). It returns once every goroutine
+// has.
+func refreshSkillsEvery(ctx context.Context, agents []*agentService) {
+	var wg sync.WaitGroup
+	every := skillsEvery
+	for _, s := range agents {
+		wg.Go(func() {
+			ticker := time.NewTicker(every)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					s.refreshSkills()
+				}
+			}
+		})
+	}
+	wg.Wait()
+}
+
 // reportActivity hands each agent's activity to setStatus, and its
 // metadata to setMetadata when it changes, until ctx ends.
 func reportActivity(ctx context.Context, agents []*agentService, setStatus func(name string, status *api.ServiceStatus), setMetadata func(name string, metadata map[string]string)) {
 	ticker := time.NewTicker(activityEvery)
 	defer ticker.Stop()
 	reported := map[caller.AgentName]map[string]string{}
-	var skillsAt time.Time
 	for {
-		if time.Since(skillsAt) >= skillsEvery {
-			for _, s := range agents {
-				s.refreshSkills()
-			}
-			skillsAt = time.Now()
-		}
 		for _, s := range agents {
 			a := s.activity()
 			setStatus(s.name.String(), a.serviceStatus())
