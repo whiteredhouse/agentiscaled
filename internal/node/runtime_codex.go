@@ -207,6 +207,11 @@ func (r *codexRuntime) Skills(dir string) []a2a.AgentSkill {
 		return nil
 	}
 	dirs := upToRepository(dir, false)
+	if len(dirs) == 0 {
+		// The home directory, or one holding it: none of its skills are
+		// the directory's.
+		return nil
+	}
 	var roots []string
 	for _, d := range dirs {
 		for _, root := range skillRoots {

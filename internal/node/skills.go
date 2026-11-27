@@ -256,15 +256,31 @@ func readSkill(path string) (name, description string, personOnly, ok bool) {
 }
 
 // upToRepository is dir and each directory above it up to the root of the
-// Git repository dir is in, nearest first. Outside a repository it is dir
-// only, or with aboveOutside each directory above it. Either way it stops
-// short of the user's home directory and the filesystem root, whose skills
-// are the user's or the machine's rather than the directory's, even when one
-// of them is the repository's root.
+// Git repository dir is in, nearest first, with symlinks resolved, as the
+// runtime sees its working directory. Outside a repository it is dir only,
+// or with aboveOutside each directory above it. Either way it holds neither
+// the user's home directory nor the filesystem root, nor any directory above
+// them, whose skills are the user's or the machine's rather than the
+// directory's, even when one of them is the repository's root or dir itself:
+// an agent working in the home directory has no skills of its directory.
 func upToRepository(dir string, aboveOutside bool) []string {
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		home = filepath.Clean(home)
+	canonical := func(p string) string {
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			p = real
+		}
+		return filepath.Clean(p)
+	}
+	home := ""
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		home = canonical(h)
+	}
+	// Neither the home directory, the root, nor a directory holding home
+	// is a directory of the agent's.
+	excluded := func(d string) bool {
+		return d == home || filepath.Dir(d) == d || home != "" && within(home, d)
 	}
 	isRepo := func(d string) bool {
 		_, err := os.Lstat(filepath.Join(d, ".git"))
@@ -272,8 +288,8 @@ func upToRepository(dir string, aboveOutside bool) []string {
 	}
 	var dirs []string
 	inRepo := false
-	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
-		if len(dirs) > 0 && (d == home || filepath.Dir(d) == d) {
+	for d := canonical(dir); ; d = filepath.Dir(d) {
+		if excluded(d) {
 			inRepo = isRepo(d)
 			break
 		}
@@ -281,11 +297,8 @@ func upToRepository(dir string, aboveOutside bool) []string {
 		if isRepo(d) {
 			return dirs
 		}
-		if filepath.Dir(d) == d {
-			break
-		}
 	}
-	if inRepo || aboveOutside {
+	if inRepo || aboveOutside || len(dirs) == 0 {
 		return dirs
 	}
 	return dirs[:1]

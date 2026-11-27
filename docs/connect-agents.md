@@ -406,8 +406,10 @@ work. Each skill is a `SKILL.md` with `name` and `description` in its front matt
   its description. An agent with `-owner-config=false`, or whose definition leaves
   out the `Skill` tool, uses no skills and lists none.
 
-The search stops short of your home directory and the filesystem root, even when
-one of them is the repository's root. Your own skills, plugins' skills, the
+The search, on paths with their symlinks resolved, stops short of your home
+directory and the filesystem root, even when one of them is the repository's root
+or the agent's directory itself: an agent working in your home directory lists no
+skills. Your own skills, plugins' skills, the
 machine's and the runtime's bundled skills are not the directory's and are never
 listed, nor is a skill linked from outside the directories searched (the runtime
 may still load it). Neither are Claude Code skills only a person can start

@@ -497,3 +497,44 @@ func TestSkillScanReadsABoundedNumberOfEntries(t *testing.T) {
 		t.Fatalf("read %v from a pipe", entries)
 	}
 }
+
+// An agent working in the home directory, or in a path that reaches it
+// through a symlink, lists none of the owner's personal skills there.
+func TestAgentInTheHomeDirectoryListsNoPersonalSkills(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	writeSkillFile(t, filepath.Join(home, ".claude", "skills"), "mine", "---\ndescription: The owner's own.\n---\n")
+	writeSkillFile(t, filepath.Join(home, ".agents", "skills"), "mine", "---\nname: mine\ndescription: The owner's own.\n---\n")
+	link := filepath.Join(t.TempDir(), "workspace")
+	if err := os.Symlink(home, link); err != nil {
+		t.Fatal(err)
+	}
+	claude := &claudeRuntime{policy: agentPolicy{DirSkills: true, OwnerConfig: true}}
+	codex := &codexRuntime{policy: agentPolicy{DirSkills: true}}
+	for _, dir := range []string{home, link, filepath.Dir(home)} {
+		if skills := claude.Skills(dir); skills != nil {
+			t.Errorf("claude in %s lists %v", dir, skillIDs(skills))
+		}
+		if skills := codex.Skills(dir); skills != nil {
+			t.Errorf("codex in %s lists %v", dir, skillIDs(skills))
+		}
+	}
+	// A folder below home that links back to it is the home directory too.
+	work := filepath.Join(home, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	back := filepath.Join(work, "up")
+	if err := os.Symlink(home, back); err != nil {
+		t.Fatal(err)
+	}
+	if skills := claude.Skills(back); skills != nil {
+		t.Errorf("claude through a link back to home lists %v", skillIDs(skills))
+	}
+	// A real folder below home still has its own skills.
+	writeSkillFile(t, filepath.Join(work, ".claude", "skills"), "work", "---\ndescription: The work folder's.\n---\n")
+	if got := skillIDs(claude.Skills(work)); !slices.Equal(got, []string{"work"}) {
+		t.Errorf("claude in %s lists %v", work, got)
+	}
+}
