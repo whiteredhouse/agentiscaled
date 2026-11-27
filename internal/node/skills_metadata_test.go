@@ -54,7 +54,6 @@ func TestReportActivityPublishesTheSkills(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc.refreshSkills()
 	published := make(chan map[string]string, 64)
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := runReporters(ctx, []*agentService{svc}, func(string, *api.ServiceStatus) {}, func(_ string, md map[string]string) {
@@ -82,6 +81,44 @@ func TestReportActivityPublishesTheSkills(t *testing.T) {
 	await("review")
 	writeSkillFile(t, filepath.Join(dir, ".agents", "skills"), "deploy", "---\nname: deploy\ndescription: Deploys it.\n---\n")
 	await("deploy", "review")
+}
+
+// The first skill scan comes at once, not one interval after the node
+// starts, and the node registers its agents without waiting for it.
+func TestSkillsAreReadAtOnce(t *testing.T) {
+	defer func(a, s time.Duration) { activityEvery, skillsEvery = a, s }(activityEvery, skillsEvery)
+	activityEvery, skillsEvery = 5*time.Millisecond, time.Hour
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, "agent")
+	writeSkillFile(t, filepath.Join(dir, ".agents", "skills"), "review", "---\nname: review\ndescription: Reviews a change.\n---\n")
+	svc, err := newAgentService(dir, &codexRuntime{policy: agentPolicy{DirSkills: true}}, t.TempDir(), "helper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if md := svc.activity().serviceMetadata(); md[caller.SkillsMetadataKey] != "" {
+		t.Fatalf("skills before any scan: %v", md)
+	}
+	published := make(chan map[string]string, 64)
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := runReporters(ctx, []*agentService{svc}, func(string, *api.ServiceStatus) {}, func(_ string, md map[string]string) {
+		select {
+		case published <- md:
+		default:
+		}
+	})
+	defer func() { cancel(); stopped() }()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case md := <-published:
+			if s := caller.SkillsFromMetadata(md); s != nil && slices.Equal(s.Names, []string{"review"}) {
+				return
+			}
+		case <-deadline:
+			t.Fatal("the skills waited for the interval")
+		}
+	}
 }
 
 // blockingSkills is a runtime whose skill scan waits until it is let go, as

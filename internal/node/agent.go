@@ -930,11 +930,11 @@ func (s *agentService) refreshSkills() {
 	s.mu.Unlock()
 }
 
-// refreshSkillsEvery looks at each agent's skills again every skillsEvery
-// until ctx ends, one goroutine per agent: a directory that is slow to read
-// holds up only its own agent's skills, never the activity reports, which
-// read the skills last found (activity). It returns once every goroutine
-// has.
+// refreshSkillsEvery looks at each agent's skills at once and then again
+// every skillsEvery until ctx ends, one goroutine per agent: a directory
+// that is slow to read holds up only its own agent's skills, never the
+// node's start or the activity reports, which read the skills last found
+// (activity). It returns once every goroutine has.
 func refreshSkillsEvery(ctx context.Context, agents []*agentService) {
 	var wg sync.WaitGroup
 	every := skillsEvery
@@ -943,11 +943,11 @@ func refreshSkillsEvery(ctx context.Context, agents []*agentService) {
 			ticker := time.NewTicker(every)
 			defer ticker.Stop()
 			for {
+				s.refreshSkills()
 				select {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					s.refreshSkills()
 				}
 			}
 		})

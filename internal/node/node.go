@@ -489,7 +489,6 @@ func run(ctx context.Context, c config) error {
 			}
 			stopped = append(stopped, done)
 			a.target = target
-			a.svc.refreshSkills()
 			services = append(services, api.ServiceConfig{
 				Type:        api.ServiceTypeStringA2A,
 				Name:        a.Name,
@@ -509,9 +508,9 @@ func run(ctx context.Context, c config) error {
 		for _, a := range agents {
 			svcs = append(svcs, a.svc)
 		}
-		// The skills were read when each agent registered; they are read
-		// again on their own, so that a slow directory never holds up the
-		// activity reports.
+		// Each agent's skills are read on their own, first right away, so
+		// that a slow directory never holds up the node's start or the
+		// activity reports. Until then the metadata lists no skills.
 		go refreshSkillsEvery(nodeCtx, svcs)
 		go reportActivity(nodeCtx, svcs, func(name string, status *api.ServiceStatus) {
 			// The times are the node's clock, which JSON can always render;
