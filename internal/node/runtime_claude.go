@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -167,15 +169,107 @@ func claudeLogin(ctx context.Context, command, profileDir string, policy agentPo
 	return cmd, "CLAUDE_CONFIG_DIR=" + shellQuote(config) + " " + shellQuote(command) + " auth login"
 }
 
+// Skills lists the skills Claude Code loads from the directory: those in
+// .claude/skills of dir and of each directory above it up to its
+// repository's root, or every one outside a repository, short of the home
+// directory and the root (upToRepository). Claude Code names a skill by its
+// folder and does not look in its subfolders. Your own skills and plugins'
+// are not the directory's and are not listed, nor is a skill linked from
+// outside those directories, or one the settings' skillOverrides hide. A run
+// that cannot use skills lists none: a restricted one (-owner-config=false)
+// loads none, and a definition may leave out the Skill tool.
+func (r *claudeRuntime) Skills(dir string) []a2a.AgentSkill {
+	if !r.policy.DirSkills || !r.policy.OwnerConfig || !claudeCanUseSkills(r.def) {
+		return nil
+	}
+	dirs := upToRepository(dir, true)
+	if len(dirs) == 0 {
+		// The home directory, or one holding it: none of its skills are
+		// the directory's.
+		return nil
+	}
+	var roots []string
+	for _, d := range dirs {
+		roots = append(roots, filepath.Join(d, ".claude", "skills"))
+	}
+	overrides := claudeSkillOverrides(dir)
+	return skillScan{
+		roots:           roots,
+		scope:           dirs[len(dirs)-1],
+		naming:          namedByFolder,
+		personOnlyField: true,
+		tag:             "claude",
+		visibility: func(name, _ string) skillVisibility {
+			switch overrides[name] {
+			case "off", "user-invocable-only":
+				return skillHidden
+			case "name-only":
+				return skillNameOnly
+			}
+			return skillShown
+		},
+	}.list()
+}
+
+// claudeManagedSettings is where Claude Code reads the machine's managed
+// settings.
+func claudeManagedSettings() string {
+	if goruntime.GOOS == "darwin" {
+		return "/Library/Application Support/ClaudeCode/managed-settings.json"
+	}
+	return "/etc/claude-code/managed-settings.json"
+}
+
+// claudeSkillOverrides is the skillOverrides that a run in dir with the
+// owner's configuration takes from its settings, each skill's from the
+// settings that win: the owner's, the project's (.claude/settings.json in
+// dir, the only one Claude Code reads), the local ones and the managed ones.
+func claudeSkillOverrides(dir string) map[string]string {
+	var files []string
+	if config, err := claudeOwnerConfigDir(); err == nil {
+		files = append(files, filepath.Join(config, "settings.json"))
+	}
+	files = append(files,
+		filepath.Join(dir, ".claude", "settings.json"),
+		filepath.Join(dir, ".claude", "settings.local.json"),
+		claudeManagedSettings())
+	overrides := map[string]string{}
+	for _, f := range files {
+		b, ok := readRegularFile(f, maxSettingsSize)
+		if !ok {
+			continue
+		}
+		var settings struct {
+			SkillOverrides map[string]string `json:"skillOverrides"`
+		}
+		if json.Unmarshal(b, &settings) != nil {
+			continue
+		}
+		for name, v := range settings.SkillOverrides {
+			overrides[name] = v
+		}
+	}
+	return overrides
+}
+
+// claudeSkillTool is Claude Code's tool that runs a skill.
+const claudeSkillTool = "Skill"
+
+// claudeCanUseSkills says whether a run with the owner's configuration and
+// definition d may use the Skill tool.
+func claudeCanUseSkills(d *agentDefinition) bool {
+	if d == nil || d.WrittenFor != "claude" {
+		return true
+	}
+	if slices.Contains(d.DisallowedTools, claudeSkillTool) {
+		return false
+	}
+	tools, ok := claudeTools(d, nil)
+	return !ok || slices.Contains(strings.Split(tools, ","), claudeSkillTool)
+}
+
 func (r *claudeRuntime) Describe(card *a2a.AgentCard) {
 	card.Description = "A Claude Code agent on this node that works in its configured directory under local runtime permissions. Send one text message with the task; it answers with the result, or asks a question (input-required) that you answer with a message on the same task."
-	card.Skills = []a2a.AgentSkill{{
-		ID:          "task",
-		Name:        "Task",
-		Description: "Does a task in the agent's directory within its configured permissions.",
-		Tags:        []string{"claude"},
-		Examples:    []string{"Implement the change described in the task", "Review the uncommitted changes", "Explain how requests are authenticated"},
-	}}
 }
 
 // Run runs `claude -p` in dir:

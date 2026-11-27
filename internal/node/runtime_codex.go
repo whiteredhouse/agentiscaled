@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/google/uuid"
 )
@@ -193,13 +194,125 @@ func tooBroad(dir string) bool {
 
 func (r *codexRuntime) Describe(card *a2a.AgentCard) {
 	card.Description = "A Codex CLI agent on this node that works in its configured directory under local runtime permissions. Send one text message with the task; it answers with the result, or asks a question (input-required) that you answer with a message on the same task."
-	card.Skills = []a2a.AgentSkill{{
-		ID:          "task",
-		Name:        "Task",
-		Description: "Does a task in the agent's directory within its configured permissions.",
-		Tags:        []string{"codex"},
-		Examples:    []string{"Implement the change described in the task", "Review the uncommitted changes", "Explain how requests are authenticated"},
-	}}
+}
+
+// Skills lists the skills Codex loads from the directory: those in a skill
+// root (.agents/skills, .codex/skills) of dir and of each directory above it
+// up to its repository's root, in folders of the root or nested in its
+// subfolders. Your own skills, the machine's and Codex's bundled ones are not
+// the directory's and are not listed, nor is a skill linked from outside
+// those directories, or one a skills.config entry turns off.
+func (r *codexRuntime) Skills(dir string) []a2a.AgentSkill {
+	if !r.policy.DirSkills {
+		return nil
+	}
+	dirs := upToRepository(dir, false)
+	if len(dirs) == 0 {
+		// The home directory, or one holding it: none of its skills are
+		// the directory's.
+		return nil
+	}
+	var roots []string
+	for _, d := range dirs {
+		for _, root := range skillRoots {
+			roots = append(roots, filepath.Join(d, root))
+		}
+	}
+	rules := r.skillRules()
+	return skillScan{
+		roots:      roots,
+		scope:      dirs[len(dirs)-1],
+		naming:     namedInFile,
+		nested:     true,
+		tag:        "codex",
+		visibility: rules.visibility,
+	}.list()
+}
+
+// codexSystemConfig is the machine's Codex configuration.
+const codexSystemConfig = "/etc/codex/config.toml"
+
+// codexSkillRule is one [[skills.config]] entry: it turns on or off the
+// skill whose SKILL.md is at path, or every skill of name.
+type codexSkillRule struct {
+	path, real string // real: path with its symlinks resolved
+	name       string
+	enabled    bool
+}
+
+// codexSkillRules are the entries of the run's configuration, in the order
+// Codex reads them, the last match winning.
+type codexSkillRules []codexSkillRule
+
+func (rules codexSkillRules) visibility(name, path string) skillVisibility {
+	path = filepath.Clean(path)
+	real, _ := filepath.EvalSymlinks(path)
+	on := true
+	for _, r := range rules {
+		match := r.name != "" && r.name == name
+		if r.path != "" {
+			match = r.path == path || r.path == real || r.real != "" && (r.real == path || r.real == real)
+		}
+		if match {
+			on = r.enabled
+		}
+	}
+	if !on {
+		return skillHidden
+	}
+	return skillShown
+}
+
+// skillRules reads the skills.config entries of the configuration a task
+// run takes them from: the machine's, then the owner's with the owner's
+// configuration. A project's .codex/config.toml is not one, trusted or not:
+// Codex runs a task with the skills those two leave on (TestCodexCardMatchesCodex).
+// An entry names exactly one of an absolute path of a SKILL.md, or a name.
+func (r *codexRuntime) skillRules() codexSkillRules {
+	files := []string{codexSystemConfig}
+	if r.policy.OwnerConfig && r.home != "" {
+		files = append(files, filepath.Join(r.home, "config.toml"))
+	}
+	var rules codexSkillRules
+	for _, f := range files {
+		b, ok := readRegularFile(f, maxSettingsSize)
+		if !ok {
+			continue
+		}
+		var config struct {
+			Skills struct {
+				Config []struct {
+					Path    string `toml:"path"`
+					Name    string `toml:"name"`
+					Enabled *bool  `toml:"enabled"`
+				} `toml:"config"`
+			} `toml:"skills"`
+		}
+		if toml.Unmarshal(b, &config) != nil {
+			continue
+		}
+		for _, c := range config.Skills.Config {
+			if c.Enabled == nil || (c.Path == "") == (c.Name == "") {
+				continue
+			}
+			rule := codexSkillRule{name: c.Name, enabled: *c.Enabled}
+			if c.Path != "" {
+				p := c.Path
+				if rest, ok := strings.CutPrefix(p, "~/"); ok {
+					if home, err := os.UserHomeDir(); err == nil {
+						p = filepath.Join(home, rest)
+					}
+				}
+				if !filepath.IsAbs(p) {
+					p = filepath.Join(filepath.Dir(f), p)
+				}
+				rule.path = filepath.Clean(p)
+				rule.real, _ = filepath.EvalSymlinks(rule.path)
+			}
+			rules = append(rules, rule)
+		}
+	}
+	return rules
 }
 
 // Run runs `codex exec` in dir:

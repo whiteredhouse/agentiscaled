@@ -492,7 +492,7 @@ func run(ctx context.Context, c config) error {
 			services = append(services, api.ServiceConfig{
 				Type:        api.ServiceTypeStringA2A,
 				Name:        a.Name,
-				Description: a.svc.card(a.Name).Description,
+				Description: a.svc.cardDescription(),
 				TargetURL:   target,
 				// A drained agent is never listed as taking tasks, also
 				// not before its first activity report.

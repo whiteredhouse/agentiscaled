@@ -295,7 +295,9 @@ stops and names the `up` command to run. Node A offers more agents with plain
 [Claude Code as the agent](#claude-code-as-the-agent)). Node B checks that `codex` runs (`-command` takes another path), then
 serves the A2A 1.0 agent `a2a://codex` to the other nodes of your network.
 `-name` picks another name, and `-description` replaces the
-description other agents see on its card. Each task runs:
+description other agents see on its card, which also lists the skills it loads
+from its directory (see [Skills on the agent's card](#skills-on-the-agents-card)).
+Each task runs:
 
 ```sh
 codex exec --ephemeral -c shell_environment_policy.inherit="core" \
@@ -384,6 +386,48 @@ that the agent needs to sign in, check the node log for the local login command.
 Vendors can check their agents with `agentiscaled runtime check -command "my-agent acp"`.
 For the capabilities the check exercises and how to enable calls to other agents,
 see [Add agentiscale support to your agent](add-agentiscale-support.md).
+
+### Skills on the agent's card
+
+An agent's card lists the skills it loads from its directory, by name and
+description, so a caller can see what the agent knows how to do before it sends
+work. Each skill is a `SKILL.md` with `name` and `description` in its front matter:
+
+- Codex: the skills in `.agents/skills` and `.codex/skills` of the agent's
+  directory and of each directory above it up to the repository's root (only the
+  agent's directory outside a repository), in their own folders or nested in
+  subfolders, a skill's own included, named by the file's `name`. Codex's
+  `[[skills.config]]` entries apply as Codex applies them, the last match winning:
+  `path` names one `SKILL.md`, `name` every skill of that name, and `enabled = false`
+  keeps a skill off the card. They come from the machine's `/etc/codex/config.toml`
+  and your `config.toml` (with `-owner-config`, the default). A project's
+  `.codex/config.toml` does not change which skills a task has, trusted or not, so
+  it does not change the card either.
+- Claude Code: the skills in `.claude/skills` of the agent's directory and of each
+  directory above it up to the repository's root (every directory above, outside a
+  repository), named by their folder, as Claude Code names them. `skillOverrides`
+  in your settings, the agent directory's `.claude/settings.json` or
+  `.claude/settings.local.json`, or the managed settings apply: `"off"` and
+  `"user-invocable-only"` keep a skill off the card, `"name-only"` lists it without
+  its description. An agent with `-owner-config=false`, or whose definition leaves
+  out the `Skill` tool, uses no skills and lists none.
+
+The search, on paths with their symlinks resolved, stops short of your home
+directory and the filesystem root, even when one of them is the repository's root
+or the agent's directory itself: an agent working in your home directory lists no
+skills. Your own skills, plugins' skills, the
+machine's and the runtime's bundled skills are not the directory's and are never
+listed, nor is a skill linked from outside the directories searched (the runtime
+may still load it). Neither are Claude Code skills only a person can start
+(`disable-model-invocation: true`, a field Codex ignores), a skill without a description, or a `SKILL.md`
+that is not a regular file. The card lists at most 64, sorted by name, and is read
+again for each caller, so a skill you add shows without restarting the node. With
+`-dir-skills=false`, or with no skills in its directory, the card's `skills` list
+is empty, as it always is for an ACP agent, which has no way to say which skills it
+loads. Every agent and client in your network can read the card, and so these
+names and descriptions: keep a skill you don't want shown out of an offered
+agent's directory, turn it off as above, or offer the agent with
+`-dir-skills=false`.
 
 ### Private runtime profiles
 

@@ -69,7 +69,8 @@ const (
 // service around it keeps the A2A contract and the bounds, so supporting
 // another agent CLI means adding a runtime.
 type runtime interface {
-	// Describe says on the agent card what the agent does.
+	// Describe says on the agent card what the agent does. The card's
+	// skills come from skillLister, not from Describe.
 	Describe(card *a2a.AgentCard)
 	// Run performs one turn of a task in dir: the task itself or, with
 	// req.Session, the caller's answer to the question the turn before it
@@ -968,19 +969,40 @@ func (s *agentService) card(name string) *a2a.AgentCard {
 		// caller's own URL.
 		Capabilities: a2a.AgentCapabilities{Streaming: true},
 	}
-	s.rt.Describe(card)
-	if s.description != "" {
-		card.Description = s.description
+	card.Description = s.cardDescription()
+	// The card lists only the skills the agent loads from its directory,
+	// and none (an empty list, as A2A requires the field) when it loads
+	// none or its runtime cannot say (acp).
+	card.Skills = []a2a.AgentSkill{}
+	if l, ok := s.rt.(skillLister); ok {
+		if skills := l.Skills(s.dir); len(skills) > 0 {
+			card.Skills = skills
+		}
 	}
 	return card
+}
+
+// cardDescription is the description on the agent's card: the owner's, else
+// the runtime's. Unlike the card's skills, it reads nothing in the agent's
+// directory.
+func (s *agentService) cardDescription() string {
+	if s.description != "" {
+		return s.description
+	}
+	var card a2a.AgentCard
+	s.rt.Describe(&card)
+	return card.Description
 }
 
 // handler serves the agent card and JSON-RPC, and only to the node, which
 // sends token as a bearer credential (target_url userinfo). Any other local
 // process could otherwise call the agent directly and claim any sender.
 func (s *agentService) handler(name, token string) http.Handler {
-	card := s.card(name)
-	cardHandler := a2asrv.NewStaticAgentCardHandler(card)
+	// The card is made for each read, so it lists the directory's skills
+	// as they are now.
+	cardHandler := a2asrv.NewAgentCardHandler(a2asrv.AgentCardProducerFn(func(context.Context) (*a2a.AgentCard, error) {
+		return s.card(name), nil
+	}))
 	// The caller authenticator tells the server's own updates (lapse) apart,
 	// which reach every task.
 	store := taskstore.NewInMemory(&taskstore.InMemoryStoreConfig{CallerAuthenticator: a2asrv.NewTaskStoreCallerAuthenticator()})

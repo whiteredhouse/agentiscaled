@@ -269,12 +269,6 @@ func (r *acpRuntime) env() []string {
 func (r *acpRuntime) Describe(card *a2a.AgentCard) {
 	name := r.info.name(r.command)
 	card.Description = fmt.Sprintf("A %s agent on this node that works in its configured directory under local runtime permissions. Send one text message with the task; it answers with the result, or asks a question (input-required) that you answer with a message on the same task.", name)
-	card.Skills = []a2a.AgentSkill{{
-		ID:          "task",
-		Name:        "Task",
-		Description: "Does a task in the agent's directory within its configured permissions.",
-		Tags:        []string{"acp"},
-	}}
 }
 
 // Run runs one turn of a task: a new ACP session for a new task, or the
