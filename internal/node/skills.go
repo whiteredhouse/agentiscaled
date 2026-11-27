@@ -126,36 +126,36 @@ func readSkill(path string) (name, description string, ok bool) {
 
 // upToRepository is dir and each directory above it up to the root of the
 // Git repository dir is in, nearest first. Outside a repository it is dir
-// only, or with aboveOutside each directory above it short of the user's
-// home directory and the root, whose skills are the user's or the machine's
-// rather than the directory's.
+// only, or with aboveOutside each directory above it. Either way it stops
+// short of the user's home directory and the filesystem root, whose skills
+// are the user's or the machine's rather than the directory's, even when one
+// of them is the repository's root.
 func upToRepository(dir string, aboveOutside bool) []string {
-	dir = filepath.Clean(dir)
-	dirs := []string{dir}
-	for d := dir; ; {
-		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
-			return dirs
-		}
-		parent := filepath.Dir(d)
-		if parent == d {
-			break
-		}
-		d = parent
-		dirs = append(dirs, d)
-	}
-	if !aboveOutside {
-		return dirs[:1]
-	}
 	home, _ := os.UserHomeDir()
 	if home != "" {
 		home = filepath.Clean(home)
 	}
-	// dirs ends with the root; each directory from the home directory up
-	// is left out, and dir itself is always kept.
-	for i, d := range dirs {
-		if i > 0 && (d == home || filepath.Dir(d) == d) {
-			return dirs[:i]
+	isRepo := func(d string) bool {
+		_, err := os.Lstat(filepath.Join(d, ".git"))
+		return err == nil
+	}
+	var dirs []string
+	inRepo := false
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		if len(dirs) > 0 && (d == home || filepath.Dir(d) == d) {
+			inRepo = isRepo(d)
+			break
+		}
+		dirs = append(dirs, d)
+		if isRepo(d) {
+			return dirs
+		}
+		if filepath.Dir(d) == d {
+			break
 		}
 	}
-	return dirs
+	if inRepo || aboveOutside {
+		return dirs
+	}
+	return dirs[:1]
 }

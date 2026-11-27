@@ -68,7 +68,11 @@ func TestCodexCardListsTheDirectorysSkills(t *testing.T) {
 }
 
 func TestCodexOutsideARepositoryListsOnlyItsDirectory(t *testing.T) {
-	parent := t.TempDir()
+	// The home directory ends the search, whatever is above the test's
+	// temporary directory.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	parent := filepath.Join(home, "work")
 	dir := filepath.Join(parent, "agent")
 	writeSkillFile(t, filepath.Join(parent, ".agents", "skills"), "above", "---\nname: above\ndescription: Above.\n---\n")
 	writeSkillFile(t, filepath.Join(dir, ".agents", "skills"), "here", "---\nname: here\ndescription: Here.\n---\n")
@@ -232,5 +236,24 @@ func TestClaudeCardListsNoSkillsItCannotUse(t *testing.T) {
 		if got := skillIDs(r.Skills(dir)); !slices.Equal(got, []string{"deploy"}) {
 			t.Errorf("%s: skills = %v", name, got)
 		}
+	}
+}
+
+// A home directory that is a Git repository (dotfiles) is still the owner's:
+// its skills are not listed, but the directories below it are, as Codex
+// loads them up to the repository's root.
+func TestHomeRepositorySkillsAreNotListed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, "work", "agent")
+	writeSkillFile(t, filepath.Join(home, ".agents", "skills"), "mine", "---\nname: mine\ndescription: The owner's own.\n---\n")
+	writeSkillFile(t, filepath.Join(home, "work", ".agents", "skills"), "work", "---\nname: work\ndescription: The work folder's.\n---\n")
+	writeSkillFile(t, filepath.Join(dir, ".agents", "skills"), "here", "---\nname: here\ndescription: The agent's.\n---\n")
+	got := skillIDs((&codexRuntime{policy: agentPolicy{DirSkills: true}}).Skills(dir))
+	if want := []string{"here", "work"}; !slices.Equal(got, want) {
+		t.Fatalf("skills = %v, want %v", got, want)
 	}
 }

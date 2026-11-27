@@ -391,13 +391,15 @@ work. Each skill is a `SKILL.md` with `name` and `description` in its front matt
   directory and of each directory above it up to the repository's root (only the
   agent's directory outside a repository), named by the file's `name`.
 - Claude Code: the skills in `.claude/skills` of the agent's directory and of each
-  directory above it up to the repository's root (outside a repository, short of
-  your home directory), named by their folder, as Claude Code names them. An agent
+  directory above it up to the repository's root (every directory above, outside a
+  repository), named by their folder, as Claude Code names them. An agent
   with `-owner-config=false`, or whose definition leaves out the `Skill` tool, uses
   no skills and lists none.
 
-Your own skills, plugins' skills, the machine's and the runtime's bundled skills
-are not the directory's and are never listed. Neither are skills only a person can
+The search stops short of your home directory and the filesystem root, even when
+one of them is the repository's root. Your own skills, plugins' skills, the
+machine's and the runtime's bundled skills are not the directory's and are never
+listed. Neither are skills only a person can
 start (`disable-model-invocation: true`), or a skill without a description. The card
 lists at most 64, sorted by name, and is read again for each caller, so a skill you
 add shows without restarting the node. With `-dir-skills=false`, or with no skills

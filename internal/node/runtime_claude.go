@@ -170,7 +170,8 @@ func claudeLogin(ctx context.Context, command, profileDir string, policy agentPo
 
 // Skills lists the skills Claude Code loads from the directory: those in
 // .claude/skills of dir and of each directory above it up to its
-// repository's root, or outside a repository short of the home directory.
+// repository's root, or every one outside a repository, short of the home
+// directory and the root (upToRepository).
 // Claude Code names a skill by its folder. Your own skills and plugins' are
 // not the directory's and are not listed. A run that cannot use skills lists
 // none: a restricted one (-owner-config=false) loads none, and a definition
