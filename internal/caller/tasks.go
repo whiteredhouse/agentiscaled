@@ -167,12 +167,13 @@ func (t *Client) LocalInfo(ctx context.Context) (LocalInfo, error) {
 	}
 	// The names are parsed one by one: a name outside the rule (from a
 	// node older than it) is left out on its own, so that the node's other
-	// agents stay reachable.
+	// agents stay reachable. Runtimes only inform display, so they are read
+	// apart: a malformed one is left out and never fails the catalog.
 	var raw struct {
-		PeerID   string            `json:"peer_id"`
-		Services []string          `json:"services"`
-		Draining map[string]Drain  `json:"draining"`
-		Runtimes map[string]string `json:"runtimes"`
+		PeerID   string           `json:"peer_id"`
+		Services []string         `json:"services"`
+		Draining map[string]Drain `json:"draining"`
+		Runtimes json.RawMessage  `json:"runtimes"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return LocalInfo{}, fmt.Errorf("invalid local agent catalog: %w", err)
@@ -186,7 +187,7 @@ func (t *Client) LocalInfo(ctx context.Context) (LocalInfo, error) {
 			info.Draining[n] = d
 		}
 	}
-	for name, rt := range raw.Runtimes {
+	for name, rt := range localRuntimes(raw.Runtimes) {
 		if n, err := ParseAgentName(name); err == nil && ValidRuntime(rt) {
 			if info.Runtimes == nil {
 				info.Runtimes = map[AgentName]string{}
@@ -198,6 +199,24 @@ func (t *Client) LocalInfo(ctx context.Context) (LocalInfo, error) {
 		return info, fmt.Errorf("invalid local peer ID: %w", err)
 	}
 	return info, nil
+}
+
+// localRuntimes reads the local catalog's runtimes entry by entry, leaving
+// out any that is not a string, and all of them when they are not an
+// object.
+func localRuntimes(data json.RawMessage) map[string]string {
+	var entries map[string]json.RawMessage
+	if json.Unmarshal(data, &entries) != nil {
+		return nil
+	}
+	runtimes := make(map[string]string, len(entries))
+	for name, value := range entries {
+		var rt string
+		if json.Unmarshal(value, &rt) == nil {
+			runtimes[name] = rt
+		}
+	}
+	return runtimes
 }
 
 func (t *Client) Card(ctx context.Context, target Target) ([]byte, error) {
