@@ -97,6 +97,19 @@ func SkillInstalled(dir string) bool {
 	return err == nil
 }
 
+// skillMarker is the file that marks a copy of the skill as one
+// agentiscaled installed, which `up` may update on its own.
+const skillMarker = ".agentiscaled"
+
+const skillMarkerText = "Installed by agentiscaled skill install. agentiscaled up keeps this skill current; remove this file to keep it as it is.\n"
+
+// SkillManaged tells whether agentiscaled installed the skill in dir, so
+// that it may replace it: dir has the marker install writes.
+func SkillManaged(dir string) bool {
+	fi, err := os.Lstat(filepath.Join(dir, skillMarker))
+	return err == nil && fi.Mode().IsRegular()
+}
+
 // InstallSkillDir writes the skill into dir, as `skill install` does, and
 // says what it did: installed, updated or unchanged.
 func InstallSkillDir(dir string) (string, error) { return installSkillFiles(dir) }
@@ -200,7 +213,7 @@ func installSkillFiles(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !changed {
+	if !changed && SkillManaged(dir) {
 		return "unchanged", nil
 	}
 	if err := writeSkillFiles(dir); err != nil {
@@ -209,8 +222,9 @@ func installSkillFiles(dir string) (string, error) {
 	return "updated", nil
 }
 
-// writeSkillFiles writes every file of the skill under dir. SKILL.md goes
-// last, so that a SKILL.md never links to a reference not yet written.
+// writeSkillFiles writes every file of the skill under dir, then the
+// marker. SKILL.md goes after the references, so that a SKILL.md never
+// links to a reference not yet written.
 func writeSkillFiles(dir string) error {
 	var names []string
 	err := iofs.WalkDir(skills.AgentiscaleFiles, ".", func(name string, d iofs.DirEntry, err error) error {
@@ -231,7 +245,7 @@ func writeSkillFiles(dir string) error {
 			return err
 		}
 	}
-	return nil
+	return writeFileAtomic(filepath.Join(dir, skillMarker), []byte(skillMarkerText))
 }
 
 // writeFileAtomic writes b to path through a temporary file in its

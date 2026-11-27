@@ -36,6 +36,13 @@ func withSkillHome(t *testing.T, clis ...string) (claudeDir, codexDir string) {
 
 func skillFile(dir string) string { return filepath.Join(dir, "SKILL.md") }
 
+// staleSkill puts an old copy of the skill in dir, as an earlier
+// agentiscaled installed it.
+func staleSkill(t *testing.T, dir string) {
+	t.Helper()
+	staleSkillAs(t, dir, "old")
+}
+
 func currentSkill(t *testing.T, dir string) bool {
 	t.Helper()
 	b, err := os.ReadFile(skillFile(dir))
@@ -70,7 +77,7 @@ func TestSkillStep(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			claudeDir, codexDir := withSkillHome(t, "claude")
-			write(t, skillFile(codexDir), "old")
+			staleSkill(t, codexDir)
 			s := tc.step
 			s.targets = skillTargets()
 			var out bytes.Buffer
@@ -102,7 +109,7 @@ func TestSkillStep(t *testing.T) {
 	})
 	t.Run("no CLI found, one copy", func(t *testing.T) {
 		claudeDir, codexDir := withSkillHome(t)
-		write(t, skillFile(codexDir), "old")
+		staleSkill(t, codexDir)
 		s := skillStep{targets: skillTargets(), install: true}
 		s.run(io.Discard)
 		if !currentSkill(t, claudeDir) || !currentSkill(t, codexDir) {
@@ -228,12 +235,12 @@ func TestUpInstallsSkill(t *testing.T) {
 	t.Run("without a terminal", func(t *testing.T) {
 		claudeDir, codexDir := withSkillHome(t, "claude", "codex")
 		dir := joined(t)
-		write(t, skillFile(codexDir), "old")
+		staleSkill(t, codexDir)
 		out := upWithInput(t, dir, "")
 		if currentSkill(t, claudeDir) || !currentSkill(t, codexDir) {
 			t.Errorf("without a terminal up should only update the installed copy:\n%s", out)
 		}
-		write(t, skillFile(codexDir), "old")
+		staleSkill(t, codexDir)
 		upWithInput(t, dir, "", "-skill=false")
 		if b, _ := os.ReadFile(skillFile(codexDir)); string(b) != "old" {
 			t.Error("-skill=false changed the installed copy")
@@ -247,4 +254,70 @@ func TestUpInstallsSkill(t *testing.T) {
 			t.Errorf("no question after -skill=false:\n%s", out)
 		}
 	})
+}
+
+// up updates only copies agentiscaled installed, and never writes through a
+// link anywhere on the way to them.
+func TestSkillStepLeavesWhatItDidNotInstall(t *testing.T) {
+	untouched := func(t *testing.T, s skillStep, files ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		s.run(&out)
+		for _, f := range files {
+			if b, _ := os.ReadFile(f); string(b) != "managed" {
+				t.Errorf("install=%v changed %s:\n%s", s.install, f, &out)
+			}
+		}
+		return out.String()
+	}
+	t.Run("copy without the marker", func(t *testing.T) {
+		_, codexDir := withSkillHome(t, "codex")
+		write(t, skillFile(codexDir), "managed")
+		for _, install := range []bool{false, true} {
+			out := untouched(t, skillStep{targets: skillTargets(), install: install}, skillFile(codexDir))
+			if !strings.Contains(out, "was not installed by agentiscaled; left it as it is") {
+				t.Errorf("did not say it left the copy: %q", out)
+			}
+		}
+	})
+	t.Run("linked skills directory", func(t *testing.T) {
+		_, codexDir := withSkillHome(t, "codex")
+		managed := t.TempDir()
+		staleSkillAs(t, filepath.Join(managed, "agentiscale"), "managed")
+		if err := os.MkdirAll(filepath.Dir(filepath.Dir(codexDir)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(managed, filepath.Dir(codexDir)); err != nil {
+			t.Fatal(err)
+		}
+		for _, install := range []bool{false, true} {
+			out := untouched(t, skillStep{targets: skillTargets(), install: install}, skillFile(filepath.Join(managed, "agentiscale")))
+			if !strings.Contains(out, "which something else manages; left it as it is") {
+				t.Errorf("did not say it left the link: %q", out)
+			}
+		}
+	})
+	t.Run("one copy shared by a link", func(t *testing.T) {
+		// As skill installers lay it out: the copy in ~/.agents/skills,
+		// linked from ~/.claude/skills.
+		claudeDir, codexDir := withSkillHome(t, "claude", "codex")
+		write(t, skillFile(codexDir), "managed")
+		if err := os.MkdirAll(filepath.Dir(claudeDir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(codexDir, claudeDir); err != nil {
+			t.Fatal(err)
+		}
+		for _, install := range []bool{false, true} {
+			untouched(t, skillStep{targets: skillTargets(), install: install}, skillFile(codexDir))
+		}
+	})
+}
+
+// staleSkillAs puts a copy that agentiscaled installed in dir, with the
+// given SKILL.md.
+func staleSkillAs(t *testing.T, dir, text string) {
+	t.Helper()
+	write(t, skillFile(dir), text)
+	write(t, filepath.Join(dir, ".agentiscaled"), "")
 }

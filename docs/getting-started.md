@@ -195,9 +195,10 @@ after a no:
 agentiscaled skill install
 ```
 
-Every `up` updates the skill where it is installed, so it stays in step with your
-agentiscaled after an upgrade, also when `up` asks nothing. A copy that is a link, or
-holds links, such as one a skill installer or your dotfiles manage, is left as it is.
+Every `up` updates the copies agentiscaled installed, so the skill stays in step with
+your agentiscaled after an upgrade, also when `up` asks nothing. It leaves alone a copy
+that something else installed, such as a skill installer, and any copy it would reach
+through a link, such as a skills directory your dotfiles link to.
 `up -skill` installs it without asking, and `up -skill=false` leaves the skill as it
 is on that run. See
 [Teach your agents to call other agents](connect-agents.md#teach-your-agents-to-call-other-agents).

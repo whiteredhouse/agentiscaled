@@ -134,6 +134,9 @@ func TestSkillInstall(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if !SkillManaged(dir) {
+			t.Errorf("%s has no marker that agentiscaled installed it", dir)
+		}
 	}
 
 	if got, want := install(), "installed ~/.claude/skills/agentiscale/SKILL.md\ninstalled ~/.agents/skills/agentiscale/SKILL.md\n"; got != want {
@@ -158,6 +161,15 @@ func TestSkillInstall(t *testing.T) {
 	}
 	if got := install("codex"); got != "updated ~/.agents/skills/agentiscale/SKILL.md\n" {
 		t.Errorf("install over an older reference said %q", got)
+	}
+	check(codex)
+	// A copy someone else installed becomes agentiscaled's once installed
+	// over.
+	if err := os.Remove(filepath.Join(filepath.Dir(codex), skillMarker)); err != nil {
+		t.Fatal(err)
+	}
+	if got := install("codex"); got != "updated ~/.agents/skills/agentiscale/SKILL.md\n" {
+		t.Errorf("install over a copy without the marker said %q", got)
 	}
 	check(codex)
 	for _, pattern := range []string{".SKILL.md.*", "references/.*"} {
