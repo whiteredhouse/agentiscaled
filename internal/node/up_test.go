@@ -253,7 +253,8 @@ func TestSettingsRoundTrip(t *testing.T) {
 }
 
 // The LaunchAgent runs `agentiscaled run` for its data directory,
-// keeps it alive, starts it at login, and survives odd characters in paths.
+// keeps it alive, starts it at login, runs at standard priority, which the
+// agents' runs inherit, and survives odd characters in paths.
 func TestLaunchdPlist(t *testing.T) {
 	t.Parallel()
 	spec := serviceSpec{exe: "/opt/homebrew/bin/agentiscaled", dataDir: "/Users/a/Library/Application Support/agentiscale & <x>", path: "/opt/homebrew/bin:/usr/bin"}
@@ -272,6 +273,7 @@ func TestLaunchdPlist(t *testing.T) {
 		"<key>RunAtLoad</key>\n\t<true/>", "<key>KeepAlive</key>\n\t<true/>",
 		"<string>/opt/homebrew/bin:/usr/bin</string>",
 		"agentiscale &amp; &lt;x&gt;/agentiscaled.log",
+		"<key>ProcessType</key>\n\t<string>Standard</string>",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("plist lacks %q:\n%s", want, text)
