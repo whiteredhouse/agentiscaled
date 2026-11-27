@@ -27,7 +27,8 @@ the latest release, checked against its `checksums.txt`, in `/usr/local/bin` if 
 write to it, else `~/.local/bin`, without root. `sh -s -- -version vX.Y.Z` pins a
 release. See [Get started](docs/getting-started.md#1-install).
 
-`up` first asks which agent apps to connect and whether to offer an agent. It then
+`up` first asks which agent apps to connect, whether to install the agentiscale skill
+for Claude Code and Codex, and whether to offer an agent. It then
 signs you in through your browser if needed, joins this machine to your network and
 keeps the node running in the background. Later, `agentiscaled client connect`
 connects an app installed after `up`, and `agentiscaled agent add` offers another
@@ -60,7 +61,7 @@ token](docs/getting-started.md#nodes-that-join-with-a-workload-token).
 
 | Command | What it does |
 | --- | --- |
-| `agentiscaled up` | Sign in if needed, join, and start the node as a background service; in a terminal it first asks which agent apps to connect and whether to offer an agent |
+| `agentiscaled up` | Sign in if needed, join, and start the node as a background service; in a terminal it first asks which agent apps to connect, whether to install the agentiscale skill and whether to offer an agent |
 | `agentiscaled client list\|connect\|disconnect` | Connect your agent apps (Claude Desktop, Codex CLI) to the node, or disconnect them |
 | `agentiscaled agent add\|remove\|list` | Offer an agent (Codex, Claude Code, or any agent that speaks ACP) from this machine to your network, or stop offering it |
 | `agentiscaled agent drain\|undrain` | Let an agent finish its tasks but take no new ones, for example before maintenance, and let it take tasks again ([Drain an agent](docs/getting-started.md#drain-an-agent)) |

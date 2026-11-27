@@ -210,8 +210,9 @@ The agentiscale skill tells an agent when to hand work to another agent of your
 network and how: which tools to use, what to put in the request, how to follow
 the task and answer its questions, and what to do when it fails. It covers the
 `agentiscale` MCP server, the `agentiscale-network` server of a hosted agent and
-`agentiscaled task send` in a shell. Install it where Claude Code and the Codex
-CLI load your skills:
+`agentiscaled task send` in a shell. `agentiscaled up` offers to install it in a
+terminal (`up -skill` without asking). To install it yourself where Claude Code and
+the Codex CLI load your skills:
 
 ```sh
 agentiscaled skill install          # both; or name one: claude, codex
@@ -221,7 +222,8 @@ It goes to `~/.claude/skills/agentiscale` (under `$CLAUDE_CONFIG_DIR` if you set
 it) for Claude Code and `~/.agents/skills/agentiscale` for Codex. `-dir <project>`
 installs it into a project instead (`.claude/skills` and `.agents/skills` there),
 for everyone who works in it. Run the command again after an update of
-agentiscaled to take the skill's new version.
+agentiscaled to take the skill's new version; `up` does that for you for the copies
+in your user skills.
 
 The skill is a SKILL.md with what every agent needs, and one reference for each
 way in (`references/cli.md` for the shell, `references/mcp.md` for the MCP

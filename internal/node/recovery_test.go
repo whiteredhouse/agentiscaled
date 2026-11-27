@@ -37,6 +37,9 @@ import (
 func TestMain(m *testing.M) {
 	// Tests see only Codex installed, whatever this machine has.
 	installedRuntimes = func() []string { return []string{"codex"} }
+	// and no agentiscale skill to install or update, whatever this
+	// machine's home has.
+	skillTargets = func() []skillTarget { return nil }
 	if os.Getenv("AGENTISCALED_TEST_MCP") == "1" {
 		if err := caller.RunMCP(context.Background(), os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)

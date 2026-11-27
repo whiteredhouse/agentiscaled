@@ -32,7 +32,8 @@ codex; both when none is named) loads skills:
 
 With -dir, it installs into that project instead: DIR/.claude/skills/agentiscale
 and DIR/.agents/skills/agentiscale. Running install again updates the skill to
-this agentiscaled's version.
+this agentiscaled's version. agentiscaled up offers to install the skill for
+the runtimes it finds, and updates the copies in your user skills.
 
 Flags:
 `
@@ -82,6 +83,23 @@ func RunSkill(args []string, out, errOut io.Writer) error {
 // skillRuntimes are the runtimes whose skills directory skill install
 // knows; an agent of the acp runtime keeps its skills its own way.
 var skillRuntimes = []string{"claude", "codex"}
+
+// SkillRuntimes are the runtimes whose skills directory skill install knows.
+func SkillRuntimes() []string { return slices.Clone(skillRuntimes) }
+
+// UserSkillDir is where runtime loads the owner's agentiscale skill from,
+// as `skill install` without -dir writes it.
+func UserSkillDir(runtime string) (string, error) { return skillDir(runtime, "") }
+
+// SkillInstalled tells whether dir holds the agentiscale skill.
+func SkillInstalled(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, "SKILL.md"))
+	return err == nil
+}
+
+// InstallSkillDir writes the skill into dir, as `skill install` does, and
+// says what it did: installed, updated or unchanged.
+func InstallSkillDir(dir string) (string, error) { return installSkillFiles(dir) }
 
 // installSkill writes the skill for each runtime named, all when none is.
 func installSkill(names []string, project string, out io.Writer) error {
