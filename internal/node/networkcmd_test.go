@@ -145,18 +145,18 @@ func TestNetworkAgentListShowsDrains(t *testing.T) {
 	}
 }
 
-func TestNetworkAgentListShowsRuntimeAndNodeVersion(t *testing.T) {
+func TestNetworkAgentListShowsRuntime(t *testing.T) {
 	t.Parallel()
 	dir := shortTempDir(t)
 	local, remote := randomPeer(t), randomPeer(t)
 	serveDiscoveryFixture(t, dir, localAgentSocketName, func(w http.ResponseWriter, r *http.Request) {
 		// A raw document, as a node of any version could send it.
-		fmt.Fprintf(w, `{"peer_id":%q,"services":["helper","plain"],"runtimes":{"helper":"claude","plain":"Not A Word","Bad/Name":"codex"},"node_version":"1.2.3"}`, local)
+		fmt.Fprintf(w, `{"peer_id":%q,"services":["helper","plain"],"runtimes":{"helper":"claude","plain":"Not A Word","Bad/Name":"codex"}}`, local)
 	})
 	serveDiscoveryFixture(t, dir, meshnode.DefaultSocketName, func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]*api.DiscoveredProvider{
-			{SrvName: "reviewer", PeerId: remote, SrvMetadata: map[string]string{caller.RuntimeMetadataKey: "codex", caller.NodeVersionMetadataKey: "1.1.0-rc.1"}},
-			{SrvName: "odd", PeerId: remote, SrvMetadata: map[string]string{caller.RuntimeMetadataKey: "codex\x1b[2J", caller.NodeVersionMetadataKey: "1.0 dirty"}},
+			{SrvName: "reviewer", PeerId: remote, SrvMetadata: map[string]string{caller.RuntimeMetadataKey: "codex"}},
+			{SrvName: "odd", PeerId: remote, SrvMetadata: map[string]string{caller.RuntimeMetadataKey: "codex\x1b[2J"}},
 			{SrvName: "old", PeerId: remote},
 		})
 	})
@@ -168,20 +168,13 @@ func TestNetworkAgentListShowsRuntimeAndNodeVersion(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	type facts struct{ runtime, version string }
-	got := map[string]facts{}
+	got := map[string]string{}
 	for _, row := range result.Agents {
-		got[row.Service.String()] = facts{row.Runtime, row.NodeVersion}
+		got[row.Service.String()] = row.Runtime
 	}
-	want := map[string]facts{
-		"helper":   {"claude", "1.2.3"},
-		"plain":    {"", "1.2.3"},
-		"reviewer": {"codex", "1.1.0-rc.1"},
-		"odd":      {"", ""},
-		"old":      {"", ""},
-	}
+	want := map[string]string{"helper": "claude", "plain": "", "reviewer": "codex", "odd": "", "old": ""}
 	if !maps.Equal(got, want) {
-		t.Fatalf("runtime and version = %v, want %v", got, want)
+		t.Fatalf("runtimes = %v, want %v", got, want)
 	}
 	out.Reset()
 	if err := caller.RunNetwork(context.Background(), []string{"agent", "list", "-data-dir", dir}, nil, &out, io.Discard); err != nil {

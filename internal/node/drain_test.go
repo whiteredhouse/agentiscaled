@@ -142,7 +142,7 @@ func TestReportActivityPublishesTheDrain(t *testing.T) {
 	h := newAgentHarness(t, testSender)
 	h.svc.runtimeName = "codex"
 	// Every report says what runs the agent, drained or not.
-	facts := map[string]string{caller.RuntimeMetadataKey: "codex", caller.NodeVersionMetadataKey: ReleaseVersion}
+	facts := map[string]string{caller.RuntimeMetadataKey: "codex"}
 	published := make(chan map[string]string, 64)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -172,8 +172,8 @@ func TestReportActivityPublishesTheDrain(t *testing.T) {
 	if d := caller.DrainFromMetadata(drained); d == nil || d.Reason != "swap definition" || d.By != "node" {
 		t.Fatalf("drain: %+v", d)
 	}
-	if caller.RuntimeFromMetadata(drained) != "codex" || caller.NodeVersionFromMetadata(drained) != ReleaseVersion {
-		t.Fatalf("drained metadata lost the runtime or version: %v", drained)
+	if caller.RuntimeFromMetadata(drained) != "codex" {
+		t.Fatalf("drained metadata lost the runtime: %v", drained)
 	}
 	time.Sleep(50 * time.Millisecond)
 	select {
@@ -189,12 +189,11 @@ func TestReportActivityPublishesTheDrain(t *testing.T) {
 	}
 }
 
-// A version that is not a valid one, such as a hand-built binary's, is left
-// out rather than published.
-func TestServiceMetadataLeavesOutAnInvalidVersion(t *testing.T) {
-	md := agentActivity{Runtime: "claude"}.metadataFor("1.2.3 (dirty)")
-	if want := map[string]string{caller.RuntimeMetadataKey: "claude"}; !maps.Equal(md, want) {
-		t.Fatalf("metadata = %v, want %v", md, want)
+// A runtime that is not a valid one is left out rather than published, and
+// the largest metadata still fits.
+func TestServiceMetadataLeavesOutAnInvalidRuntime(t *testing.T) {
+	if md := (agentActivity{Runtime: "Codex CLI"}).serviceMetadata(); len(md) != 0 {
+		t.Fatalf("metadata = %v, want none", md)
 	}
 	if err := api.ValidateServiceMetadata(agentActivity{Runtime: "acp", Drain: &drainMark{Reason: strings.Repeat("\"", caller.MaxDrainReasonBytes)}}.serviceMetadata()); err != nil {
 		t.Fatalf("largest metadata does not fit: %v", err)

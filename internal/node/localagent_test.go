@@ -153,8 +153,8 @@ func TestLocalTasksReachEachAgent(t *testing.T) {
 	if err != nil || !slices.Equal(info.Services, []caller.AgentName{"helper", "writer"}) {
 		t.Fatalf("local info: %+v %v", info, err)
 	}
-	if want := map[caller.AgentName]string{"helper": "codex", "writer": "claude"}; !maps.Equal(info.Runtimes, want) || info.NodeVersion != ReleaseVersion {
-		t.Fatalf("local info runtimes %v and version %q, want %v and %q", info.Runtimes, info.NodeVersion, want, ReleaseVersion)
+	if want := map[caller.AgentName]string{"helper": "codex", "writer": "claude"}; !maps.Equal(info.Runtimes, want) {
+		t.Fatalf("local info runtimes %v, want %v", info.Runtimes, want)
 	}
 	for _, name := range []string{"writer", "helper"} {
 		fixes[name].release <- "answer from " + name

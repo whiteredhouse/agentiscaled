@@ -879,21 +879,12 @@ func (a agentActivity) serviceStatus() *api.ServiceStatus {
 var activityEvery = time.Second
 
 // serviceMetadata is the agent's service metadata, which callers see when
-// they discover it and the owner's console with its catalog: its runtime,
-// the node's version and its drain. A value that is not a valid one (such
-// as a hand-built release's version) is left out.
+// they discover it and the owner's console with its catalog: its runtime
+// and its drain. A runtime that is not a valid one is left out.
 func (a agentActivity) serviceMetadata() map[string]string {
-	return a.metadataFor(ReleaseVersion)
-}
-
-// metadataFor is serviceMetadata for a node of version.
-func (a agentActivity) metadataFor(version string) map[string]string {
 	md := map[string]string{}
 	if caller.ValidRuntime(a.Runtime) {
 		md[caller.RuntimeMetadataKey] = a.Runtime
-	}
-	if caller.ValidNodeVersion(version) {
-		md[caller.NodeVersionMetadataKey] = version
 	}
 	if a.Drain != nil {
 		md[caller.DrainMetadataKey] = a.Drain.Metadata()
