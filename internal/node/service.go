@@ -189,6 +189,10 @@ func (s *launchdService) installed() bool {
 
 func (s *launchdService) hint() string { return "" }
 
+// launchdPlist is the LaunchAgent of a node. Its ProcessType is Standard, not
+// Background: the agents' runs are the node's children and inherit its
+// priority, and a background one makes macOS throttle their CPU and disk use,
+// which slowed a one-line Claude Code task from about 6 s to about a minute.
 func launchdPlist(label string, spec serviceSpec) string {
 	esc := html.EscapeString
 	log := filepath.Join(spec.dataDir, logFile)
@@ -216,7 +220,7 @@ func launchdPlist(label string, spec serviceSpec) string {
 	<key>ThrottleInterval</key>
 	<integer>10</integer>
 	<key>ProcessType</key>
-	<string>Background</string>
+	<string>Standard</string>
 	<key>StandardOutPath</key>
 	<string>` + esc(log) + `</string>
 	<key>StandardErrorPath</key>
