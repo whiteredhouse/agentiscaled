@@ -220,7 +220,7 @@ func TestNetworkAgentListShowsModel(t *testing.T) {
 	local, remote := randomPeer(t), randomPeer(t)
 	serveDiscoveryFixture(t, dir, localAgentSocketName, func(w http.ResponseWriter, r *http.Request) {
 		// A raw document, as a node of any version could send it.
-		fmt.Fprintf(w, `{"peer_id":%q,"services":["helper","plain","old-local"],"models":{"helper":"sonnet","plain":"","old-local":7,"Bad/Name":"opus"}}`, local)
+		fmt.Fprintf(w, `{"peer_id":%q,"services":["helper","plain","old-local","null-local"],"models":{"helper":"sonnet","plain":"","old-local":7,"null-local":null,"Bad/Name":"opus"}}`, local)
 	})
 	serveDiscoveryFixture(t, dir, meshnode.DefaultSocketName, func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]*api.DiscoveredProvider{
@@ -243,14 +243,15 @@ func TestNetworkAgentListShowsModel(t *testing.T) {
 	for _, row := range result.Agents {
 		got[row.Service.String()] = caller.ShownModel(row.Model)
 	}
-	want := map[string]string{"helper": "sonnet", "plain": "default", "old-local": "-", "reviewer": "gpt-5.1-codex",
+	want := map[string]string{"helper": "sonnet", "plain": "default", "old-local": "-", "null-local": "-", "reviewer": "gpt-5.1-codex",
 		"bedrock": "us.anthropic.claude-opus-4-1-20250805-v1:0", "default": "default", "odd": "-", "old": "-"}
 	if !maps.Equal(got, want) {
 		t.Fatalf("models = %v, want %v", got, want)
 	}
 	// The JSON tells the runtime's default ("") from a node that does not
 	// say (no key).
-	if !strings.Contains(out.String(), `{"service":"plain","model":""}`) || !strings.Contains(out.String(), `{"service":"old-local"}`) {
+	if !strings.Contains(out.String(), `{"service":"plain","model":""}`) || !strings.Contains(out.String(), `{"service":"old-local"}`) ||
+		!strings.Contains(out.String(), `{"service":"null-local"}`) {
 		t.Fatalf("json: %s", out.String())
 	}
 	out.Reset()

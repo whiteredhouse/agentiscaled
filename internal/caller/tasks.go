@@ -216,8 +216,8 @@ func (t *Client) LocalInfo(ctx context.Context) (LocalInfo, error) {
 }
 
 // localStrings reads one of the local catalog's maps of agent facts, such
-// as its runtimes, entry by entry, leaving out any that is not a string,
-// and all of them when they are not an object.
+// as its runtimes, entry by entry, leaving out any that is not a string
+// (null too), and all of them when they are not an object.
 func localStrings(data json.RawMessage) map[string]string {
 	var entries map[string]json.RawMessage
 	if json.Unmarshal(data, &entries) != nil {
@@ -225,9 +225,11 @@ func localStrings(data json.RawMessage) map[string]string {
 	}
 	values := make(map[string]string, len(entries))
 	for name, value := range entries {
-		var v string
-		if json.Unmarshal(value, &v) == nil {
-			values[name] = v
+		// Go reads null into a string as "", which for a model would say
+		// the runtime's default; a null says nothing, so it is left out.
+		var v *string
+		if json.Unmarshal(value, &v) == nil && v != nil {
+			values[name] = *v
 		}
 	}
 	return values
