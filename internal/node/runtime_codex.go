@@ -193,12 +193,6 @@ func tooBroad(dir string) bool {
 
 func (r *codexRuntime) Describe(card *a2a.AgentCard) {
 	card.Description = "A Codex CLI agent on this node that works in its configured directory under local runtime permissions. Send one text message with the task; it answers with the result, or asks a question (input-required) that you answer with a message on the same task."
-	card.Skills = []a2a.AgentSkill{{
-		ID:          "task",
-		Name:        "Task",
-		Description: "Does a task in the agent's directory within its configured permissions.",
-		Tags:        []string{"codex"},
-	}}
 }
 
 // Skills lists the skills Codex loads from the directory: those in a skill

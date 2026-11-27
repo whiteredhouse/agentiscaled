@@ -69,7 +69,8 @@ const (
 // service around it keeps the A2A contract and the bounds, so supporting
 // another agent CLI means adding a runtime.
 type runtime interface {
-	// Describe says on the agent card what the agent does.
+	// Describe says on the agent card what the agent does. The card's
+	// skills come from skillLister, not from Describe.
 	Describe(card *a2a.AgentCard)
 	// Run performs one turn of a task in dir: the task itself or, with
 	// req.Session, the caller's answer to the question the turn before it
@@ -954,8 +955,10 @@ func (s *agentService) card(name string) *a2a.AgentCard {
 		Capabilities: a2a.AgentCapabilities{Streaming: true},
 	}
 	s.rt.Describe(card)
-	// The directory's own skills, when the runtime loads them, say more
-	// than the runtime's generic one.
+	// The card lists only the skills the agent loads from its directory,
+	// and none (an empty list, as A2A requires the field) when it loads
+	// none or its runtime cannot say (acp).
+	card.Skills = []a2a.AgentSkill{}
 	if l, ok := s.rt.(skillLister); ok {
 		if skills := l.Skills(s.dir); len(skills) > 0 {
 			card.Skills = skills

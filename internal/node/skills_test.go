@@ -123,7 +123,7 @@ func TestCardListsAtMostMaxCardSkills(t *testing.T) {
 }
 
 // The card a caller reads lists the directory's skills as they are when it
-// reads it, and the runtime's generic skill when the directory has none.
+// reads it, and an empty list when the directory has none.
 func TestAgentCardShowsTheCurrentSkills(t *testing.T) {
 	dir := t.TempDir()
 	svc, err := newAgentService(dir, &claudeRuntime{policy: agentPolicy{DirSkills: true, OwnerConfig: true}}, t.TempDir(), "helper")
@@ -150,8 +150,8 @@ func TestAgentCardShowsTheCurrentSkills(t *testing.T) {
 		}
 		return card
 	}
-	if got := skillIDs(read().Skills); !slices.Equal(got, []string{"task"}) {
-		t.Fatalf("card skills without directory skills = %v, want the generic task", got)
+	if got := read().Skills; got == nil || len(got) != 0 {
+		t.Fatalf("card skills without directory skills = %v, want an empty list", skillIDs(got))
 	}
 	writeSkillFile(t, filepath.Join(dir, ".claude", "skills"), "summarize", "---\nname: summarize\ndescription: Summarizes a document.\n---\n")
 	card := read()

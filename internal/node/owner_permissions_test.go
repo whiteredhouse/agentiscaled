@@ -54,7 +54,7 @@ func TestCodexOwnerConfigurationKeepsPermissions(t *testing.T) {
 	}
 	card := new(a2a.AgentCard)
 	runtime.Describe(card)
-	if strings.Contains(card.Description, "read-only") || strings.Contains(card.Skills[0].Description, "without modifying") {
+	if strings.Contains(card.Description, "read-only") {
 		t.Errorf("card restricts generic work: %+v", card)
 	}
 }

@@ -401,8 +401,8 @@ are not the directory's and are never listed. Neither are skills only a person c
 start (`disable-model-invocation: true`), or a skill without a description. The card
 lists at most 64, sorted by name, and is read again for each caller, so a skill you
 add shows without restarting the node. With `-dir-skills=false`, or with no skills
-in its directory, an agent lists one general `task` skill, as an ACP agent always
-does. Every agent and client in your network can read the card, and so these
+in its directory, the card's `skills` list is empty, as it always is for an ACP
+agent, which has no way to say which skills it loads. Every agent and client in your network can read the card, and so these
 names and descriptions: keep a skill you don't want shown out of an offered
 agent's directory, or offer the agent with `-dir-skills=false`.
 
