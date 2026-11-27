@@ -61,3 +61,35 @@ func TestSkillsFromMetadata(t *testing.T) {
 		t.Error("no key: skills")
 	}
 }
+
+// A model reads back as the node wrote it; "" is the runtime's default,
+// and a missing key or a value that is not a model says nothing.
+func TestModelFromMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		md    map[string]string
+		model string
+		ok    bool
+	}{
+		{map[string]string{ModelMetadataKey: "sonnet"}, "sonnet", true},
+		{map[string]string{ModelMetadataKey: "claude-opus-4-1[1m]"}, "claude-opus-4-1[1m]", true},
+		{map[string]string{ModelMetadataKey: "arn:aws:bedrock:eu-west-2:123456789012:inference-profile/eu.anthropic.claude"}, "arn:aws:bedrock:eu-west-2:123456789012:inference-profile/eu.anthropic.claude", true},
+		{map[string]string{ModelMetadataKey: ""}, "", true},
+		{map[string]string{ModelMetadataKey: strings.Repeat("m", 128)}, strings.Repeat("m", 128), true},
+		{map[string]string{ModelMetadataKey: strings.Repeat("m", 129)}, "", false},
+		{map[string]string{ModelMetadataKey: "gpt 5"}, "", false},
+		{map[string]string{ModelMetadataKey: "-rf"}, "", false},
+		{map[string]string{ModelMetadataKey: "opus\x1b[2J"}, "", false},
+		{map[string]string{}, "", false},
+		{nil, "", false},
+	} {
+		if model, ok := ModelFromMetadata(tc.md); model != tc.model || ok != tc.ok {
+			t.Errorf("%q: %q %v, want %q %v", tc.md[ModelMetadataKey], model, ok, tc.model, tc.ok)
+		}
+	}
+	sonnet, none := "sonnet", ""
+	for model, want := range map[*string]string{&sonnet: "sonnet", &none: "default", nil: "-"} {
+		if got := ShownModel(model); got != want {
+			t.Errorf("ShownModel = %q, want %q", got, want)
+		}
+	}
+}

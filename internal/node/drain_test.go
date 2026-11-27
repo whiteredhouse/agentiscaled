@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -186,8 +187,9 @@ func TestReportActivityPublishesTheDrain(t *testing.T) {
 	activityEvery = 5 * time.Millisecond
 	h := newAgentHarness(t, testSender)
 	h.svc.runtimeName = "codex"
-	// Every report says what runs the agent, drained or not.
-	facts := map[string]string{caller.RuntimeMetadataKey: "codex"}
+	// Every report says what runs the agent, drained or not, and that it
+	// runs its runtime's default model.
+	facts := map[string]string{caller.RuntimeMetadataKey: "codex", caller.ModelMetadataKey: ""}
 	published := make(chan map[string]string, 64)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -242,14 +244,23 @@ func TestReportActivityPublishesTheDrain(t *testing.T) {
 	}
 }
 
-// A runtime that is not a valid one is left out rather than published, and
-// the largest metadata still fits.
+// A runtime or model that is not a valid one is left out rather than
+// published, and the largest metadata still fits.
 func TestServiceMetadataLeavesOutAnInvalidRuntime(t *testing.T) {
-	if md := (agentActivity{Runtime: "Codex CLI"}).serviceMetadata(); len(md) != 0 {
+	if md := (agentActivity{Runtime: "Codex CLI", Model: "son net"}).serviceMetadata(); len(md) != 0 {
 		t.Fatalf("metadata = %v, want none", md)
 	}
-	if err := api.ValidateServiceMetadata(agentActivity{Runtime: "acp", Drain: &drainMark{Reason: strings.Repeat("\"", caller.MaxDrainReasonBytes)}}.serviceMetadata()); err != nil {
+	var skills []string
+	for i := range 64 {
+		skills = append(skills, fmt.Sprintf("%s-%02d", strings.Repeat("s", 61), i))
+	}
+	largest := agentActivity{Runtime: "acp", Model: strings.Repeat("m", 128), Skills: skills,
+		Drain: &drainMark{Reason: strings.Repeat("\"", caller.MaxDrainReasonBytes)}}.serviceMetadata()
+	if err := api.ValidateServiceMetadata(largest); err != nil {
 		t.Fatalf("largest metadata does not fit: %v", err)
+	}
+	if m, ok := caller.ModelFromMetadata(largest); !ok || m != strings.Repeat("m", 128) {
+		t.Fatalf("largest metadata lost the model: %v", largest)
 	}
 }
 

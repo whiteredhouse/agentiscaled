@@ -81,8 +81,12 @@ agent](getting-started.md#drain-an-agent)). The table's STATE column says
 `available`, or the drain in the words `agent list` uses.
 Each agent also shows what runs it, as its node says: the table's RUNTIME column
 and `runtime` in JSON (`codex`, `claude` or `acp`). An agent on a node too old to
-say has none, and the table shows `-`. The node writes this value itself, so it
-describes the agent but grants nothing.
+say has none, and the table shows `-`. The MODEL column and `model` in JSON say
+which model the agent asks for: the one its [definition](#give-an-agent-a-subagents-role)
+sets, or `default` in the table (`""` in JSON) when it sets none and its runtime
+picks the model when it runs, from your own settings for example. A node too
+old to say leaves `model` out, and the table shows `-`. The node writes these
+values itself, so they describe the agent but grant nothing.
 To see the agents configured on this machine, use `agentiscaled agent list`.
 
 `network agent card` prints the agent's current A2A card as JSON. Both
@@ -496,7 +500,9 @@ written for, and never widens the agent's permissions; on the other runtime
 (to those of Read, Grep and Glob it names, with `-owner-config=false`); MCP tools
 in that list are not built-in and are left out. A Codex agent's `model` and
 `model_reasoning_effort` apply, and `sandbox_mode = "read-only"` makes a run with
-your configuration read-only; other sandbox modes are ignored.
+your configuration read-only; other sandbox modes are ignored. The model the
+file sets is the agent's model in `agent list`, `network agent list` and the
+console; on the other runtime, and without a definition, they say `default`.
 
 Each task starts a fresh session with none of the caller's conversation, so it
 suits a task you can describe in one message. While it works, the task's

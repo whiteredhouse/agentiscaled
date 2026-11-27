@@ -6,11 +6,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
+	"github.com/whiteredhouse/agentiscaled/internal/caller"
 )
 
 const claudeAgentFile = `---
@@ -310,6 +312,10 @@ func TestAgentAddDefinition(t *testing.T) {
 	if got := svc.card(a.Name).Description; got != "Use to write and edit user docs." {
 		t.Errorf("card description %q", got)
 	}
+	// Callers and the console see the model the file sets.
+	if md := svc.activity().serviceMetadata(); svc.model != "gpt-5-codex" || md[caller.ModelMetadataKey] != "gpt-5-codex" {
+		t.Errorf("model %q, metadata %v", svc.model, md)
+	}
 	if rt := svc.rt.(*codexRuntime); rt.def == nil || rt.def.Name != "docs-writer" {
 		t.Errorf("runtime definition: %+v", rt.def)
 	}
@@ -317,7 +323,8 @@ func TestAgentAddDefinition(t *testing.T) {
 	// until the next add.
 	out.Reset()
 	if err := RunAgent(context.Background(), []string{"list"}, &out); err != nil || !strings.Contains(out.String(), "DEFINITION") ||
-		!strings.Contains(out.String(), "agents/docs-writer/definition.toml") || strings.Contains(out.String(), ".codex/agents") {
+		!strings.Contains(out.String(), "agents/docs-writer/definition.toml") || strings.Contains(out.String(), ".codex/agents") ||
+		!regexp.MustCompile(`(?m)^docs-writer +.* codex +gpt-5-codex +`).MatchString(out.String()) {
 		t.Fatalf("list: %v\n%s", err, &out)
 	}
 	write(t, path, strings.Replace(codexAgentFile, "You write docs.", "You write poems.", 1))
@@ -382,5 +389,66 @@ func TestStatusShowsDataDir(t *testing.T) {
 	var out bytes.Buffer
 	if err := RunStatus(context.Background(), []string{"-data-dir", dir}, &out); err != nil || !strings.Contains(out.String(), "Data:     "+dir+"\n") || strings.Contains(out.String(), "Tasks:") {
 		t.Fatalf("status: %v\n%s", err, &out)
+	}
+}
+
+// An agent asks for the model its definition sets only on the runtime the
+// file was written for; elsewhere, and without one, it runs the runtime's
+// default. agent list shows the same.
+func TestAgentModelComesFromItsDefinition(t *testing.T) {
+	t.Parallel()
+	claude, err := parseDefinition("reviewer.md", []byte(claudeAgentFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inherit, err := parseDefinition("inherit.md", []byte(strings.Replace(claudeAgentFile, "model: sonnet", "model: inherit", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var none *agentDefinition
+	for _, tc := range []struct {
+		def       *agentDefinition
+		rt, model string
+	}{
+		{claude, "claude", "sonnet"}, {claude, "codex", ""}, {claude, "acp", ""},
+		{inherit, "claude", ""}, {none, "claude", ""},
+	} {
+		if got := tc.def.modelOn(tc.rt); got != tc.model {
+			t.Errorf("%v on %s: %q, want %q", tc.def != nil, tc.rt, got, tc.model)
+		}
+	}
+
+	dir := shortTempDir(t)
+	agents := []agentConfig{
+		{Runtime: "claude", Name: "reviewer", Dir: t.TempDir(), Definition: "/elsewhere/reviewer.md"},
+		{Runtime: "codex", Name: "cross", Dir: t.TempDir(), Definition: "/elsewhere/reviewer.md"},
+		{Runtime: "codex", Name: "plain", Dir: t.TempDir()},
+		{Runtime: "claude", Name: "lost", Dir: t.TempDir(), Definition: "/elsewhere/lost.md"},
+		{Runtime: "claude", Name: "odd", Dir: t.TempDir(), Definition: "/elsewhere/odd.md"},
+	}
+	for _, a := range agents[:2] {
+		write(t, definitionCopy(dir, a.Name, a.Definition), claudeAgentFile)
+	}
+	write(t, definitionCopy(dir, "odd", "odd.md"), strings.Replace(claudeAgentFile, "model: sonnet", `model: "son net"`, 1))
+	writeSettings(t, dir, settings{Control: "https://control.test", Agents: agents})
+	got, err := runAgentOut(dir, "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	if f := strings.Fields(lines[0]); len(f) < 4 || f[3] != "MODEL" {
+		t.Fatalf("header: %q", lines[0])
+	}
+	want := map[string]string{"reviewer": "sonnet", "cross": "default", "plain": "default", "lost": "-", "odd": "-"}
+	for _, line := range lines[1:] {
+		f := strings.Fields(line)
+		// STATE is "node not running": three words.
+		if len(f) < 6 || f[5] != want[f[0]] {
+			t.Errorf("line %q, want model %q:\n%s", line, want[f[0]], got)
+		}
+		delete(want, f[0])
+	}
+	if len(want) > 0 {
+		t.Errorf("no rows for %v:\n%s", want, got)
 	}
 }

@@ -268,6 +268,17 @@ func applyDefinition(rt runtime, path string) (*agentDefinition, error) {
 	return d, nil
 }
 
+// modelOn is the model an agent of runtime rt with definition d asks its
+// runtime for: the model d sets when rt is the runtime d was written for,
+// else "" (the runtime's default, which agentiscaled does not know: the
+// runtime picks it when it runs, from the owner's settings, say).
+func (d *agentDefinition) modelOn(rt string) string {
+	if d == nil || d.WrittenFor != rt {
+		return ""
+	}
+	return d.Model
+}
+
 // ignoredOn names the settings of d that runtime rt ignores because d was
 // written for another runtime; empty when it ignores none.
 func (d *agentDefinition) ignoredOn(rt string) []string {
