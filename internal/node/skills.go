@@ -35,6 +35,17 @@ const (
 
 var skillName = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
+// skillNaming is where a runtime takes a skill's name from.
+type skillNaming int
+
+const (
+	// namedInFile takes it from the name in SKILL.md's front matter, as
+	// Codex does.
+	namedInFile skillNaming = iota
+	// namedByFolder takes it from the skill's folder, as Claude Code does.
+	namedByFolder
+)
+
 // directorySkills lists the skills in roots, which are skill directories
 // (each subdirectory holding a SKILL.md is a skill), for an agent card
 // tagged tag. Only a skill's name and description are read; a skill without
@@ -42,7 +53,7 @@ var skillName = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 // (disable-model-invocation), is left out, as is a second skill of a name
 // already listed. The list is sorted by name and holds at most
 // maxCardSkills.
-func directorySkills(roots []string, tag string) []a2a.AgentSkill {
+func directorySkills(roots []string, naming skillNaming, tag string) []a2a.AgentSkill {
 	seen := map[string]bool{}
 	var skills []a2a.AgentSkill
 	for _, root := range roots {
@@ -55,7 +66,10 @@ func directorySkills(roots []string, tag string) []a2a.AgentSkill {
 				continue
 			}
 			name, description, ok := readSkill(filepath.Join(root, e.Name(), "SKILL.md"))
-			if !ok || seen[name] {
+			if naming == namedByFolder {
+				name = e.Name()
+			}
+			if !ok || len(name) > maxSkillNameLen || !skillName.MatchString(name) || seen[name] {
 				continue
 			}
 			seen[name] = true
@@ -104,16 +118,19 @@ func readSkill(path string) (name, description string, ok bool) {
 	}
 	name = strings.TrimSpace(m.Name)
 	description = strings.Join(strings.Fields(m.Description), " ")
-	if len(name) > maxSkillNameLen || !skillName.MatchString(name) ||
-		description == "" || len([]rune(description)) > maxSkillDescriptionLen {
+	if description == "" || len([]rune(description)) > maxSkillDescriptionLen {
 		return "", "", false
 	}
 	return name, description, true
 }
 
 // upToRepository is dir and each directory above it up to the root of the
-// Git repository dir is in, nearest first; only dir if it is in none.
-func upToRepository(dir string) []string {
+// Git repository dir is in, nearest first. Outside a repository it is dir
+// only, or with aboveOutside each directory above it short of the user's
+// home directory and the root, whose skills are the user's or the machine's
+// rather than the directory's.
+func upToRepository(dir string, aboveOutside bool) []string {
+	dir = filepath.Clean(dir)
 	dirs := []string{dir}
 	for d := dir; ; {
 		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
@@ -121,9 +138,24 @@ func upToRepository(dir string) []string {
 		}
 		parent := filepath.Dir(d)
 		if parent == d {
-			return dirs[:1]
+			break
 		}
 		d = parent
 		dirs = append(dirs, d)
 	}
+	if !aboveOutside {
+		return dirs[:1]
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		home = filepath.Clean(home)
+	}
+	// dirs ends with the root; each directory from the home directory up
+	// is left out, and dir itself is always kept.
+	for i, d := range dirs {
+		if i > 0 && (d == home || filepath.Dir(d) == d) {
+			return dirs[:i]
+		}
+	}
+	return dirs
 }

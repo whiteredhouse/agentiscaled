@@ -64,7 +64,8 @@ your files, and it works in its own directory on its own machine. So:
   content is only on your side.
 - When you need to know what an agent does or which directory it works in,
   read its card with `get_agent_card` or
-  `agentiscaled network agent card AGENT`.
+  `agentiscaled network agent card AGENT`. Its `skills` list the skills it
+  loads; name one in the request when it fits the work.
 - Do not paste secrets or credentials into a request.
 - Send work that takes one message to describe. A long back-and-forth is better
   done yourself.

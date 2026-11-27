@@ -198,7 +198,6 @@ func (r *codexRuntime) Describe(card *a2a.AgentCard) {
 		Name:        "Task",
 		Description: "Does a task in the agent's directory within its configured permissions.",
 		Tags:        []string{"codex"},
-		Examples:    []string{"Implement the change described in the task", "Review the uncommitted changes", "Explain how requests are authenticated"},
 	}}
 }
 
@@ -211,12 +210,12 @@ func (r *codexRuntime) Skills(dir string) []a2a.AgentSkill {
 		return nil
 	}
 	var roots []string
-	for _, d := range upToRepository(dir) {
+	for _, d := range upToRepository(dir, false) {
 		for _, root := range skillRoots {
 			roots = append(roots, filepath.Join(d, root))
 		}
 	}
-	return directorySkills(roots, "codex")
+	return directorySkills(roots, namedInFile, "codex")
 }
 
 // Run runs `codex exec` in dir:

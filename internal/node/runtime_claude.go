@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -167,14 +168,38 @@ func claudeLogin(ctx context.Context, command, profileDir string, policy agentPo
 	return cmd, "CLAUDE_CONFIG_DIR=" + shellQuote(config) + " " + shellQuote(command) + " auth login"
 }
 
-// Skills lists the skills Claude Code loads from the directory's
-// .claude/skills. Your own skills and plugins' are not the directory's and
-// are not listed.
+// Skills lists the skills Claude Code loads from the directory: those in
+// .claude/skills of dir and of each directory above it up to its
+// repository's root, or outside a repository short of the home directory.
+// Claude Code names a skill by its folder. Your own skills and plugins' are
+// not the directory's and are not listed. A run that cannot use skills lists
+// none: a restricted one (-owner-config=false) loads none, and a definition
+// may leave out the Skill tool.
 func (r *claudeRuntime) Skills(dir string) []a2a.AgentSkill {
-	if !r.policy.DirSkills {
+	if !r.policy.DirSkills || !r.policy.OwnerConfig || !claudeCanUseSkills(r.def) {
 		return nil
 	}
-	return directorySkills([]string{filepath.Join(dir, ".claude", "skills")}, "claude")
+	var roots []string
+	for _, d := range upToRepository(dir, true) {
+		roots = append(roots, filepath.Join(d, ".claude", "skills"))
+	}
+	return directorySkills(roots, namedByFolder, "claude")
+}
+
+// claudeSkillTool is Claude Code's tool that runs a skill.
+const claudeSkillTool = "Skill"
+
+// claudeCanUseSkills says whether a run with the owner's configuration and
+// definition d may use the Skill tool.
+func claudeCanUseSkills(d *agentDefinition) bool {
+	if d == nil || d.WrittenFor != "claude" {
+		return true
+	}
+	if slices.Contains(d.DisallowedTools, claudeSkillTool) {
+		return false
+	}
+	tools, ok := claudeTools(d, nil)
+	return !ok || slices.Contains(strings.Split(tools, ","), claudeSkillTool)
 }
 
 func (r *claudeRuntime) Describe(card *a2a.AgentCard) {
@@ -184,7 +209,6 @@ func (r *claudeRuntime) Describe(card *a2a.AgentCard) {
 		Name:        "Task",
 		Description: "Does a task in the agent's directory within its configured permissions.",
 		Tags:        []string{"claude"},
-		Examples:    []string{"Implement the change described in the task", "Review the uncommitted changes", "Explain how requests are authenticated"},
 	}}
 }
 
