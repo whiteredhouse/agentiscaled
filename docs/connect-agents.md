@@ -74,9 +74,11 @@ agentiscaled network agent card reviewer
 discovered on other nodes. It identifies the hosting node for each agent.
 Use `network agent list -json` for scripts. The `agents` array gives the
 service name as `service` and includes a `peer_id` for a remote agent. An agent
-whose owner drained it has `draining`, with the owner's `reason` and `since`,
-when the drain began: it finishes its tasks but refuses new ones (see [Drain an
-agent](getting-started.md#drain-an-agent)).
+whose owner drained it has `draining`, with the owner's `reason`, `since`,
+when the drain began, and `drained: true` once it has no task left: it finishes
+its tasks but refuses new ones (see [Drain an
+agent](getting-started.md#drain-an-agent)). The table's STATE column says
+`available`, or the drain in the words `agent list` uses.
 Each agent also shows what runs it, as its node says: the table's RUNTIME column
 and `runtime` in JSON (`codex`, `claude` or `acp`). An agent on a node too old to
 say has none, and the table shows `-`. The node writes this value itself, so it

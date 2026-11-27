@@ -437,17 +437,9 @@ func activityText(activity map[string]agentActivity, running bool, name string, 
 		if drain == nil {
 			return ""
 		}
-		text := "drained"
-		if busy {
-			text = "draining"
-		}
-		if !drain.Since.IsZero() {
-			text += sinceText(&drain.Since, now)
-		}
-		if drain.Reason != "" {
-			text += ": " + drain.Reason
-		}
-		return text
+		d := *drain
+		d.Drained = !busy
+		return d.State(now)
 	}
 	if !running {
 		if drain != nil {
@@ -468,13 +460,13 @@ func activityText(activity map[string]agentActivity, running bool, name string, 
 	}
 	var parts []string
 	if a.State == activityBusy {
-		parts = append(parts, "busy"+sinceText(a.Since, now))
+		parts = append(parts, "busy"+caller.SinceText(a.Since, now))
 	}
 	switch {
 	case a.Waiting == 1:
-		parts = append(parts, "waiting for an answer"+sinceText(a.WaitingSince, now))
+		parts = append(parts, "waiting for an answer"+caller.SinceText(a.WaitingSince, now))
 	case a.Waiting > 1:
-		parts = append(parts, fmt.Sprintf("waiting for %d answers", a.Waiting)+sinceText(a.WaitingSince, now))
+		parts = append(parts, fmt.Sprintf("waiting for %d answers", a.Waiting)+caller.SinceText(a.WaitingSince, now))
 	}
 	if drain != nil {
 		parts = append(parts, drainText(len(parts) > 0))
@@ -859,22 +851,6 @@ func unfinishedText(a agentActivity) string {
 		parts = append(parts, fmt.Sprintf("%d tasks that wait for answers", a.Waiting))
 	}
 	return strings.Join(parts, " and ")
-}
-
-// sinceText is how long ago t was, rounded for a glance: " (45s)",
-// " (12m)", " (2h5m)".
-func sinceText(t *time.Time, now time.Time) string {
-	if t == nil {
-		return ""
-	}
-	d := max(now.Sub(*t), 0)
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf(" (%ds)", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf(" (%dm)", int(d.Minutes()))
-	}
-	return fmt.Sprintf(" (%dh%dm)", int(d.Hours()), int(d.Minutes())%60)
 }
 
 // runtimeTitle is how a runtime's agent files are called.

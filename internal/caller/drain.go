@@ -3,6 +3,7 @@ package caller
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,11 @@ type Drain struct {
 	Since time.Time `json:"since,omitzero"`
 	// By says where the drain was set.
 	By string `json:"by,omitempty"`
+	// Drained says that the agent has no task left: none running and none
+	// waiting for an answer. The node sets it from what the agent is doing
+	// each time it publishes the drain, and never saves it in a drain file. Without
+	// it the agent is still draining, also when its node is too old to say.
+	Drained bool `json:"drained,omitempty"`
 }
 
 // DrainReasonError says what is wrong with a drain's reason, or "" when
@@ -84,11 +90,11 @@ func (d Drain) Valid() Drain {
 
 // Metadata is the drain's service metadata value, which always fits in
 // one: it leaves out any field the drain may not carry, and keeps only
-// the time should the rest still not fit.
+// the time and Drained should the rest still not fit.
 func (d Drain) Metadata() string {
 	v := encodeDrain(d.Valid())
 	if len(v) > maxDrainMetadataBytes {
-		v = encodeDrain(Drain{Since: d.Since})
+		v = encodeDrain(Drain{Since: d.Since, Drained: d.Drained})
 	}
 	return v
 }
@@ -118,10 +124,49 @@ func DrainFromMetadata(md map[string]string) *Drain {
 	return &d
 }
 
+// Word is the drain's state: "drained" once the agent has no task left,
+// "draining" before.
+func (d Drain) Word() string {
+	if d.Drained {
+		return "drained"
+	}
+	return "draining"
+}
+
 // Text is how a drain reads after an agent's name: "is draining: reason".
 func (d Drain) Text() string {
 	if d.Reason == "" {
-		return "is draining"
+		return "is " + d.Word()
 	}
-	return "is draining: " + d.Reason
+	return "is " + d.Word() + ": " + d.Reason
+}
+
+// State is how the agent lists show a drain in their STATE column: its
+// word, how long ago it began as of now, and its reason, such as
+// "drained (2h5m): reboot".
+func (d Drain) State(now time.Time) string {
+	text := d.Word()
+	if !d.Since.IsZero() {
+		text += SinceText(&d.Since, now)
+	}
+	if d.Reason != "" {
+		text += ": " + d.Reason
+	}
+	return text
+}
+
+// SinceText is how long ago t was as of now, as the agent lists show it
+// after a state: " (42s)", " (5m)", " (18h29m)"; "" without a time.
+func SinceText(t *time.Time, now time.Time) string {
+	if t == nil {
+		return ""
+	}
+	d := max(now.Sub(*t), 0)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf(" (%ds)", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf(" (%dm)", int(d.Minutes()))
+	}
+	return fmt.Sprintf(" (%dh%dm)", int(d.Hours()), int(d.Minutes())%60)
 }

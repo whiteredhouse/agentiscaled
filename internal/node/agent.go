@@ -854,6 +854,11 @@ func (s *agentService) activityLocked(now time.Time) agentActivity {
 			a.WaitingSince = &since
 		}
 	}
+	// What callers see of the drain says whether work is left, so that
+	// every list tells draining from drained as agent list does.
+	if a.Drain != nil {
+		a.Drain.Drained = a.State == activityIdle && a.Waiting == 0
+	}
 	return a
 }
 

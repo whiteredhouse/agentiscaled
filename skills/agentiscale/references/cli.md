@@ -14,7 +14,8 @@ agentiscaled network agent card AGENT            # its current card: what it doe
   `network agent card` and to every task command about it. Without `-peer`, an
   agent of that name on this node comes first.
 - An entry with `draining` is an agent its owner is taking out of service: it
-  refuses new tasks, and `draining.reason` says why. Tell the person rather than
+  refuses new tasks, `draining.reason` says why, and `draining.drained` says it
+  has no task left. The table's STATE column shows the same. Tell the person rather than
   sending it work; `task send` passes over it when another node offers the same
   name.
 - An agent that is not in the list is offline or not shared: check the name

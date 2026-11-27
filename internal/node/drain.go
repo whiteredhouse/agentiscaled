@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/whiteredhouse/agentiscaled/internal/caller"
 )
@@ -20,6 +21,15 @@ const drainFileName = "drain.json"
 
 func drainPath(dataDir, name string) string {
 	return filepath.Join(agentStateDir(dataDir, name), drainFileName)
+}
+
+// drainFile is what a drain file holds: the owner's fields only. Whether
+// the agent still has work is never saved; the node reads it from the
+// agent's activity each time, so a drained field in the file is ignored.
+type drainFile struct {
+	Reason string    `json:"reason,omitempty"`
+	Since  time.Time `json:"since,omitzero"`
+	By     string    `json:"by,omitempty"`
 }
 
 // maxDrainFileBytes bounds what the node reads of a drain file; the agent
@@ -38,12 +48,12 @@ func loadDrain(path string) *drainMark {
 		return &drainMark{}
 	}
 	defer f.Close()
-	var d drainMark
+	var saved drainFile
 	b, err := io.ReadAll(io.LimitReader(f, maxDrainFileBytes+1))
-	if err != nil || len(b) > maxDrainFileBytes || json.Unmarshal(b, &d) != nil {
+	if err != nil || len(b) > maxDrainFileBytes || json.Unmarshal(b, &saved) != nil {
 		return &drainMark{}
 	}
-	d = d.Valid()
+	d := drainMark{Reason: saved.Reason, Since: saved.Since, By: saved.By}.Valid()
 	return &d
 }
 
@@ -53,7 +63,7 @@ func saveDrain(dataDir, name string, d drainMark) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	b, err := json.Marshal(d)
+	b, err := json.Marshal(drainFile{Reason: d.Reason, Since: d.Since, By: d.By})
 	if err != nil {
 		return err
 	}

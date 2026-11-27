@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -100,11 +101,12 @@ func TestNetworkAgentListShowsDrains(t *testing.T) {
 	local, remote := randomPeer(t), randomPeer(t)
 	since := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	serveDiscoveryFixture(t, dir, localAgentSocketName, func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(localAgentInfo{PeerID: local, Services: []caller.AgentName{"helper", "open"}, Draining: map[caller.AgentName]drainMark{"helper": {Reason: "re-login", Since: since, By: "node"}}})
+		json.NewEncoder(w).Encode(localAgentInfo{PeerID: local, Services: []caller.AgentName{"helper", "open"}, Draining: map[caller.AgentName]drainMark{"helper": {Reason: "re-login", Since: since, By: "node", Drained: true}}})
 	})
 	serveDiscoveryFixture(t, dir, meshnode.DefaultSocketName, func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]*api.DiscoveredProvider{
 			{SrvName: "reviewer", PeerId: remote, SrvDescription: "reviews", SrvMetadata: map[string]string{caller.DrainMetadataKey: `{"reason":"reboot","since":"2026-01-02T03:04:05Z","by":"node"}`}},
+			{SrvName: "idle", PeerId: remote, SrvMetadata: map[string]string{caller.DrainMetadataKey: `{"since":"2026-01-02T03:04:05Z","by":"node","drained":true}`}},
 			{SrvName: "broken", PeerId: remote, SrvMetadata: map[string]string{caller.DrainMetadataKey: "not json"}},
 			{SrvName: "other", PeerId: remote, SrvMetadata: map[string]string{"something.else": "x"}},
 		})
@@ -122,9 +124,10 @@ func TestNetworkAgentListShowsDrains(t *testing.T) {
 		drains[row.Service.String()] = row.Draining
 	}
 	want := map[string]*caller.Drain{
-		"helper":   {Reason: "re-login", Since: since, By: "node"},
+		"helper":   {Reason: "re-login", Since: since, By: "node", Drained: true},
 		"open":     nil,
 		"reviewer": {Reason: "reboot", Since: since, By: "node"},
+		"idle":     {Since: since, By: "node", Drained: true},
 		"broken":   {},
 		"other":    nil,
 	}
@@ -138,9 +141,20 @@ func TestNetworkAgentListShowsDrains(t *testing.T) {
 	if err := caller.RunNetwork(context.Background(), []string{"agent", "list", "-data-dir", dir}, nil, &out, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	for _, line := range []string{"(draining: re-login)", "(draining: reboot) reviews", "(draining)"} {
-		if !strings.Contains(out.String(), line) {
-			t.Errorf("table lacks %q:\n%s", line, out.String())
+	// The STATE column uses agent list's words: draining while work is
+	// left, which a node too old to say always is, then drained.
+	ago := `\(\d+h\d+m\)`
+	for _, line := range []string{
+		`(?m)^AGENT +PEER +STATE +RUNTIME +DESCRIPTION$`,
+		`(?m)^helper +local +drained ` + ago + `: re-login +- *$`,
+		`(?m)^open +local +available +- *$`,
+		`(?m)^reviewer +\S+ +draining ` + ago + `: reboot +- +reviews$`,
+		`(?m)^idle +\S+ +drained ` + ago + ` +- *$`,
+		`(?m)^broken +\S+ +draining +- *$`,
+		`(?m)^other +\S+ +available +- *$`,
+	} {
+		if !regexp.MustCompile(line).MatchString(out.String()) {
+			t.Errorf("table lacks %s:\n%s", line, out.String())
 		}
 	}
 }
@@ -187,7 +201,7 @@ func TestNetworkAgentListShowsRuntime(t *testing.T) {
 	for name, runtime := range map[string]string{"helper": "claude", "reviewer": "codex", "old": "-"} {
 		found := false
 		for _, line := range lines {
-			if f := strings.Fields(line); len(f) >= 3 && f[0] == name && f[2] == runtime {
+			if f := strings.Fields(line); len(f) >= 4 && f[0] == name && f[3] == runtime {
 				found = true
 			}
 		}
