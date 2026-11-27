@@ -111,14 +111,9 @@ func (sc skillScan) list() []a2a.AgentSkill {
 			return
 		}
 		visited[real] = true
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return
-		}
+		entries := readDirUpTo(dir, budget)
+		budget -= len(entries)
 		for _, e := range entries {
-			if budget--; budget < 0 {
-				return
-			}
 			if strings.HasPrefix(e.Name(), ".") {
 				continue
 			}
@@ -127,37 +122,13 @@ func (sc skillScan) list() []a2a.AgentSkill {
 				continue
 			}
 			path := filepath.Join(folder, "SKILL.md")
-			if _, err := os.Lstat(path); err != nil {
-				if sc.nested && depth < maxSkillDepth {
-					scan(folder, depth+1)
-				}
-				continue
+			if _, err := os.Lstat(path); err == nil {
+				sc.add(&skills, seen, scope, e.Name(), path)
 			}
-			file, err := filepath.EvalSymlinks(path)
-			if err != nil || !within(file, scope) {
-				continue
+			// Codex also finds skills nested in a skill's own folder.
+			if sc.nested && depth < maxSkillDepth {
+				scan(folder, depth+1)
 			}
-			name, description, ok := readSkill(file)
-			if sc.naming == namedByFolder {
-				name = e.Name()
-			}
-			if !ok || len(name) > maxSkillNameLen || !skillName.MatchString(name) || seen[name] {
-				continue
-			}
-			// The nearest skill of a name is the one the runtime takes,
-			// so a farther one stays out even when the nearer is hidden.
-			seen[name] = true
-			v := skillShown
-			if sc.visibility != nil {
-				v = sc.visibility(name, path)
-			}
-			switch v {
-			case skillHidden:
-				continue
-			case skillNameOnly:
-				description = ""
-			}
-			skills = append(skills, a2a.AgentSkill{ID: name, Name: name, Description: description, Tags: []string{sc.tag}})
 		}
 	}
 	for _, root := range sc.roots {
@@ -168,6 +139,53 @@ func (sc skillScan) list() []a2a.AgentSkill {
 		skills = skills[:maxCardSkills]
 	}
 	return skills
+}
+
+// add adds the skill whose SKILL.md is at path, in the folder named
+// folder, unless it is left out (list). seen holds the names listed.
+func (sc skillScan) add(skills *[]a2a.AgentSkill, seen map[string]bool, scope, folder, path string) {
+	file, err := filepath.EvalSymlinks(path)
+	if err != nil || !within(file, scope) {
+		return
+	}
+	name, description, ok := readSkill(file)
+	if sc.naming == namedByFolder {
+		name = folder
+	}
+	if !ok || len(name) > maxSkillNameLen || !skillName.MatchString(name) || seen[name] {
+		return
+	}
+	v := skillShown
+	if sc.visibility != nil {
+		v = sc.visibility(name, path)
+	}
+	switch v {
+	case skillHidden:
+		// A farther skill of the name may still be on (Codex turns off
+		// skill files, not names it has listed).
+		return
+	case skillNameOnly:
+		description = ""
+	}
+	// The nearest skill of a name that is on is the one listed.
+	seen[name] = true
+	*skills = append(*skills, a2a.AgentSkill{ID: name, Name: name, Description: description, Tags: []string{sc.tag}})
+}
+
+// readDirUpTo reads at most n entries of dir, sorted by name. It stops
+// reading at n, so a huge directory costs no more than that.
+func readDirUpTo(dir string, n int) []os.DirEntry {
+	if info, err := os.Stat(dir); n <= 0 || err != nil || !info.IsDir() {
+		return nil
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	entries, _ := f.ReadDir(n)
+	slices.SortFunc(entries, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+	return entries
 }
 
 // maxSettingsSize bounds a runtime settings file read for its skill

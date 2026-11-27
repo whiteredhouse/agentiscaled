@@ -213,47 +213,71 @@ func (r *codexRuntime) Skills(dir string) []a2a.AgentSkill {
 			roots = append(roots, filepath.Join(d, root))
 		}
 	}
-	enabled := r.skillsEnabled(dirs)
+	rules := r.skillRules(dirs)
 	return skillScan{
-		roots:  roots,
-		scope:  dirs[len(dirs)-1],
-		naming: namedInFile,
-		nested: true,
-		tag:    "codex",
-		visibility: func(_, path string) skillVisibility {
-			for _, p := range []string{path, filepath.Dir(path)} {
-				keys := []string{p}
-				if real, err := filepath.EvalSymlinks(p); err == nil {
-					keys = append(keys, real)
-				}
-				for _, k := range keys {
-					if on, ok := enabled[k]; ok && !on {
-						return skillHidden
-					}
-				}
-			}
-			return skillShown
-		},
+		roots:      roots,
+		scope:      dirs[len(dirs)-1],
+		naming:     namedInFile,
+		nested:     true,
+		tag:        "codex",
+		visibility: rules.visibility,
 	}.list()
 }
 
 // codexSystemConfig is the machine's Codex configuration.
 const codexSystemConfig = "/etc/codex/config.toml"
 
-// skillsEnabled is what the skills.config entries of the run's
-// configuration say of each skill path, the path as given and with symlinks
-// resolved: the machine's, the owner's (with the owner's configuration) and
-// each .codex/config.toml in dirs, from the repository's root down, each
-// winning over the one before.
-func (r *codexRuntime) skillsEnabled(dirs []string) map[string]bool {
+// codexSkillRule is one [[skills.config]] entry: it turns on or off the
+// skill whose SKILL.md is at path, or every skill of name.
+type codexSkillRule struct {
+	path, real string // real: path with its symlinks resolved
+	name       string
+	enabled    bool
+}
+
+// codexSkillRules are the entries of the run's configuration, in the order
+// Codex reads them, the last match winning.
+type codexSkillRules []codexSkillRule
+
+func (rules codexSkillRules) visibility(name, path string) skillVisibility {
+	path = filepath.Clean(path)
+	real, _ := filepath.EvalSymlinks(path)
+	on := true
+	for _, r := range rules {
+		match := r.name != "" && r.name == name
+		if r.path != "" {
+			match = r.path == path || r.path == real || r.real != "" && (r.real == path || r.real == real)
+		}
+		if match {
+			on = r.enabled
+		}
+	}
+	if !on {
+		return skillHidden
+	}
+	return skillShown
+}
+
+// skillRules reads the skills.config entries of the configuration a run in
+// dirs (upToRepository, nearest first) takes: the machine's, the owner's
+// with the owner's configuration, and the project's .codex/config.toml
+// files from its root down to the agent's directory, which Codex loads only
+// for a project the owner's configuration trusts. An entry names exactly one
+// of an absolute path of a SKILL.md, or a name.
+func (r *codexRuntime) skillRules(dirs []string) codexSkillRules {
 	files := []string{codexSystemConfig}
+	var owner []byte
 	if r.policy.OwnerConfig && r.home != "" {
-		files = append(files, filepath.Join(r.home, "config.toml"))
+		f := filepath.Join(r.home, "config.toml")
+		owner, _ = readRegularFile(f, maxSettingsSize)
+		files = append(files, f)
 	}
-	for i := len(dirs) - 1; i >= 0; i-- {
-		files = append(files, filepath.Join(dirs[i], ".codex", "config.toml"))
+	if codexTrusts(owner, dirs) {
+		for i := len(dirs) - 1; i >= 0; i-- {
+			files = append(files, filepath.Join(dirs[i], ".codex", "config.toml"))
+		}
 	}
-	enabled := map[string]bool{}
+	var rules codexSkillRules
 	for _, f := range files {
 		b, ok := readRegularFile(f, maxSettingsSize)
 		if !ok {
@@ -263,6 +287,7 @@ func (r *codexRuntime) skillsEnabled(dirs []string) map[string]bool {
 			Skills struct {
 				Config []struct {
 					Path    string `toml:"path"`
+					Name    string `toml:"name"`
 					Enabled *bool  `toml:"enabled"`
 				} `toml:"config"`
 			} `toml:"skills"`
@@ -271,26 +296,57 @@ func (r *codexRuntime) skillsEnabled(dirs []string) map[string]bool {
 			continue
 		}
 		for _, c := range config.Skills.Config {
-			if c.Path == "" || c.Enabled == nil {
+			if c.Enabled == nil || (c.Path == "") == (c.Name == "") {
 				continue
 			}
-			p := c.Path
-			if rest, ok := strings.CutPrefix(p, "~/"); ok {
-				if home, err := os.UserHomeDir(); err == nil {
-					p = filepath.Join(home, rest)
+			rule := codexSkillRule{name: c.Name, enabled: *c.Enabled}
+			if c.Path != "" {
+				p := c.Path
+				if rest, ok := strings.CutPrefix(p, "~/"); ok {
+					if home, err := os.UserHomeDir(); err == nil {
+						p = filepath.Join(home, rest)
+					}
 				}
+				if !filepath.IsAbs(p) {
+					// Relative to the .codex folder of the file.
+					p = filepath.Join(filepath.Dir(f), p)
+				}
+				rule.path = filepath.Clean(p)
+				rule.real, _ = filepath.EvalSymlinks(rule.path)
 			}
-			if !filepath.IsAbs(p) {
-				p = filepath.Join(filepath.Dir(filepath.Dir(f)), p)
-			}
-			p = filepath.Clean(p)
-			enabled[p] = *c.Enabled
-			if real, err := filepath.EvalSymlinks(p); err == nil {
-				enabled[real] = *c.Enabled
+			rules = append(rules, rule)
+		}
+	}
+	return rules
+}
+
+// codexTrusts says whether the owner's Codex configuration owner trusts the
+// project of dirs (upToRepository): its root or the agent's directory with
+// trust_level = "trusted" under [projects."<path>"].
+func codexTrusts(owner []byte, dirs []string) bool {
+	if len(owner) == 0 {
+		return false
+	}
+	var config struct {
+		Projects map[string]struct {
+			TrustLevel string `toml:"trust_level"`
+		} `toml:"projects"`
+	}
+	if toml.Unmarshal(owner, &config) != nil {
+		return false
+	}
+	for _, d := range []string{dirs[len(dirs)-1], dirs[0]} {
+		keys := []string{d}
+		if real, err := filepath.EvalSymlinks(d); err == nil {
+			keys = append(keys, real)
+		}
+		for _, k := range keys {
+			if config.Projects[k].TrustLevel == "trusted" {
+				return true
 			}
 		}
 	}
-	return enabled
+	return false
 }
 
 // Run runs `codex exec` in dir:

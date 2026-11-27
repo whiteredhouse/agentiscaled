@@ -362,9 +362,10 @@ func TestClaudeCardFollowsSkillOverrides(t *testing.T) {
 	}
 }
 
-// A skills.config entry that turns a skill off, by its SKILL.md or its
-// folder, in the owner's Codex configuration or the project's, keeps it off
-// the card; the project's wins.
+// Codex's [[skills.config]] entries decide which skills are on, the last
+// matching entry winning: a path names one SKILL.md (not its folder), a name
+// every skill of that name. A project's .codex/config.toml counts only for a
+// project the owner's configuration trusts.
 func TestCodexCardFollowsSkillsConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -374,7 +375,7 @@ func TestCodexCardFollowsSkillsConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join(repo, ".agents", "skills")
-	for _, name := range []string{"shown", "off-by-file", "off-by-folder", "off-in-project", "back-on"} {
+	for _, name := range []string{"shown", "off-by-file", "folder-entry", "off-by-name", "off-in-project", "back-on"} {
 		writeSkillFile(t, root, name, "---\nname: "+name+"\ndescription: The "+name+" skill.\n---\n")
 	}
 	write := func(path, content string) {
@@ -386,29 +387,67 @@ func TestCodexCardFollowsSkillsConfig(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	entry := func(path string, enabled bool) string {
+	byPath := func(path string, enabled bool) string {
 		return fmt.Sprintf("[[skills.config]]\npath = %q\nenabled = %t\n\n", path, enabled)
 	}
-	write(filepath.Join(codexHome, "config.toml"),
-		entry(filepath.Join(root, "off-by-file", "SKILL.md"), false)+
-			entry(filepath.Join(root, "off-by-folder"), false)+
-			entry(filepath.Join(root, "back-on", "SKILL.md"), false))
-	write(filepath.Join(repo, ".codex", "config.toml"),
-		entry(filepath.Join(root, "off-in-project", "SKILL.md"), false)+
-			entry(filepath.Join(root, "back-on", "SKILL.md"), true))
-	r := &codexRuntime{home: codexHome, policy: agentPolicy{DirSkills: true, OwnerConfig: true}}
-	if got, want := skillIDs(r.Skills(repo)), []string{"back-on", "shown"}; !slices.Equal(got, want) {
-		t.Fatalf("skills = %v, want %v", got, want)
+	byName := func(name string, enabled bool) string {
+		return fmt.Sprintf("[[skills.config]]\nname = %q\nenabled = %t\n\n", name, enabled)
 	}
-	// Without the owner's configuration, Codex ignores it.
+	owner := byPath(filepath.Join(root, "off-by-file", "SKILL.md"), false) +
+		// A folder is no SKILL.md: Codex keeps the skill on.
+		byPath(filepath.Join(root, "folder-entry"), false) +
+		byName("off-by-name", false) +
+		byPath(filepath.Join(root, "back-on", "SKILL.md"), false)
+	write(filepath.Join(codexHome, "config.toml"), owner)
+	write(filepath.Join(repo, ".codex", "config.toml"),
+		byPath(filepath.Join(root, "off-in-project", "SKILL.md"), false)+
+			byName("back-on", true)+
+			byName("off-by-name", true))
+	r := &codexRuntime{home: codexHome, policy: agentPolicy{DirSkills: true, OwnerConfig: true}}
+	// Untrusted, the project cannot turn on what the owner turned off.
+	if got, want := skillIDs(r.Skills(repo)), []string{"folder-entry", "off-in-project", "shown"}; !slices.Equal(got, want) {
+		t.Fatalf("untrusted project: skills = %v, want %v", got, want)
+	}
+	write(filepath.Join(codexHome, "config.toml"), owner+fmt.Sprintf("[projects.%q]\ntrust_level = \"trusted\"\n", repo))
+	if got, want := skillIDs(r.Skills(repo)), []string{"back-on", "folder-entry", "off-by-name", "shown"}; !slices.Equal(got, want) {
+		t.Fatalf("trusted project: skills = %v, want %v", got, want)
+	}
+	// Without the owner's configuration, Codex reads neither it nor its
+	// trust.
 	r.policy.OwnerConfig = false
-	if got, want := skillIDs(r.Skills(repo)), []string{"back-on", "off-by-file", "off-by-folder", "shown"}; !slices.Equal(got, want) {
+	if got, want := skillIDs(r.Skills(repo)), []string{"back-on", "folder-entry", "off-by-file", "off-by-name", "off-in-project", "shown"}; !slices.Equal(got, want) {
 		t.Fatalf("isolated skills = %v, want %v", got, want)
 	}
 }
 
-// Codex finds skill folders nested in a skill root's subfolders; Claude Code
-// looks only at the root's own folders.
+// When the nearer of two skills of a name is off, Codex still has the
+// farther one, and the card lists it.
+func TestCodexDisabledDuplicateKeepsTheOther(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	codexHome := filepath.Join(home, ".codex")
+	repo := filepath.Join(home, "repo")
+	dir := filepath.Join(repo, "service")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSkillFile(t, filepath.Join(dir, ".agents", "skills"), "review", "---\nname: review\ndescription: Nearer, off.\n---\n")
+	writeSkillFile(t, filepath.Join(repo, ".agents", "skills"), "review", "---\nname: review\ndescription: Farther, on.\n---\n")
+	if err := os.MkdirAll(codexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := fmt.Sprintf("[[skills.config]]\npath = %q\nenabled = false\n", filepath.Join(dir, ".agents", "skills", "review", "SKILL.md"))
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skills := (&codexRuntime{home: codexHome, policy: agentPolicy{DirSkills: true, OwnerConfig: true}}).Skills(dir)
+	if len(skills) != 1 || skills[0].Description != "Farther, on." {
+		t.Fatalf("skills = %+v", skills)
+	}
+}
+
+// Codex finds skill folders nested in a skill root's subfolders, a skill's
+// own included; Claude Code looks only at the root's own folders.
 func TestNestedSkillFolders(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -416,14 +455,44 @@ func TestNestedSkillFolders(t *testing.T) {
 	dir := filepath.Join(home, "agent")
 	writeSkillFile(t, filepath.Join(dir, ".agents", "skills"), filepath.Join("group", "deep"), "---\nname: deep\ndescription: Nested.\n---\n")
 	writeSkillFile(t, filepath.Join(dir, ".agents", "skills"), "top", "---\nname: top\ndescription: Top.\n---\n")
-	// A skill's own subfolders are its files, not more skills.
+	// Codex finds a skill nested in another skill's folder too.
 	writeSkillFile(t, filepath.Join(dir, ".agents", "skills"), filepath.Join("top", "inner"), "---\nname: inner\ndescription: Inside a skill.\n---\n")
-	if got, want := skillIDs((&codexRuntime{policy: agentPolicy{DirSkills: true}}).Skills(dir)), []string{"deep", "top"}; !slices.Equal(got, want) {
+	// Not beyond maxSkillDepth.
+	writeSkillFile(t, filepath.Join(dir, ".agents", "skills"), filepath.Join("a", "b", "c", "d", "e", "too-deep"), "---\nname: too-deep\ndescription: Too deep.\n---\n")
+	if got, want := skillIDs((&codexRuntime{policy: agentPolicy{DirSkills: true}}).Skills(dir)), []string{"deep", "inner", "top"}; !slices.Equal(got, want) {
 		t.Fatalf("codex skills = %v, want %v", got, want)
 	}
 	writeSkillFile(t, filepath.Join(dir, ".claude", "skills"), filepath.Join("group", "deep"), "---\ndescription: Nested.\n---\n")
 	writeSkillFile(t, filepath.Join(dir, ".claude", "skills"), "top", "---\ndescription: Top.\n---\n")
 	if got, want := skillIDs((&claudeRuntime{policy: agentPolicy{DirSkills: true, OwnerConfig: true}}).Skills(dir)), []string{"top"}; !slices.Equal(got, want) {
 		t.Fatalf("claude skills = %v, want %v", got, want)
+	}
+}
+
+// A scan reads at most maxSkillScanEntries entries, however large the
+// directory.
+func TestSkillScanReadsABoundedNumberOfEntries(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 50 {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%02d", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(readDirUpTo(dir, 10)); n != 10 {
+		t.Fatalf("read %d entries, want 10", n)
+	}
+	if n := len(readDirUpTo(dir, 0)); n != 0 {
+		t.Fatalf("read %d entries with no budget", n)
+	}
+	// A skill root that is a named pipe is never opened.
+	pipe := filepath.Join(dir, "pipe")
+	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if entries := readDirUpTo(pipe, 10); entries != nil {
+		t.Fatalf("read %v from a pipe", entries)
 	}
 }
