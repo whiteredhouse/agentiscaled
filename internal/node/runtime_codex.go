@@ -202,6 +202,23 @@ func (r *codexRuntime) Describe(card *a2a.AgentCard) {
 	}}
 }
 
+// Skills lists the skills Codex loads from the directory: those in a skill
+// root (.agents/skills, .codex/skills) of dir and of each directory above it
+// up to its repository's root. Your own skills, the machine's and Codex's
+// bundled ones are not the directory's and are not listed.
+func (r *codexRuntime) Skills(dir string) []a2a.AgentSkill {
+	if !r.policy.DirSkills {
+		return nil
+	}
+	var roots []string
+	for _, d := range upToRepository(dir) {
+		for _, root := range skillRoots {
+			roots = append(roots, filepath.Join(d, root))
+		}
+	}
+	return directorySkills(roots, "codex")
+}
+
 // Run runs `codex exec` in dir:
 //   - With the owner's configuration (agentPolicy.OwnerConfig, the
 //     default), Codex runs as the owner's own would: their CODEX_HOME,

@@ -954,6 +954,13 @@ func (s *agentService) card(name string) *a2a.AgentCard {
 		Capabilities: a2a.AgentCapabilities{Streaming: true},
 	}
 	s.rt.Describe(card)
+	// The directory's own skills, when the runtime loads them, say more
+	// than the runtime's generic one.
+	if l, ok := s.rt.(skillLister); ok {
+		if skills := l.Skills(s.dir); len(skills) > 0 {
+			card.Skills = skills
+		}
+	}
 	if s.description != "" {
 		card.Description = s.description
 	}
@@ -964,8 +971,11 @@ func (s *agentService) card(name string) *a2a.AgentCard {
 // sends token as a bearer credential (target_url userinfo). Any other local
 // process could otherwise call the agent directly and claim any sender.
 func (s *agentService) handler(name, token string) http.Handler {
-	card := s.card(name)
-	cardHandler := a2asrv.NewStaticAgentCardHandler(card)
+	// The card is made for each read, so it lists the directory's skills
+	// as they are now.
+	cardHandler := a2asrv.NewAgentCardHandler(a2asrv.AgentCardProducerFn(func(context.Context) (*a2a.AgentCard, error) {
+		return s.card(name), nil
+	}))
 	// The caller authenticator tells the server's own updates (lapse) apart,
 	// which reach every task.
 	store := taskstore.NewInMemory(&taskstore.InMemoryStoreConfig{CallerAuthenticator: a2asrv.NewTaskStoreCallerAuthenticator()})

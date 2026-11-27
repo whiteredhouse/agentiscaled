@@ -167,6 +167,16 @@ func claudeLogin(ctx context.Context, command, profileDir string, policy agentPo
 	return cmd, "CLAUDE_CONFIG_DIR=" + shellQuote(config) + " " + shellQuote(command) + " auth login"
 }
 
+// Skills lists the skills Claude Code loads from the directory's
+// .claude/skills. Your own skills and plugins' are not the directory's and
+// are not listed.
+func (r *claudeRuntime) Skills(dir string) []a2a.AgentSkill {
+	if !r.policy.DirSkills {
+		return nil
+	}
+	return directorySkills([]string{filepath.Join(dir, ".claude", "skills")}, "claude")
+}
+
 func (r *claudeRuntime) Describe(card *a2a.AgentCard) {
 	card.Description = "A Claude Code agent on this node that works in its configured directory under local runtime permissions. Send one text message with the task; it answers with the result, or asks a question (input-required) that you answer with a message on the same task."
 	card.Skills = []a2a.AgentSkill{{
