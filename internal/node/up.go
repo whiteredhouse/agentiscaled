@@ -49,6 +49,9 @@ type settings struct {
 	// foreground, which a later `up` keeps unless given again.
 	Clients    string `json:"clients,omitempty"`
 	Foreground bool   `json:"foreground,omitempty"`
+	// NoSkill is the owner's no to installing the agentiscale skill, so
+	// that a later `up` does not ask again.
+	NoSkill bool `json:"no_skill,omitempty"`
 
 	// What the node joined, shown by `status`.
 	PeerID    string `json:"peer_id,omitempty"`
@@ -146,10 +149,11 @@ func RunSaved(ctx context.Context, args []string) error {
 // RunUp is `agentiscaled up`: it signs the owner in through the
 // browser if the node has no identity yet, joins the node to their network,
 // saves its settings and (re)starts it as a per-user background service.
-// In a terminal it first asks which agent clients to connect and whether to
-// offer an agent, as `client connect` and `agent add` do on their own.
+// In a terminal it first asks which agent clients to connect, whether to
+// install the agentiscale skill and whether to offer an agent, as
+// `client connect`, `skill install` and `agent add` do on their own.
 func RunUp(ctx context.Context, args []string, out io.Writer) error {
-	return bringUp(ctx, args, out, upOptions{askClients: true, askAgent: true})
+	return bringUp(ctx, args, out, upOptions{askClients: true, askAgent: true, skill: true})
 }
 
 // upOptions are what differs between `up` and the commands that bring a
@@ -162,6 +166,9 @@ type upOptions struct {
 	// askClients and askAgent let the wizard ask which clients to connect
 	// and whether to offer an agent.
 	askClients, askAgent bool
+	// skill installs the agentiscale skill when asked to, and keeps an
+	// installed one current.
+	skill bool
 	// noEnroll stops instead of signing in and joining a node that has not
 	// joined, as `agent add` needs.
 	noEnroll bool
@@ -179,6 +186,7 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 	noService := fs.Bool("foreground", false, "Do not install a background service; join and exit, then run 'agentiscaled run' yourself")
 	assumeYes := fs.Bool("y", false, "Ask nothing; take every default, as when 'up' runs without a terminal")
 	clients := fs.String("clients", clientsAuto, "Agent clients to connect to this node: auto (every installed one, including when it hosts an agent), none, or a list of "+strings.Join(clientNames, ","))
+	installSkill := fs.Bool("skill", false, "Install the agentiscale skill for Claude Code and Codex; -skill=false leaves it as it is (default: ask in a terminal, and update it where it is installed)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -251,6 +259,27 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 				return err
 			}
 		}
+	}
+	var skill *skillStep
+	noSkill := saved.NoSkill
+	if opts.skill {
+		skill = &skillStep{targets: skillTargets()}
+		switch {
+		case set["skill"]:
+			// -skill=false is for this run only; -skill also
+			// takes back an earlier no.
+			skill.install, skill.leave = *installSkill, !*installSkill
+			if *installSkill {
+				noSkill = false
+			}
+		case ask != nil && !noSkill && len(skill.missing()) > 0:
+			if skill.install, err = ask.offerSkill(skill.missing()); err != nil {
+				return err
+			}
+			noSkill = !skill.install
+		}
+	}
+	if ask != nil {
 		if opts.askAgent && len(c.agents) == 0 {
 			offer, err := ask.offerAgent()
 			if err != nil {
@@ -320,6 +349,7 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 		Path:         os.Getenv("PATH"),
 		Clients:      *clients,
 		Foreground:   *noService,
+		NoSkill:      noSkill,
 		PeerID:       joined.peerID,
 		NetworkID:    joined.networkID,
 		MeshURL:      joined.meshURL,
@@ -336,7 +366,7 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 		}
 		fmt.Fprintf(out, "  %s run -data-dir %s\n", shellQuote(exe), shellQuote(c.dataDir))
 		if opts.askClients || *clients != "none" {
-			nextSteps(ctx, out, *clients, c, exe)
+			nextSteps(ctx, out, *clients, c, exe, skill)
 		}
 		return nil
 	}
@@ -356,7 +386,7 @@ func bringUp(ctx context.Context, args []string, out io.Writer, opts upOptions) 
 		fmt.Fprintln(out, "Connected to the mesh.")
 	}
 	if opts.askClients || *clients != "none" {
-		nextSteps(ctx, out, *clients, c, exe)
+		nextSteps(ctx, out, *clients, c, exe, skill)
 	}
 	return nil
 }
@@ -408,13 +438,17 @@ func addAgent(ctx context.Context, c *config, a agentConfig, service bool) error
 	return nil
 }
 
-// nextSteps connects the chosen agent clients to the node, or prints how to.
-func nextSteps(ctx context.Context, out io.Writer, clients string, c config, exe string) {
+// nextSteps connects the chosen agent clients to the node, or prints how
+// to, and takes the skill step, if any.
+func nextSteps(ctx context.Context, out io.Writer, clients string, c config, exe string, skill *skillStep) {
 	switch {
 	case clients == "none":
 		printNextSteps(out, exe, c.dataDir)
 	default:
 		connectClients(ctx, out, selectClients(clients), exe, c.dataDir)
+	}
+	if skill != nil {
+		skill.run(out)
 	}
 	dirFlag := ""
 	if realAbs(c.dataDir) != realAbs(defaultDataDir()) {

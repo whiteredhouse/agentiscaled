@@ -75,22 +75,27 @@ For Docker or Kubernetes, see [In a container](#in-a-container).
 agentiscaled up
 ```
 
-In a terminal, `up` first asks which agent apps to connect and whether to offer an
-agent. Pressing Enter at each takes its default, which is what `up` does without
-asking:
+In a terminal, `up` first asks which agent apps to connect, whether to install the
+agentiscale skill and whether to offer an agent. Pressing Enter at each takes its
+default:
 
 ```text
 Agent clients on this machine can use this node.
   Connect Claude Desktop? [Y/n]:
   Connect Codex CLI? [Y/n]:
 
+Install the agentiscale skill for Claude Code and Codex, so that they know when and how to call your other agents? [Y/n]:
+
 Offer an agent from this machine to your network? Found: codex, claude [y/N]:
 ```
 
 `up -y` asks nothing, and neither does `up` in a script, a service or an SSH session
-without a terminal. `-clients` answers the first question. Each question also has a
-command of its own for later: `agentiscaled client` connects or disconnects agent apps
-([step 3](#3-your-agents-are-connected)) and `agentiscaled agent add` offers an agent
+without a terminal. Without asking, `up` connects the apps, offers no agent and
+installs no skill, though it updates one already installed. `-clients` answers the first question and `-skill` the second. Each
+question also has a command of its own for later: `agentiscaled client` connects or
+disconnects agent apps ([step 3](#3-your-agents-are-connected)), `agentiscaled skill
+install` installs the skill ([Teach your agents](connect-agents.md#teach-your-agents-to-call-other-agents))
+and `agentiscaled agent add` offers an agent
 ([Offer an agent](#offer-an-agent-to-your-network)).
 
 If you offer an agent, its setup questions and any required `codex login` finish
@@ -180,13 +185,23 @@ disconnects every one. `disconnect` removes only this node's server, saving a co
 the file first. Both remember the choice, so a later `up` keeps it.
 
 Claude Code and the Codex CLI call your other agents better with the agentiscale
-skill, which tells them when and how to hand work to another agent:
+skill, which tells them when and how to hand work to another agent. `up` asks to
+install it for whichever of the two has its command (`claude`, `codex`) on your
+PATH. The question appears only while one of them lacks the
+skill, and after a no a later `up` does not ask again. To install it without `up`, or
+after a no:
 
 ```sh
 agentiscaled skill install
 ```
 
-See [Teach your agents to call other agents](connect-agents.md#teach-your-agents-to-call-other-agents).
+Every `up` updates the copies agentiscaled installed, so the skill stays in step with
+your agentiscaled after an upgrade, also when `up` asks nothing. It leaves alone a copy
+that something else installed, such as a skill installer, and a skill directory that
+is a link or holds links.
+`up -skill` installs it without asking, and `up -skill=false` leaves the skill as it
+is on that run. See
+[Teach your agents to call other agents](connect-agents.md#teach-your-agents-to-call-other-agents).
 
 ## Offer an agent to your network
 
