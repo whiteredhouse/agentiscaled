@@ -489,6 +489,7 @@ func run(ctx context.Context, c config) error {
 			}
 			stopped = append(stopped, done)
 			a.target = target
+			a.svc.refreshSkills()
 			services = append(services, api.ServiceConfig{
 				Type:        api.ServiceTypeStringA2A,
 				Name:        a.Name,
