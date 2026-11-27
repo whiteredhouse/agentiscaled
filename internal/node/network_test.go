@@ -152,7 +152,7 @@ func (c *callingRuntime) Run(ctx context.Context, _ string, req taskRequest) (tu
 	if err := call("list_agents", nil, &agents); err != nil {
 		return turnResult{}, err
 	}
-	if len(agents.Agents) != 1 || agents.Agents[0] != (agentRow{Service: "helper"}) {
+	if len(agents.Agents) != 1 || agents.Agents[0] != (agentRow{Service: "helper", NodeVersion: ReleaseVersion}) {
 		return turnResult{}, errors.New("list_agents: " + jsonString(agents))
 	}
 	var self caller.Task

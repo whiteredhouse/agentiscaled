@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -69,7 +70,7 @@ func TestDrainedAgentFinishesItsTasksAndRefusesNewOnes(t *testing.T) {
 	<-h.fix.prompts
 	h.fix.release <- "done"
 	h.await(t, again.ID, a2a.TaskStateCompleted)
-	if a := h.svc.activity(); a.Drain != nil || a.serviceMetadata() != nil {
+	if a := h.svc.activity(); a.Drain != nil || a.serviceMetadata()[caller.DrainMetadataKey] != "" {
 		t.Fatalf("undrained activity: %+v", a)
 	}
 }
@@ -139,6 +140,9 @@ func TestReportActivityPublishesTheDrain(t *testing.T) {
 	defer func(d time.Duration) { activityEvery = d }(activityEvery)
 	activityEvery = 5 * time.Millisecond
 	h := newAgentHarness(t, testSender)
+	h.svc.runtimeName = "codex"
+	// Every report says what runs the agent, drained or not.
+	facts := map[string]string{caller.RuntimeMetadataKey: "codex", caller.NodeVersionMetadataKey: ReleaseVersion}
 	published := make(chan map[string]string, 64)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -158,14 +162,18 @@ func TestReportActivityPublishesTheDrain(t *testing.T) {
 		}
 		return nil
 	}
-	if md := next(); md != nil {
+	if md := next(); !maps.Equal(md, facts) {
 		t.Fatalf("first: %v", md)
 	}
 	if err := saveDrain(h.dir, "helper", drainMark{Reason: "swap definition", Since: time.Now().UTC(), By: caller.DrainSetOnNode}); err != nil {
 		t.Fatal(err)
 	}
-	if d := caller.DrainFromMetadata(next()); d == nil || d.Reason != "swap definition" || d.By != "node" {
+	drained := next()
+	if d := caller.DrainFromMetadata(drained); d == nil || d.Reason != "swap definition" || d.By != "node" {
 		t.Fatalf("drain: %+v", d)
+	}
+	if caller.RuntimeFromMetadata(drained) != "codex" || caller.NodeVersionFromMetadata(drained) != ReleaseVersion {
+		t.Fatalf("drained metadata lost the runtime or version: %v", drained)
 	}
 	time.Sleep(50 * time.Millisecond)
 	select {
@@ -176,8 +184,20 @@ func TestReportActivityPublishesTheDrain(t *testing.T) {
 	if _, err := removeDrain(h.dir, "helper"); err != nil {
 		t.Fatal(err)
 	}
-	if md := next(); md != nil {
+	if md := next(); !maps.Equal(md, facts) {
 		t.Fatalf("undrained: %v", md)
+	}
+}
+
+// A version that is not a valid one, such as a hand-built binary's, is left
+// out rather than published.
+func TestServiceMetadataLeavesOutAnInvalidVersion(t *testing.T) {
+	md := agentActivity{Runtime: "claude"}.metadataFor("1.2.3 (dirty)")
+	if want := map[string]string{caller.RuntimeMetadataKey: "claude"}; !maps.Equal(md, want) {
+		t.Fatalf("metadata = %v, want %v", md, want)
+	}
+	if err := api.ValidateServiceMetadata(agentActivity{Runtime: "acp", Drain: &drainMark{Reason: strings.Repeat("\"", caller.MaxDrainReasonBytes)}}.serviceMetadata()); err != nil {
+		t.Fatalf("largest metadata does not fit: %v", err)
 	}
 }
 

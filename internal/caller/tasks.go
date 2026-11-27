@@ -84,6 +84,10 @@ type LocalInfo struct {
 	PeerID   string              `json:"peer_id"`
 	Services []AgentName         `json:"services"`
 	Draining map[AgentName]Drain `json:"draining,omitempty"`
+	// Runtimes names what runs each agent (codex, claude, acp), and
+	// NodeVersion is the running node's agentiscaled version.
+	Runtimes    map[AgentName]string `json:"runtimes,omitempty"`
+	NodeVersion string               `json:"node_version,omitempty"`
 }
 
 func (t *Client) TaskClient(ctx context.Context, target Target) (*a2aclient.Client, error) {
@@ -167,9 +171,11 @@ func (t *Client) LocalInfo(ctx context.Context) (LocalInfo, error) {
 	// node older than it) is left out on its own, so that the node's other
 	// agents stay reachable.
 	var raw struct {
-		PeerID   string           `json:"peer_id"`
-		Services []string         `json:"services"`
-		Draining map[string]Drain `json:"draining"`
+		PeerID      string            `json:"peer_id"`
+		Services    []string          `json:"services"`
+		Draining    map[string]Drain  `json:"draining"`
+		Runtimes    map[string]string `json:"runtimes"`
+		NodeVersion string            `json:"node_version"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return LocalInfo{}, fmt.Errorf("invalid local agent catalog: %w", err)
@@ -182,6 +188,17 @@ func (t *Client) LocalInfo(ctx context.Context) (LocalInfo, error) {
 			}
 			info.Draining[n] = d
 		}
+	}
+	for name, rt := range raw.Runtimes {
+		if n, err := ParseAgentName(name); err == nil && ValidRuntime(rt) {
+			if info.Runtimes == nil {
+				info.Runtimes = map[AgentName]string{}
+			}
+			info.Runtimes[n] = rt
+		}
+	}
+	if ValidNodeVersion(raw.NodeVersion) {
+		info.NodeVersion = raw.NodeVersion
 	}
 	if _, err := peer.Decode(info.PeerID); err != nil {
 		return info, fmt.Errorf("invalid local peer ID: %w", err)

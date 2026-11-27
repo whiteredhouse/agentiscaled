@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -140,6 +141,65 @@ func TestNetworkAgentListShowsDrains(t *testing.T) {
 	for _, line := range []string{"(draining: re-login)", "(draining: reboot) reviews", "(draining)"} {
 		if !strings.Contains(out.String(), line) {
 			t.Errorf("table lacks %q:\n%s", line, out.String())
+		}
+	}
+}
+
+func TestNetworkAgentListShowsRuntimeAndNodeVersion(t *testing.T) {
+	t.Parallel()
+	dir := shortTempDir(t)
+	local, remote := randomPeer(t), randomPeer(t)
+	serveDiscoveryFixture(t, dir, localAgentSocketName, func(w http.ResponseWriter, r *http.Request) {
+		// A raw document, as a node of any version could send it.
+		fmt.Fprintf(w, `{"peer_id":%q,"services":["helper","plain"],"runtimes":{"helper":"claude","plain":"Not A Word","Bad/Name":"codex"},"node_version":"1.2.3"}`, local)
+	})
+	serveDiscoveryFixture(t, dir, meshnode.DefaultSocketName, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]*api.DiscoveredProvider{
+			{SrvName: "reviewer", PeerId: remote, SrvMetadata: map[string]string{caller.RuntimeMetadataKey: "codex", caller.NodeVersionMetadataKey: "1.1.0-rc.1"}},
+			{SrvName: "odd", PeerId: remote, SrvMetadata: map[string]string{caller.RuntimeMetadataKey: "codex\x1b[2J", caller.NodeVersionMetadataKey: "1.0 dirty"}},
+			{SrvName: "old", PeerId: remote},
+		})
+	})
+	var out bytes.Buffer
+	if err := caller.RunNetwork(context.Background(), []string{"agent", "list", "-data-dir", dir, "-json"}, nil, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	var result caller.AgentList
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	type facts struct{ runtime, version string }
+	got := map[string]facts{}
+	for _, row := range result.Agents {
+		got[row.Service.String()] = facts{row.Runtime, row.NodeVersion}
+	}
+	want := map[string]facts{
+		"helper":   {"claude", "1.2.3"},
+		"plain":    {"", "1.2.3"},
+		"reviewer": {"codex", "1.1.0-rc.1"},
+		"odd":      {"", ""},
+		"old":      {"", ""},
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("runtime and version = %v, want %v", got, want)
+	}
+	out.Reset()
+	if err := caller.RunNetwork(context.Background(), []string{"agent", "list", "-data-dir", dir}, nil, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(out.String(), "\n")
+	if !strings.Contains(lines[0], "RUNTIME") {
+		t.Errorf("header lacks RUNTIME: %q", lines[0])
+	}
+	for name, runtime := range map[string]string{"helper": "claude", "reviewer": "codex", "old": "-"} {
+		found := false
+		for _, line := range lines {
+			if f := strings.Fields(line); len(f) >= 3 && f[0] == name && f[2] == runtime {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no row %s with runtime %s:\n%s", name, runtime, out.String())
 		}
 	}
 }

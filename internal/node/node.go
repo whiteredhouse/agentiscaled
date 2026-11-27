@@ -344,6 +344,7 @@ func newAgent(ctx context.Context, a *agentConfig, dataDir string) (*agentServic
 	if err != nil {
 		return nil, err
 	}
+	s.runtimeName = a.Runtime
 	s.description = a.Description
 	if s.description == "" && def != nil {
 		s.description = def.Description
