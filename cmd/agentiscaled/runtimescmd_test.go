@@ -34,17 +34,20 @@ func TestRuntimesList(t *testing.T) {
 				t.Fatalf("runtime list: %v\n%s", err, out)
 			}
 			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-			if len(lines) != 4 || strings.Join(strings.Fields(lines[0]), " ") != "RUNTIME COMMAND EXECUTABLE CONFIG DIR" {
+			if len(lines) != 5 || strings.Join(strings.Fields(lines[0]), " ") != "RUNTIME COMMAND EXECUTABLE CONFIG DIR" {
 				t.Fatalf("unexpected table:\n%s", out)
 			}
 			if got := strings.Join(strings.Fields(lines[1]), " "); got != "acp - set with -command -" {
 				t.Errorf("ACP row: %s", lines[1])
 			}
-			if got := strings.Join(strings.Fields(lines[2]), " "); got != "claude claude not found on PATH "+tc.wantClaude {
-				t.Errorf("Claude row: %s", lines[2])
+			if got := strings.Join(strings.Fields(lines[2]), " "); got != "agy agy not found on PATH ~/.gemini/antigravity-cli" {
+				t.Errorf("agy row: %s", lines[2])
 			}
-			if got := strings.Join(strings.Fields(lines[3]), " "); got != "codex codex "+codex+" "+tc.wantCodex {
-				t.Errorf("Codex row: %s", lines[3])
+			if got := strings.Join(strings.Fields(lines[3]), " "); got != "claude claude not found on PATH "+tc.wantClaude {
+				t.Errorf("Claude row: %s", lines[3])
+			}
+			if got := strings.Join(strings.Fields(lines[4]), " "); got != "codex codex "+codex+" "+tc.wantCodex {
+				t.Errorf("Codex row: %s", lines[4])
 			}
 		})
 	}

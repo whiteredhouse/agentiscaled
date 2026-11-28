@@ -3,9 +3,7 @@ package caller
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"path/filepath"
 	"time"
 
@@ -133,30 +131,15 @@ func BridgeMCP(ctx context.Context, client mcp.Transport, socket string) error {
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "agentiscale", Version: "0.1.0"},
 		&mcp.ServerOptions{Instructions: BridgeInstructions})
-	var cursor string
-	for {
-		page, err := node.ListTools(ctx, &mcp.ListToolsParams{Cursor: cursor})
-		if err != nil {
-			return fmt.Errorf("list the node's tools: %w", err)
+	err = ProxyTools(ctx, server, node, func(tool *mcp.Tool) {
+		if d, ok := nodeToolDescriptions[tool.Name]; ok {
+			tool.Description = d
 		}
-		for _, tool := range page.Tools {
-			if d, ok := nodeToolDescriptions[tool.Name]; ok {
-				tool.Description = d
-			}
-			name := tool.Name
-			server.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return node.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: req.Params.Arguments})
-			})
-		}
-		if cursor = page.NextCursor; cursor == "" {
-			break
-		}
+	})
+	if err != nil {
+		return fmt.Errorf("list the node's tools: %w", err)
 	}
 	AddTools(server, &Client{Mesh: httpClient, BaseURL: "http://agentiscaled", Local: nodeclient.SocketClient(filepath.Join(filepath.Dir(socket), nodeclient.AgentSocketName))})
 
-	// The client closing its end is the normal way to stop.
-	if err := server.Run(ctx, client); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, mcp.ErrConnectionClosed) && ctx.Err() == nil {
-		return err
-	}
-	return nil
+	return ServeUntilClosed(ctx, server, client)
 }

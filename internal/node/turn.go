@@ -33,9 +33,17 @@ func (a turnAnswer) result(session string) (turnResult, error) {
 	return turnResult{}, fmt.Errorf("the agent's answer has status %q, not done or needs_input", a.Status)
 }
 
+// errNoAnswer is a turn that ended with no answer at all: no status and no
+// text. It fails the task rather than complete it with nothing.
+var errNoAnswer = errors.New("the agent ended the turn without an answer")
+
 // parseTurn reads a turn's final message, which should be in turnSchema. A
-// message that is not is taken as the result as it stands.
+// message that is not is taken as the result as it stands; an empty one is
+// no answer (errNoAnswer).
 func parseTurn(message, session string) (turnResult, error) {
+	if strings.TrimSpace(message) == "" {
+		return turnResult{}, errNoAnswer
+	}
 	var a turnAnswer
 	if err := json.Unmarshal([]byte(strings.TrimSpace(message)), &a); err != nil || a.Status == "" {
 		return turnResult{Text: strings.TrimSpace(message), Session: session}, nil

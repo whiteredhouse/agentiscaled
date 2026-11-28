@@ -447,6 +447,12 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 		return turnResult{}, err
 	}
 	var result turnResult
+	if answer.Status == "" && text == "" {
+		// No status, no text and no message: the agent gave up or was
+		// stopped by a refused step, and has nothing for the caller.
+		s.logFailure(r, errNoAnswer)
+		return turnResult{}, errNoAnswer
+	}
 	if answer.Status != "" {
 		result, err = turnAnswer{Status: answer.Status, Text: text}.result(session)
 	} else {

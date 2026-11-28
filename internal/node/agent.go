@@ -176,12 +176,18 @@ var runtimes = map[string]struct {
 	// which starts without the owner's shell, so that with
 	// agentPolicy.OwnerConfig the agent finds the same configuration.
 	ownerEnv []string
+	// ownerPolicyOnly is for a runtime that runs only as the owner's own
+	// would (agentPolicy all true), so that `agent add` does not ask.
+	ownerPolicyOnly bool
 }{
-	"codex": {newCodexRuntime, "codex", "codex", codexOwnerConfigDir, codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}},
+	"codex": {newCodexRuntime, "codex", "codex", codexOwnerConfigDir, codexSignedIn, codexEnvSignedIn, codexLogin, []string{"CODEX_HOME"}, false},
 	// acp agents are made from their command and arguments
 	// (agentConfig.newRuntime).
-	"acp":    {},
-	"claude": {newClaudeRuntime, "claude", "claude", claudeOwnerConfigDir, claudeSignedIn, claudeEnvSignedIn, claudeLogin, []string{"CLAUDE_CONFIG_DIR"}},
+	"acp": {},
+	// agy keeps its sign-in and settings where it alone finds them, and runs
+	// only with the owner's configuration (newAgyRuntime).
+	"agy":    {new: newAgyRuntime, defaultName: "agy", defaultCommand: "agy", ownerConfigDir: agyOwnerConfigDir, ownerPolicyOnly: true},
+	"claude": {newClaudeRuntime, "claude", "claude", claudeOwnerConfigDir, claudeSignedIn, claudeEnvSignedIn, claudeLogin, []string{"CLAUDE_CONFIG_DIR"}, false},
 }
 
 func ownerRuntimeConfigDir(variable, defaultDir string) (string, error) {

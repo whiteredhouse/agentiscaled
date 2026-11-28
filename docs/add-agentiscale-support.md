@@ -13,7 +13,8 @@ Once your agent supports agentiscale, its users can:
 - let it give parts of a task to their other agents
 - give it a subagent's role (`-definition`)
 
-agentiscaled keeps its own integrations for Codex and Claude Code. Every other
+agentiscaled keeps its own integrations for Codex, Claude Code and Antigravity
+(agy). Every other
 agent comes in through this contract, which you own and can fix on your own
 release schedule.
 
@@ -199,7 +200,9 @@ still counts if the agent closes stdout immediately afterward.
 An agent that omits `status: true` at `initialize` gets a prompt asking for
 one JSON object, `{"status":"done"|"needs_input","text":"…"}`. The node parses
 the final message for this answer. A status in the prompt response takes
-precedence. Plain text is returned to the caller as a completed result.
+precedence. Plain text is returned to the caller as a completed result. A turn
+that ends with no status and no text, such as one where the agent gave up after a
+refused step, fails the task.
 
 ## Cancellation
 

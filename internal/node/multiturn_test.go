@@ -384,6 +384,9 @@ func TestParseTurn(t *testing.T) {
 		{`{"status":"maybe","text":"x"}`, turnResult{}, true},
 		{"plain answer\n", turnResult{Text: "plain answer", Session: "s"}, false},
 		{`{"other":"json"}`, turnResult{Text: `{"other":"json"}`, Session: "s"}, false},
+		{"", turnResult{}, true},
+		{" \n", turnResult{}, true},
+		{`{"status":"done","text":""}`, turnResult{Session: "s"}, false},
 	} {
 		got, err := parseTurn(tc.message, "s")
 		if (err != nil) != tc.err || (!tc.err && got != tc.want) {

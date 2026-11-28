@@ -42,6 +42,24 @@ const networkScope = "a2a://*"
 type networkAccess struct {
 	URL   string
 	Token string
+	// ticket, when set, mints a one-time ticket that the network bridge
+	// (agentiscaled network-bridge) exchanges for a bearer of its own that
+	// reaches the same grant as Token, for a runtime that can start an MCP
+	// server but has no place to keep a credential that the agent cannot
+	// read (agy). revoke drops the ticket and that bearer; until then the
+	// bearer lasts as long as the grant.
+	ticket func() (ticket string, revoke func(), err error)
+}
+
+// networkTicketTTL bounds how long a ticket waits for the bridge.
+const networkTicketTTL = 2 * time.Minute
+
+// networkTicket is a one-time secret for a bearer of its own (alias) that
+// reaches grant.
+type networkTicket struct {
+	alias   string
+	grant   *networkGrant
+	expires time.Time
 }
 
 const networkInstructions = `agentiscale-network: the other agents of the network this agent serves in. Use list_agents to find them, get_agent_card to read what one does, send_task to give it a task, get_task (with wait_seconds) to follow the task until it ends (completed, rejected, cancelled, timeout or failed), and cancel_task to stop it. Use the same service and peer_id (omitted for an agent on this node) for every call about a task. A task in state input_required waits for your answer to the agent's question (its message): answer with send_task, giving the task's task_id. These tools work only while your own task runs, and an agent you call cannot call further agents.`
@@ -66,12 +84,17 @@ type taskNetwork struct {
 
 	// calls are the tool calls being served, of every grant.
 	calls sync.WaitGroup
+	// admitted, if set, learns of each request ServeHTTP lets through to
+	// a grant; tests use it.
+	admitted func()
 
 	mu sync.Mutex
 	// grants are the tasks' grants by the hash of their bearers, and
 	// byTask the same grants by their tasks.
 	grants map[[sha256.Size]byte]*networkGrant
 	byTask map[a2a.TaskID]*networkGrant
+	// tickets are the one-time tickets not yet redeemed, by their hashes.
+	tickets map[[sha256.Size]byte]networkTicket
 	// sent holds, for each running task of a hosted agent, the tasks it has
 	// sent, across the turns of the task and so across their tokens. The
 	// node is the sender of all of them, as of its owner's own tasks and
@@ -249,11 +272,12 @@ func serveTaskNetwork(ctx context.Context, socket, agentSocket string, discover 
 	}
 	n := &taskNetwork{
 		socket: socket, agentSocket: agentSocket, discover: discover,
-		url:    "http://" + ln.Addr().String() + "/mcp",
-		node:   nodeclient.SocketClient(socket),
-		grants: map[[sha256.Size]byte]*networkGrant{},
-		byTask: map[a2a.TaskID]*networkGrant{},
-		sent:   map[a2a.TaskID]*sentTasks{},
+		url:     "http://" + ln.Addr().String() + "/mcp",
+		node:    nodeclient.SocketClient(socket),
+		grants:  map[[sha256.Size]byte]*networkGrant{},
+		byTask:  map[a2a.TaskID]*networkGrant{},
+		sent:    map[a2a.TaskID]*sentTasks{},
+		tickets: map[[sha256.Size]byte]networkTicket{},
 	}
 	n.node.Timeout = 10 * time.Second
 	srv := &http.Server{Handler: n, ReadHeaderTimeout: 10 * time.Second}
@@ -272,6 +296,10 @@ func serveTaskNetwork(ctx context.Context, socket, agentSocket string, discover 
 // ServeHTTP admits a request only with the bearer of a task that has not
 // ended; only a turn that runs can call a tool.
 func (n *taskNetwork) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == networkTicketPath {
+		n.redeem(w, r)
+		return
+	}
 	bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || bearer == "" || r.URL.Path != "/mcp" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -286,6 +314,9 @@ func (n *taskNetwork) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if g == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
+	}
+	if n.admitted != nil {
+		n.admitted()
 	}
 	g.serveHTTP(w, r)
 }
@@ -304,7 +335,7 @@ func (n *taskNetwork) grant(ctx context.Context, agent caller.AgentName, task a2
 	if err != nil {
 		return nil, nil, err
 	}
-	access = &networkAccess{URL: n.url, Token: g.bearer}
+	access = &networkAccess{URL: n.url, Token: g.bearer, ticket: func() (string, func(), error) { return n.ticket(g) }}
 	if ttl <= 0 {
 		return access, func() {}, errors.New("no running time left")
 	}
@@ -378,6 +409,7 @@ func (n *taskNetwork) forget(task a2a.TaskID) {
 	delete(n.byTask, task)
 	if g != nil {
 		delete(n.grants, sha256.Sum256([]byte(g.bearer)))
+		n.dropTickets(g)
 	}
 	n.mu.Unlock()
 	if g != nil {
@@ -396,10 +428,11 @@ func (n *taskNetwork) open(token string, agent caller.AgentName, sent *sentTasks
 		panic(err)
 	}
 	end := g.begin(context.Background(), token, expires)
-	return &networkAccess{URL: n.url, Token: g.bearer}, func() {
+	return &networkAccess{URL: n.url, Token: g.bearer, ticket: func() (string, func(), error) { return n.ticket(g) }}, func() {
 		end()
 		n.mu.Lock()
 		delete(n.grants, sha256.Sum256([]byte(g.bearer)))
+		n.dropTickets(g)
 		n.mu.Unlock()
 		g.close()
 	}
@@ -436,6 +469,13 @@ func (n *taskNetwork) newGrant(agent caller.AgentName, sent *sentTasks) (*networ
 			n.calls.Add(1)
 			defer n.calls.Done()
 			t := g.current()
+			// A request may take its time between its admission and
+			// here: a tool call runs only while the bearer that sent it
+			// still reaches g, so that one revoked with its turn
+			// (networkAccess.ticket) runs nothing in a later turn.
+			if method == "tools/call" && !n.reaches(req, g) {
+				t = nil
+			}
 			if t == nil {
 				// The session's own methods still work, so that it
 				// lasts into the task's next turn.
@@ -616,5 +656,109 @@ func (b *bodyThen) Close() error {
 	return err
 }
 
+// reaches says whether the bearer that sent req still reaches g.
+func (n *taskNetwork) reaches(req mcp.Request, g *networkGrant) bool {
+	extra := req.GetExtra()
+	if extra == nil || extra.Header == nil {
+		return false
+	}
+	bearer, ok := strings.CutPrefix(extra.Header.Get("Authorization"), "Bearer ")
+	if !ok || bearer == "" {
+		return false
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.grants[sha256.Sum256([]byte(bearer))] == g
+}
+
 // wait waits for the tool calls being served to return.
 func (n *taskNetwork) wait() { n.calls.Wait() }
+
+// networkTicketPath is where the network bridge redeems its ticket, beside
+// the MCP endpoint.
+const networkTicketPath = "/ticket"
+
+// ticketURL is the ticket endpoint of the network whose MCP endpoint is
+// mcpURL.
+func ticketURL(mcpURL string) string {
+	return strings.TrimSuffix(mcpURL, "/mcp") + networkTicketPath
+}
+
+// ticket mints a one-time ticket for a bearer of its own that reaches g,
+// which only the first redeem within networkTicketTTL gets, while g is
+// open. revoke drops the ticket and that bearer, so that a bridge that
+// outlives its turn cannot reach g again.
+func (n *taskNetwork) ticket(g *networkGrant) (ticket string, revoke func(), err error) {
+	b := make([]byte, 64)
+	if _, err := rand.Read(b); err != nil {
+		return "", nil, err
+	}
+	t, alias := hex.EncodeToString(b[:32]), hex.EncodeToString(b[32:])
+	now := time.Now()
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.tickets == nil {
+		n.tickets = map[[sha256.Size]byte]networkTicket{}
+	}
+	for k, v := range n.tickets {
+		if !now.Before(v.expires) {
+			delete(n.tickets, k)
+		}
+	}
+	key := sha256.Sum256([]byte(t))
+	n.tickets[key] = networkTicket{alias: alias, grant: g, expires: now.Add(networkTicketTTL)}
+	return t, func() {
+		n.mu.Lock()
+		delete(n.tickets, key)
+		if aliasKey := sha256.Sum256([]byte(alias)); n.grants[aliasKey] == g {
+			delete(n.grants, aliasKey)
+		}
+		n.mu.Unlock()
+	}, nil
+}
+
+// dropTickets forgets g's tickets and the bearers they redeemed. n.mu is
+// held.
+func (n *taskNetwork) dropTickets(g *networkGrant) {
+	for k, v := range n.tickets {
+		if v.grant == g {
+			delete(n.tickets, k)
+		}
+	}
+	for k, v := range n.grants {
+		if v == g {
+			delete(n.grants, k)
+		}
+	}
+}
+
+// redeem answers a ticket (POST, form field ticket) with its own bearer for
+// its grant, once: the ticket is spent whatever the answer.
+func (n *taskNetwork) redeem(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// A client that stalls in the body does not hold the handler.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(5 * time.Second))
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
+	t := r.PostFormValue("ticket")
+	key := sha256.Sum256([]byte(t))
+	n.mu.Lock()
+	v, ok := n.tickets[key]
+	delete(n.tickets, key)
+	if ok && (n.grants[sha256.Sum256([]byte(v.grant.bearer))] != v.grant || !time.Now().Before(v.expires)) {
+		ok = false
+	}
+	if ok {
+		n.grants[sha256.Sum256([]byte(v.alias))] = v.grant
+	}
+	n.mu.Unlock()
+	if t == "" || !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(w, v.alias)
+}

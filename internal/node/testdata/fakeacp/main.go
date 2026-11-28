@@ -233,6 +233,10 @@ func fakeACPAgent(args []string) {
 					chunk(p.SessionID, strings.Repeat("b", 700<<10))
 				}
 				switch {
+				case strings.Contains(prompt, "BLANK"):
+					// Only whitespace, and no status: no answer.
+					chunk(p.SessionID, "  \n")
+					end("end_turn", "")
 				case strings.Contains(prompt, checkDoneTask):
 					answer("done", "Ready.")
 				case strings.Contains(prompt, "<answer>\n"+checkAnswer+"\n</answer>"):
