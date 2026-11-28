@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/whiteredhouse/agentiscaled/internal/caller"
 )
 
 // networkBridgeCommand is the hidden agentiscaled command that serves a run
@@ -121,27 +122,10 @@ func bridgeNetwork(ctx context.Context, client mcp.Transport, endpoint, bearer s
 	}
 	server := mcp.NewServer(&mcp.Implementation{Name: networkServerName, Version: "0.1.0"},
 		&mcp.ServerOptions{Instructions: instructions})
-	var cursor string
-	for {
-		page, err := node.ListTools(ctx, &mcp.ListToolsParams{Cursor: cursor})
-		if err != nil {
-			return fmt.Errorf("list the network's tools: %w", err)
-		}
-		for _, tool := range page.Tools {
-			name := tool.Name
-			server.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return node.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: req.Params.Arguments})
-			})
-		}
-		if cursor = page.NextCursor; cursor == "" {
-			break
-		}
+	if err := caller.ProxyTools(ctx, server, node, nil); err != nil {
+		return fmt.Errorf("list the network's tools: %w", err)
 	}
-	// The runtime closing its end is the normal way to stop.
-	if err := server.Run(ctx, client); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, mcp.ErrConnectionClosed) && ctx.Err() == nil {
-		return err
-	}
-	return nil
+	return caller.ServeUntilClosed(ctx, server, client)
 }
 
 // bearerTransport adds the run's bearer to each request to the node.
