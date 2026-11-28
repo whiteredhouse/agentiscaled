@@ -606,3 +606,24 @@ func TestTicketRedeemNeedsPost(t *testing.T) {
 		t.Errorf("GET: %s", resp.Status)
 	}
 }
+
+// An ACP agent's bridge takes its ticket from its environment, and drops
+// it from there.
+func TestNetworkBridgeTicketFromTheEnvironment(t *testing.T) {
+	got := make(chan string, 1)
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.PostFormValue("ticket")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer node.Close()
+	t.Setenv(networkTicketEnv, "env-ticket")
+	if err := RunNetworkBridge(context.Background(), []string{"-url", node.URL + "/mcp"}, strings.NewReader(""), io.Discard); err == nil {
+		t.Error("the bridge ran on a refused ticket")
+	}
+	if ticket := <-got; ticket != "env-ticket" {
+		t.Errorf("the node got ticket %q", ticket)
+	}
+	if v, ok := os.LookupEnv(networkTicketEnv); ok {
+		t.Errorf("%s stayed set to %q", networkTicketEnv, v)
+	}
+}

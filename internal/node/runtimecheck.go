@@ -116,7 +116,7 @@ func runRuntimeCheck(ctx context.Context, args []string, out io.Writer) error {
 	if r.info.AgentCapabilities.MCPCapabilities.HTTP {
 		report("INFO", "network", "advertises HTTP MCP servers, so turns get the network's other agents; this check does not connect one")
 	} else {
-		report("WARN", "network", "no mcpCapabilities.http: the agent works without the network's other agents")
+		report("INFO", "network", "no mcpCapabilities.http: turns get the network's other agents as a stdio server (agentiscaled network-bridge); this check does not connect one")
 	}
 
 	// Each turn has a deadline, so an agent that never answers fails its

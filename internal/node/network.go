@@ -34,6 +34,10 @@ const networkServerName = "agentiscale-network"
 // credential from the environment (Codex).
 const networkTokenEnv = "AGENTISCALE_NETWORK_TOKEN"
 
+// networkTicketEnv is where an ACP agent's network bridge finds its
+// one-time ticket (RunNetworkBridge).
+const networkTicketEnv = "AGENTISCALE_NETWORK_TICKET"
+
 // networkScope is all a run's token allows: A2A calls to agents.
 const networkScope = "a2a://*"
 

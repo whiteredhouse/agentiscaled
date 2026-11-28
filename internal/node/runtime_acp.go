@@ -88,6 +88,10 @@ type acpRuntime struct {
 	// stderr, if set, takes what the agent wrote to stderr in each turn,
 	// once its run ends; tests use it.
 	stderr func(string)
+	// bridge is the agentiscaled executable that serves an agent without
+	// HTTP MCP servers the network on stdio (networkBridgeCommand); empty
+	// when it cannot be found.
+	bridge string
 }
 
 func (r *acpRuntime) setDefinition(d *agentDefinition) { r.def = d }
@@ -207,6 +211,9 @@ func newACPRuntime(ctx context.Context, a agentConfig, dataDir, checkDir string)
 		}
 	}
 	r := &acpRuntime{command: a.Command, args: a.Args, config: config, policy: a.policy()}
+	if bridge, err := bridgeExecutable(); err == nil {
+		r.bridge = bridge
+	}
 	// The agent says what it supports before it runs any task, so an
 	// owner's policy that it does not enforce stops agent add and the
 	// node's start, not a task.
@@ -332,11 +339,14 @@ func (r *acpRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 	// stays the task's over its turns: each turn opens the network to it
 	// with the turn's own token (taskNetwork).
 	servers := []any{}
-	if req.Network != nil && info.AgentCapabilities.MCPCapabilities.HTTP {
-		servers = append(servers, map[string]any{
-			"type": "http", "name": networkServerName, "url": req.Network.URL,
-			"headers": []map[string]string{{"name": "Authorization", "value": "Bearer " + req.Network.Token}},
-		})
+	if req.Network != nil {
+		server, err := r.networkServer(req.Network, info)
+		if err != nil {
+			return turnResult{}, err
+		}
+		if server != nil {
+			servers = append(servers, server)
+		}
 	}
 	session := req.Session
 	switch {
@@ -1379,4 +1389,34 @@ func (t *tailBuffer) String() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return string(t.buf)
+}
+
+// networkServer is the network's MCP server as the agent takes it: over
+// HTTP with the bearer when it declares mcpCapabilities.http, else, as
+// every ACP agent takes stdio servers, the network bridge with a one-time
+// ticket in its environment, which it spends for the bearer when the agent
+// starts it. nil when neither can be given.
+func (r *acpRuntime) networkServer(n *networkAccess, info acpAgent) (any, error) {
+	if info.AgentCapabilities.MCPCapabilities.HTTP {
+		return map[string]any{
+			"type": "http", "name": networkServerName, "url": n.URL,
+			"headers": []map[string]string{{"name": "Authorization", "value": "Bearer " + n.Token}},
+		}, nil
+	}
+	if r.bridge == "" || n.ticket == nil {
+		return nil, nil
+	}
+	// The agent may start the server lazily, in a later turn of a kept
+	// process, and keeps it over the task's turns: the ticket waits for it
+	// until it expires or the task ends, and the bearer it redeems lasts
+	// as long as the task's own.
+	ticket, _, err := n.ticket()
+	if err != nil {
+		return nil, fmt.Errorf("mint the network bridge's ticket: %w", err)
+	}
+	return map[string]any{
+		"name": networkServerName, "command": r.bridge,
+		"args": []string{networkBridgeCommand, "-url", n.URL},
+		"env":  []map[string]string{{"name": networkTicketEnv, "value": ticket}},
+	}, nil
 }
