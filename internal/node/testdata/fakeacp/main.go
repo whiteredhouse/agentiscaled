@@ -127,6 +127,9 @@ func fakeACPAgent(args []string) {
 					Name    string `json:"name"`
 					URL     string `json:"url"`
 					Headers []struct{ Name, Value string }
+					Command string   `json:"command"`
+					Args    []string `json:"args"`
+					Env     []struct{ Name, Value string }
 				} `json:"mcpServers"`
 			}
 			json.Unmarshal(msg.Params, &p)
@@ -137,6 +140,14 @@ func fakeACPAgent(args []string) {
 			}
 			servers = nil
 			for _, s := range p.MCPServers {
+				if s.Command != "" {
+					var env []string
+					for _, e := range s.Env {
+						env = append(env, e.Name+"="+e.Value)
+					}
+					servers = append(servers, s.Name+"@stdio:"+s.Command+" "+strings.Join(s.Args, " ")+"@"+strings.Join(env, ";"))
+					continue
+				}
 				auth := ""
 				if len(s.Headers) > 0 {
 					auth = s.Headers[0].Name + ":" + s.Headers[0].Value

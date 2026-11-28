@@ -115,8 +115,9 @@ conventions in `_meta.agentiscale`:
   when your agent is not signed in.
 - `loadSession` lets your agent take an answer after the process that asked has
   ended (see [End the turn](#end-the-turn)).
-- `mcpCapabilities.http` lets your agent call the network's other agents. Without it
-  your agent works without them.
+- `mcpCapabilities.http` gives your agent the network's other agents as an HTTP MCP
+  server. Without it, the node gives them as a stdio server instead (see
+  [The network's other agents](#the-networks-other-agents)).
 
 An ACP agent that declares no `_meta.agentiscale` still runs with the owner's own
 configuration and every policy on, but no other way.
@@ -226,8 +227,12 @@ should not do is denied.
 ## The network's other agents
 
 When the owner allows it, `session/new` and `session/load` name one more MCP
-server, `agentiscale-network`, an HTTP server on a loopback port of the node, with a
-bearer token in its `headers`. Its tools are `list_agents`, `get_agent_card`,
+server, `agentiscale-network`. If your agent declares `mcpCapabilities.http`, it is an
+HTTP server on a loopback port of the node, with a bearer token in its `headers`.
+Otherwise it is a stdio server, `agentiscaled network-bridge`, with a one-time ticket
+in its `env`: start it with that environment, and it spends the ticket at the node
+for the token, which it keeps to itself. Start it within two minutes of
+`session/new` or `session/load`, or its ticket expires. Its tools are `list_agents`, `get_agent_card`,
 `send_task`, `get_task` and `cancel_task`. Allow the tools of this server without
 asking: the node configured it, and its token is what bounds them. The token stays
 the same over a task's turns, so a process kept for an answer keeps its connection,

@@ -20,14 +20,16 @@ import (
 // the network's agents on stdio (RunNetworkBridge).
 const networkBridgeCommand = "network-bridge"
 
-// RunNetworkBridge is `agentiscaled network-bridge -url URL -ticket-file
-// FILE`: it serves one hosted run the network's other agents as an MCP
-// server on stdio, for a runtime that starts MCP servers from a
-// configuration file the agent itself can read (agy). The bridge reads a
-// one-time ticket from FILE, which is not in any process list, removes the
-// file and exchanges the ticket at the node for the run's bearer, which
-// stays in the bridge's memory. Whoever redeems a ticket first spends it,
-// and the node revokes one still unspent when the turn ends.
+// RunNetworkBridge is `agentiscaled network-bridge -url URL [-ticket-file
+// FILE]`: it serves one hosted run the network's other agents as an MCP
+// server on stdio, for a runtime that starts only stdio MCP servers, or
+// starts them from a configuration file the agent itself can read (agy).
+// The bridge reads a one-time ticket from FILE, which it then removes, or
+// else from AGENTISCALE_NETWORK_TICKET (an ACP agent's stdio server), so
+// that it is in no process list, and exchanges it at the node for the
+// run's bearer, which stays in the bridge's memory. Whoever redeems a
+// ticket first spends it, and the node drops one still unspent when it
+// expires, when its task ends or, for agy, when the turn ends.
 func RunNetworkBridge(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
 	fs := flag.NewFlagSet(networkBridgeCommand, flag.ContinueOnError)
 	endpoint := fs.String("url", "", "the run's network MCP endpoint on this node")
@@ -41,17 +43,18 @@ func RunNetworkBridge(ctx context.Context, args []string, stdin io.Reader, stdou
 	if err := loopbackEndpoint(*endpoint); err != nil {
 		return err
 	}
-	if *ticketFile == "" {
-		return errors.New("-ticket-file is required")
+	ticket := os.Getenv(networkTicketEnv)
+	os.Unsetenv(networkTicketEnv)
+	if *ticketFile != "" {
+		b, err := os.ReadFile(*ticketFile)
+		if err != nil {
+			return fmt.Errorf("read the ticket: %w", err)
+		}
+		os.Remove(*ticketFile)
+		ticket = string(b)
 	}
-	b, err := os.ReadFile(*ticketFile)
-	if err != nil {
-		return fmt.Errorf("read the ticket: %w", err)
-	}
-	os.Remove(*ticketFile)
-	ticket := strings.TrimSpace(string(b))
-	if ticket == "" {
-		return errors.New("the ticket file is empty")
+	if ticket = strings.TrimSpace(ticket); ticket == "" {
+		return errors.New("no ticket: give -ticket-file or " + networkTicketEnv)
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

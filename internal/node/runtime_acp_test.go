@@ -178,7 +178,40 @@ func TestACPRuntimeNoNetworkWithoutHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(res.Text, "mcp= ") {
-		t.Errorf("an agent without mcpCapabilities.http got the network: %q", res.Text)
+		t.Errorf("an agent without mcpCapabilities.http got the network with no way to bridge it: %q", res.Text)
+	}
+}
+
+// An agent without HTTP MCP servers gets the network as the network
+// bridge, a stdio server, with a one-time ticket for the bearer in its
+// environment, never the bearer itself.
+func TestACPRuntimeNetworkThroughTheBridge(t *testing.T) {
+	t.Parallel()
+	r := newFakeACP(t, ownerPolicy, "-status")
+	r.bridge = "/opt/agentiscaled"
+	network, _ := fakeNodeNetworkServer(t)
+	g, err := network.grantFor("caller", "t-acp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.begin(context.Background(), "turn-token", time.Now().Add(time.Minute))()
+	access := &networkAccess{URL: network.url, Token: g.bearer, ticket: func() (string, func(), error) { return network.ticket(g) }}
+	res, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "x", Network: access})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := "mcp=agentiscale-network@stdio:/opt/agentiscaled network-bridge -url " + network.url + "@" + networkTicketEnv + "="
+	_, rest, ok := strings.Cut(res.Text, prefix)
+	if !ok {
+		t.Fatalf("result %q lacks %q", res.Text, prefix)
+	}
+	ticket, _, _ := strings.Cut(rest, " ")
+	if strings.Contains(res.Text, access.Token) {
+		t.Error("the agent got the run's bearer")
+	}
+	bearer, err := redeemTicket(context.Background(), http.DefaultClient, ticketURL(network.url), ticket)
+	if err != nil || bearer != access.Token {
+		t.Errorf("the ticket %q redeems %q, %v", ticket, bearer, err)
 	}
 }
 
