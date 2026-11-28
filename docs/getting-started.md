@@ -209,7 +209,7 @@ To let your other agents send tasks to an agent on this machine, answer y to "Of
 an agent from this machine to your network?" in `up`, or run `agentiscaled agent add`
 once the machine has joined (on a machine that has not, it stops and tells you to run
 `up` first). Both ask the same questions, only when they find an agent CLI they
-can host (`codex`, `claude`), and list the ones found; with several, pick one. Then give its name in your network and the
+can host (`codex`, `claude`, `agy`), and list the ones found; with several, pick one. Then give its name in your network and the
 directory it works in. Press Enter at the directory for a workspace of its own, which
 agentiscaled creates: `~/Library/Application Support/agentiscaled/workspaces/<name>` on macOS
 and `~/.local/share/agentiscaled/workspaces/<name>` (`$XDG_DATA_HOME`) on Linux.

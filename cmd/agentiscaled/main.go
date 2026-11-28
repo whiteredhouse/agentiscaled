@@ -84,6 +84,9 @@ func main() {
 			return
 		case "run":
 			err = node.RunSaved(ctx, args)
+		case "network-bridge":
+			// Not listed: an agy run starts it to reach the network.
+			err = node.RunNetworkBridge(ctx, args, os.Stdin, os.Stdout)
 		case "help":
 			fmt.Print(usage)
 		default:

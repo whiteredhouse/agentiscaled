@@ -286,6 +286,11 @@ func (w *wizard) chooseAgent(confirm bool, policy agentPolicy, flagsSet map[stri
 	// The agent runs as the owner's own runtime would, with their
 	// configuration and the directory's own guidance, unless the owner says
 	// no, such as for code from someone else.
+	// A runtime that can run no other way is not asked (ownerPolicyOnly).
+	only := runtimes[rt].ownerPolicyOnly
+	if only {
+		fmt.Fprintf(w.out, "  It runs with your own %s configuration (sign-in, skills, plugins, MCP servers) and the directory's instruction files and skills.\n", rt)
+	}
 	for _, q := range []struct {
 		flag     string
 		question string
@@ -296,6 +301,10 @@ func (w *wizard) chooseAgent(confirm bool, policy agentPolicy, flagsSet map[stri
 		{"dir-skills", "  Load the directory's skills?", &offer.policy.DirSkills},
 	} {
 		if flagsSet[q.flag] {
+			continue
+		}
+		if only {
+			*q.allow = true
 			continue
 		}
 		yes, err := w.yesNo(q.question, true)

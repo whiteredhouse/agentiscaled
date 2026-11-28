@@ -80,7 +80,7 @@ its tasks but refuses new ones (see [Drain an
 agent](getting-started.md#drain-an-agent)). The table's STATE column says
 `available`, or the drain in the words `agent list` uses.
 Each agent also shows what runs it, as its node says: the table's RUNTIME column
-and `runtime` in JSON (`codex`, `claude` or `acp`). An agent on a node too old to
+and `runtime` in JSON (`codex`, `claude`, `agy` or `acp`). An agent on a node too old to
 say has none, and the table shows `-`. The node writes this value itself, so it
 describes the agent but grants nothing.
 To see the agents configured on this machine, use `agentiscaled agent list`.
@@ -295,8 +295,9 @@ its own background service; `agent add` then adds the agent to it. `agent add` o
 offers agents from a node that has joined: on a data directory that has not, it
 stops and names the `up` command to run. Node A offers more agents with plain
 `agent add`, with no node of their own. The first argument picks the runtime that does the work:
-`codex` (the Codex CLI) or `claude` (Claude Code, see
-[Claude Code as the agent](#claude-code-as-the-agent)). Node B checks that `codex` runs (`-command` takes another path), then
+`codex` (the Codex CLI), `claude` (Claude Code, see
+[Claude Code as the agent](#claude-code-as-the-agent)) or `agy` (the Antigravity CLI, see
+[Antigravity (agy) as the agent](#antigravity-agy-as-the-agent)). Node B checks that `codex` runs (`-command` takes another path), then
 serves the A2A 1.0 agent `a2a://codex` to the other nodes of your network.
 `-name` picks another name, and `-description` replaces the
 description other agents see on its card, which also lists the skills it loads
@@ -367,6 +368,33 @@ agent's directory, and only the node's MCP server for
 sign-in variables such as `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN`.
 `-dir-instructions=false` stops `CLAUDE.md` files from loading. `-dir-skills=false`
 turns off every skill and command of the run, since Claude Code cannot turn off only the directory's.
+
+### Antigravity (agy) as the agent
+
+`agent add agy` runs each turn of a task as one headless agy run in the agent's
+directory, with the task on stdin, not in the process list. It runs the
+unmodified Antigravity CLI, signed in through its own sign-in, with your Google
+account or an API key. The node never reads or stores that sign-in. Run `agy` once
+in a terminal to sign in before you add the agent.
+
+It runs as your own agy does: your sign-in, settings, permissions, skills, plugins
+and MCP servers, and the directory's `AGENTS.md` and skills. Nothing
+can prompt for approval: agy denies anything that would prompt and carries on, and
+a turn that this leaves with no answer fails, saying which kind of step was denied.
+To let the agent edit files or run commands, allow them in agy's own settings
+(`permissions.allow` in `~/.gemini/antigravity-cli/settings.json`).
+
+Each task is an agy conversation. The turn's answer comes back in a fixed schema
+(`--json-schema`), and the caller's answer to a question resumes the conversation
+(`--conversation`). agy has no configuration home to give an agent of its own and no
+setting that leaves out only the directory's instructions or skills, so
+`agent add agy` refuses `-owner-config=false`, `-dir-instructions=false` and
+`-dir-skills=false`. A role from `-definition` comes in front of the task; its
+model and tools do not apply.
+
+With a Google account, Google's terms for Antigravity let it use what you send to
+improve its products unless you opt out. Tasks that other agents send this agent go
+to Google under your account.
 
 ### Other agents (ACP)
 
@@ -598,7 +626,16 @@ credential of its own: a secret of that server's, the same over the task's turns
 which is no credential anywhere else and whose tools run only while a turn runs. The server holds the turn's token and makes the calls with it: `--mcp-config` in a file only you can read, outside the
 agent's directory, with its tools allowed, for Claude Code; `-c mcp_servers.agentiscale-network.*`
 with the bearer in `AGENTISCALE_NETWORK_TOKEN`, which the commands Codex runs do not
-get, and its tools approved, for Codex. Neither run asks before it uses them: the
+get, and its tools approved, for Codex. agy takes an MCP server for one run only
+from a folder it works in, which the agent can read, and the commands it runs get its
+environment, so neither can hold the bearer: the node gives the run a folder of its
+own, outside the agent's directory (`--add-dir`), whose `.agents/mcp_config.json`
+starts `agentiscaled network-bridge` with a one-time ticket. The bridge spends the
+ticket at the node for the bearer as soon as agy starts it, keeps the bearer in
+memory and serves the same tools on stdio; a ticket read later is spent. The run's
+`--settings` allow those tools (`mcp(agentiscale-network/*)`). They also carry the
+`permissions` block of your agy settings, so that the run keeps your own rules
+even where a run's settings replace that block, and a run does not start while that file is not valid JSON. No run asks before it uses them: the
 turn's token is what bounds them. It has `list_agents`, `get_agent_card`, `send_task`, `get_task` and
 `cancel_task`. Every call goes to the node with the token, and the node checks it
 (signature, expiry, revocation, the A2A-only rule) and sends it on in place of its

@@ -63,7 +63,7 @@ token](docs/getting-started.md#nodes-that-join-with-a-workload-token).
 | --- | --- |
 | `agentiscaled up` | Sign in if needed, join, and start the node as a background service; in a terminal it first asks which agent apps to connect, whether to install the agentiscale skill and whether to offer an agent |
 | `agentiscaled client list\|connect\|disconnect` | Connect your agent apps (Claude Desktop, Codex CLI) to the node, or disconnect them |
-| `agentiscaled agent add\|remove\|list` | Offer an agent (Codex, Claude Code, or any agent that speaks ACP) from this machine to your network, or stop offering it |
+| `agentiscaled agent add\|remove\|list` | Offer an agent (Codex, Claude Code, Antigravity, or any agent that speaks ACP) from this machine to your network, or stop offering it |
 | `agentiscaled agent drain\|undrain` | Let an agent finish its tasks but take no new ones, for example before maintenance, and let it take tasks again ([Drain an agent](docs/getting-started.md#drain-an-agent)) |
 | `agentiscaled runtime list` | List supported agent runtimes, their executables on `PATH`, and their config directories for the current shell |
 | `agentiscaled runtime check` | Check that an agent that speaks ACP keeps the agentiscale runtime contract ([Add agentiscale support to your agent](docs/add-agentiscale-support.md)) |

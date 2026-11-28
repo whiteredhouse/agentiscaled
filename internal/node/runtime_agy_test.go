@@ -1,0 +1,375 @@
+package node
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+// fakeAgy writes an agy script that records its arguments, its
+// environment, its stdin and the network folder's MCP configuration next to
+// itself, reports one step as it starts and ends, and prints result.
+func fakeAgy(t *testing.T, dir, result string) (command, record string) {
+	t.Helper()
+	record = filepath.Join(dir, "rec")
+	command = filepath.Join(dir, "agy")
+	script := `#!/bin/sh
+if [ "$1" = --version ]; then echo "agy 1.5.19"; exit 0; fi
+printf '%s\0' "$@" > ` + record + `.args
+env > ` + record + `.env
+pwd > ` + record + `.pwd
+cat > ` + record + `.stdin
+prev=
+for a in "$@"; do
+  if [ "$prev" = --add-dir ]; then cat "$a/.agents/mcp_config.json" > ` + record + `.mcp; fi
+  prev=$a
+done
+echo '{"event":"init","conversation_id":"6f0b3a52-41a7-4c63-9a0e-3c1f5d2b7e11"}'
+echo '{"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"read_file","tool_info":{"name":"read_file","parameters":{"Path":"/work/main.go"}}}}'
+echo '{"event":"step_update","step_update":{"step_index":2,"state":"DONE","step_type":"tool","tool_name":"read_file","tool_info":{"name":"read_file","parameters":{"Path":"/work/main.go"},"output":"1 lines"}}}'
+cat <<'EOF'
+` + result + `
+EOF
+`
+	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return command, record
+}
+
+func agyArgs(t *testing.T, record string) []string {
+	return strings.Split(strings.TrimSuffix(readRecord(t, record+".args"), "\x00"), "\x00")
+}
+
+// argAfter is the argument after flag in args, if any.
+func argAfter(args []string, flag string) (string, bool) {
+	i := slices.Index(args, flag)
+	if i < 0 || i+1 >= len(args) {
+		return "", false
+	}
+	return args[i+1], true
+}
+
+func TestAgyRuntimeRunsATurn(t *testing.T) {
+	dir := t.TempDir()
+	command, record := fakeAgy(t, dir, `{"event":"result","result":{"conversation_id":"6f0b3a52-41a7-4c63-9a0e-3c1f5d2b7e11","status":"SUCCESS","response":"","structured_output":{"status":"done","text":" No findings "}}}`)
+	var steps []string
+	out, err := (&agyRuntime{command: command, bridge: "/bin/agentiscaled"}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "Review main.go",
+		Progress: func(step string) { steps = append(steps, step) }})
+	if err != nil || out.Text != "No findings" || out.Question || out.Session != "6f0b3a52-41a7-4c63-9a0e-3c1f5d2b7e11" {
+		t.Fatalf("run: %+v, %v", out, err)
+	}
+	if !slices.Equal(steps, []string{"Reading main.go"}) {
+		t.Errorf("steps: %q", steps)
+	}
+	args := agyArgs(t, record)
+	if p := readRecord(t, record+".stdin"); !strings.Contains(p, "Review main.go") || p != (&agyRuntime{}).prompt(taskRequest{Sender: testSender, Text: "Review main.go"}) {
+		t.Errorf("prompt on stdin %q", p)
+	}
+	if slices.ContainsFunc(args, func(a string) bool { return strings.Contains(a, "Review main.go") }) {
+		t.Errorf("the prompt is in agy's arguments: %q", args)
+	}
+	for flag, want := range map[string]string{"--output-format": "stream-json", "--json-schema": turnSchema, "--print-timeout": "0"} {
+		if got, _ := argAfter(args, flag); got != want {
+			t.Errorf("%s = %q, want %q", flag, got, want)
+		}
+	}
+	for _, flag := range []string{"-p", "--conversation", "--add-dir", "--settings", "--dangerously-skip-permissions"} {
+		if slices.Contains(args, flag) {
+			t.Errorf("a first turn without the network has %s", flag)
+		}
+	}
+	if pwd := strings.TrimSpace(readRecord(t, record+".pwd")); pwd != dir {
+		if real, _ := filepath.EvalSymlinks(dir); pwd != real {
+			t.Errorf("ran in %s, want %s", pwd, dir)
+		}
+	}
+}
+
+// The caller's answer resumes the turn's conversation.
+func TestAgyRuntimeResumesTheConversation(t *testing.T) {
+	dir := t.TempDir()
+	command, record := fakeAgy(t, dir, `{"event":"result","result":{"status":"SUCCESS","structured_output":{"status":"needs_input","text":"Which branch?"}}}`)
+	session := "0c7e4f8a-3d2b-4f6e-9a1c-5b8d7e6f4a3b"
+	out, err := (&agyRuntime{command: command}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "main", Session: session})
+	if err != nil || !out.Question || out.Text != "Which branch?" || out.Session != session {
+		t.Fatalf("run: %+v, %v", out, err)
+	}
+	if got, _ := argAfter(agyArgs(t, record), "--conversation"); got != session {
+		t.Errorf("--conversation %q, want %q", got, session)
+	}
+	if _, err := (&agyRuntime{command: command}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x", Session: "--add-dir"}); err == nil {
+		t.Error("a session that is not a UUID was passed to agy")
+	}
+}
+
+// A turn that agy ended with no answer, because it denied a step nobody
+// could approve, fails; so does one that did not succeed.
+func TestAgyRuntimeFailures(t *testing.T) {
+	for name, tc := range map[string]struct{ result, want string }{
+		"denied":  {`{"event":"result","result":{"status":"SUCCESS","response":"","denied_actions":[{"action":"mcp","display_name":"McpTool"},{"action":"mcp"}]}}`, "approval nobody can give on this node (mcp)"},
+		"empty":   {`{"event":"result","result":{"status":"SUCCESS","response":"  "}}`, errNoAnswer.Error()},
+		"failed":  {`{"event":"result","result":{"status":"ERROR","response":"","error":"invalid model selection","finished_reason":"error"}}`, "agy ended with ERROR: invalid model selection"},
+		"timeout": {`{"event":"result","result":{"status":"ERROR","response":"","error":"print timeout after 1s with the turn still in progress","finished_reason":"print_timeout"}}`, "agy ended with ERROR (print_timeout): print timeout after 1s"},
+		"oddname": {`{"event":"result","result":{"status":"bad status!","response":""}}`, "agy ended with an error"},
+		"none":    {`{"event":"step_update"}`, "agy: no result"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			command, _ := fakeAgy(t, dir, tc.result)
+			_, err := (&agyRuntime{command: command}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x"})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A plain response is the result as it stands; a JSON one in turnSchema is
+// read as an answer.
+func TestAgyRuntimeReadsAPlainResponse(t *testing.T) {
+	for response, want := range map[string]turnResult{
+		"Done.":                                  {Text: "Done.", Session: "s"},
+		`{"status":"needs_input","text":"Who?"}`: {Text: "Who?", Question: true, Session: "s"},
+	} {
+		b, _ := json.Marshal(map[string]any{"event": "result", "status": "SUCCESS", "response": response})
+		got, err := agyResult(b, "s", nil, "")
+		if err != nil || got != want {
+			t.Errorf("response %q: %+v, %v", response, got, err)
+		}
+	}
+}
+
+// A definition's instructions come in front of a new task only.
+func TestAgyRuntimeDefinition(t *testing.T) {
+	r := &agyRuntime{def: &agentDefinition{Instructions: "You review Go code."}}
+	if p := r.prompt(taskRequest{Text: "Review main.go"}); !strings.HasPrefix(p, "<role>\nYou review Go code.\n</role>\n\n") {
+		t.Errorf("new task prompt %q", p)
+	}
+	if p := r.prompt(taskRequest{Text: "main", Session: "s"}); strings.Contains(p, "<role>") {
+		t.Errorf("answer prompt %q has the role again", p)
+	}
+}
+
+func TestNewAgyRuntimeRefusesWhatItCannotEnforce(t *testing.T) {
+	dir := t.TempDir()
+	command, _ := fakeAgy(t, dir, "")
+	all := agentPolicy{DirInstructions: true, DirSkills: true, OwnerConfig: true}
+	if _, err := newAgyRuntime(command, "", all); err != nil {
+		t.Fatalf("owner configuration: %v", err)
+	}
+	for name, p := range map[string]agentPolicy{
+		"own config":      {DirInstructions: true, DirSkills: true},
+		"no instructions": {DirSkills: true, OwnerConfig: true},
+		"no skills":       {DirInstructions: true, OwnerConfig: true},
+	} {
+		if _, err := newAgyRuntime(command, "", p); err == nil {
+			t.Errorf("%s: agy accepted a policy it cannot enforce", name)
+		}
+	}
+}
+
+func TestAgyProgress(t *testing.T) {
+	tool := func(name, params string) string {
+		return `{"event":"step_update","step_update":{"step_index":7,"state":"ACTIVE","step_type":"tool","tool_name":"` + name + `","tool_info":{"name":"` + name + `","parameters":` + params + `}}}`
+	}
+	for event, want := range map[string]string{
+		tool("read_file", `{"Path":"/home/u/secret dir/main.go"}`):                                                            "Reading main.go",
+		tool("write_to_file", `{"TargetFile":"/x/notes.md"}`):                                                                 "Editing notes.md",
+		tool("multi_replace_file_content", `{"TargetFile":"/x/a.go"}`):                                                        "Editing a.go",
+		tool("run_command", `{"CommandLine":"TOKEN=abc go test ./..."}`):                                                      "Running go",
+		tool("run_command", `{}`):                                                                                             "Running a command",
+		tool("call_mcp_tool", `{"ServerName":"agentiscale-network","ToolName":"send_task","Arguments":{"message":"secret"}}`): "Using agentiscale-network.send_task",
+		tool("grep_search", `{}`):                                                                                             "Searching",
+		tool("read_url_content", `{}`):                                                                                        "Fetching a page",
+		`{"event":"step_update","step_update":{"step_index":3,"state":"DONE","step_type":"agent_response","text_delta":"secret"}}`: "",
+		`{"event":"result","result":{"status":"SUCCESS"}}`:                                                                         "",
+		`not json`: "",
+	} {
+		step, got := agyProgress([]byte(event))
+		if got != want || got != "" && step != 7 {
+			t.Errorf("agyProgress(%s) = %d, %q, want %q", event, step, got, want)
+		}
+	}
+}
+
+// With the network, agy starts the bridge from a folder of the node's that
+// holds a one-time ticket, never the run's bearer, and may call the
+// network's tools without asking.
+func TestAgyRuntimeNetwork(t *testing.T) {
+	dir := t.TempDir()
+	command, record := fakeAgy(t, dir, `{"event":"result","result":{"status":"SUCCESS","structured_output":{"status":"done","text":"ok"}}}`)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	settingsDir := filepath.Join(home, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(settingsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owner := `{"trustedWorkspaces":["/w"],"permissions":{"allow":["command(go test)"],"deny":["mcp(other/*)"]}}`
+	if err := os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte(owner), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	network, _ := fakeNodeNetworkServer(t)
+	g, err := network.grantFor("caller", "t-agy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.begin(context.Background(), "turn-token", time.Now().Add(time.Minute))()
+	access := &networkAccess{URL: network.url, Token: g.bearer, ticket: func() (string, error) { return network.ticket(g) }}
+	t.Setenv(networkTokenEnv, "leaked")
+	if _, err := (&agyRuntime{command: command, bridge: "/opt/agentiscaled"}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x", Network: access}); err != nil {
+		t.Fatal(err)
+	}
+	args := agyArgs(t, record)
+	added, ok := argAfter(args, "--add-dir")
+	if !ok || strings.HasPrefix(added, dir) {
+		t.Fatalf("--add-dir %q, want a folder outside the agent's directory", added)
+	}
+	if _, err := os.Stat(added); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the network folder %s outlived the turn: %v", added, err)
+	}
+	// The run's settings take the place of the owner's permissions, so
+	// they carry those as well as the network's rule.
+	if s, _ := argAfter(args, "--settings"); s != `{"permissions":{"allow":["command(go test)","mcp(agentiscale-network/*)"],"deny":["mcp(other/*)"]}}` {
+		t.Errorf("--settings %s", s)
+	}
+	mcpConfig := readRecord(t, record+".mcp")
+	var config struct {
+		Servers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(mcpConfig), &config); err != nil {
+		t.Fatal(err)
+	}
+	server := config.Servers[networkServerName]
+	if server.Command != "/opt/agentiscaled" || len(server.Args) != 5 || server.Args[0] != networkBridgeCommand || server.Args[2] != access.URL {
+		t.Fatalf("bridge %+v", server)
+	}
+	if strings.Contains(mcpConfig, access.Token) {
+		t.Error("the run's bearer was written to the network folder")
+	}
+	if env := readRecord(t, record+".env"); strings.Contains(env, "leaked") || strings.Contains(env, access.Token) {
+		t.Error("a network credential reached agy's environment")
+	}
+	// The fake agy never redeemed it, and the ticket still works once.
+	if _, err := redeemTicket(context.Background(), http.DefaultClient, ticketURL(access.URL), server.Args[4]); err != nil {
+		t.Errorf("redeem the ticket: %v", err)
+	}
+
+	// Settings it cannot read would drop the owner's permissions: the turn
+	// does not run.
+	if err := os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte("{// not JSON"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&agyRuntime{command: command, bridge: "/opt/agentiscaled"}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x", Network: access}); err == nil || !strings.Contains(err.Error(), "agy's settings") {
+		t.Errorf("unreadable settings: %v", err)
+	}
+}
+
+// The bridge spends its ticket for the run's bearer and serves the
+// network's tools on stdio; nobody can spend the ticket again, and none is
+// redeemed once its task has ended.
+func TestNetworkBridge(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	network, calls := fakeNodeNetworkServer(t)
+	g, err := network.grantFor("caller", "t-bridge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.begin(ctx, "turn-token", time.Now().Add(time.Minute))()
+	ticket, err := network.ticket(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toBridge, bridgeIn := io.Pipe()
+	bridgeOut, fromBridge := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		done <- RunNetworkBridge(ctx, []string{"-url", network.url, "-ticket", ticket}, toBridge, fromBridge)
+		fromBridge.Close()
+	}()
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "agy", Version: "1"}, nil).
+		Connect(ctx, &mcp.IOTransport{Reader: bridgeOut, Writer: bridgeIn}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if init := session.InitializeResult(); init.ServerInfo.Name != networkServerName || init.Instructions != networkInstructions {
+		t.Errorf("bridge serves %q with instructions %q", init.ServerInfo.Name, init.Instructions)
+	}
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, tool := range tools.Tools {
+		names = append(names, tool.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"cancel_task", "get_agent_card", "get_task", "list_agents", "send_task"}; !slices.Equal(names, want) {
+		t.Errorf("bridge tools %q, want %q", names, want)
+	}
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_agents"})
+	if err != nil || res.IsError {
+		t.Fatalf("list_agents through the bridge: %+v, %v", res, err)
+	}
+	if got := calls(); !strings.Contains(got, "Bearer turn-token") {
+		t.Errorf("the node got %q", got)
+	}
+	if _, err := redeemTicket(ctx, http.DefaultClient, ticketURL(network.url), ticket); err == nil {
+		t.Error("a spent ticket was redeemed again")
+	}
+	session.Close()
+	if err := <-done; err != nil {
+		t.Errorf("bridge: %v", err)
+	}
+
+	late, err := network.ticket(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	network.forget("t-bridge")
+	if _, err := redeemTicket(ctx, http.DefaultClient, ticketURL(network.url), late); err == nil {
+		t.Error("a ticket was redeemed after its task ended")
+	}
+}
+
+func TestNetworkBridgeTakesOnlyALoopbackEndpoint(t *testing.T) {
+	for _, u := range []string{"https://127.0.0.1:1/mcp", "http://example.com:80/mcp", "http://127.0.0.1:1/other", "http://10.0.0.1:1/mcp", "nonsense"} {
+		if err := loopbackEndpoint(u); err == nil {
+			t.Errorf("%s was taken", u)
+		}
+	}
+	if err := loopbackEndpoint("http://127.0.0.1:4242/mcp"); err != nil {
+		t.Error(err)
+	}
+	if err := RunNetworkBridge(context.Background(), []string{"-url", "http://127.0.0.1:1/mcp"}, strings.NewReader(""), io.Discard); err == nil {
+		t.Error("the bridge ran without a ticket")
+	}
+}
+
+func TestTicketRedeemNeedsPost(t *testing.T) {
+	network, _ := fakeNodeNetworkServer(t)
+	resp, err := http.Get(ticketURL(network.url) + "?" + url.Values{"ticket": {"x"}}.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("GET: %s", resp.Status)
+	}
+}

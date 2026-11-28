@@ -300,3 +300,21 @@ func TestOfferAgentDetectsRuntimes(t *testing.T) {
 		}
 	}
 }
+
+// agy runs only with the owner's configuration and the directory's
+// guidance, so its offer does not ask about them.
+func TestOfferAgentAgyAsksNoPolicy(t *testing.T) {
+	withDefaultDataDir(t)
+	dir := t.TempDir()
+	old := installedRuntimes
+	t.Cleanup(func() { installedRuntimes = old })
+	installedRuntimes = func() []string { return []string{"agy"} }
+	w, out := testWizard("y\n\n\n" + dir + "\n")
+	o, err := w.offerAgent()
+	if err != nil || o == nil || o.runtime != "agy" || o.name != "agy" || o.policy != (agentPolicy{DirInstructions: true, DirSkills: true, OwnerConfig: true}) {
+		t.Fatalf("offered %+v, %v\n%s", o, err, out)
+	}
+	if strings.Contains(out.String(), "Load the directory") || !strings.Contains(out.String(), "It runs with your own agy configuration") {
+		t.Errorf("output:\n%s", out)
+	}
+}

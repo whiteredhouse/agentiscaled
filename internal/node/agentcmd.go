@@ -860,6 +860,8 @@ func runtimeTitle(rt string) string {
 		return "Claude Code"
 	case "codex":
 		return "Codex"
+	case "agy":
+		return "Antigravity"
 	}
 	return rt
 }

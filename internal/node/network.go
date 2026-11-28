@@ -42,6 +42,20 @@ const networkScope = "a2a://*"
 type networkAccess struct {
 	URL   string
 	Token string
+	// ticket, when set, mints a one-time ticket that the network bridge
+	// (agentiscaled network-bridge) exchanges for Token, for a runtime that
+	// can start an MCP server but has no place to keep a credential that
+	// the agent cannot read (agy).
+	ticket func() (string, error)
+}
+
+// networkTicketTTL bounds how long a ticket waits for the bridge.
+const networkTicketTTL = 2 * time.Minute
+
+// networkTicket is a one-time secret for a grant's bearer.
+type networkTicket struct {
+	grant   *networkGrant
+	expires time.Time
 }
 
 const networkInstructions = `agentiscale-network: the other agents of the network this agent serves in. Use list_agents to find them, get_agent_card to read what one does, send_task to give it a task, get_task (with wait_seconds) to follow the task until it ends (completed, rejected, cancelled, timeout or failed), and cancel_task to stop it. Use the same service and peer_id (omitted for an agent on this node) for every call about a task. A task in state input_required waits for your answer to the agent's question (its message): answer with send_task, giving the task's task_id. These tools work only while your own task runs, and an agent you call cannot call further agents.`
@@ -72,6 +86,8 @@ type taskNetwork struct {
 	// byTask the same grants by their tasks.
 	grants map[[sha256.Size]byte]*networkGrant
 	byTask map[a2a.TaskID]*networkGrant
+	// tickets are the one-time tickets not yet redeemed, by their hashes.
+	tickets map[[sha256.Size]byte]networkTicket
 	// sent holds, for each running task of a hosted agent, the tasks it has
 	// sent, across the turns of the task and so across their tokens. The
 	// node is the sender of all of them, as of its owner's own tasks and
@@ -249,11 +265,12 @@ func serveTaskNetwork(ctx context.Context, socket, agentSocket string, discover 
 	}
 	n := &taskNetwork{
 		socket: socket, agentSocket: agentSocket, discover: discover,
-		url:    "http://" + ln.Addr().String() + "/mcp",
-		node:   nodeclient.SocketClient(socket),
-		grants: map[[sha256.Size]byte]*networkGrant{},
-		byTask: map[a2a.TaskID]*networkGrant{},
-		sent:   map[a2a.TaskID]*sentTasks{},
+		url:     "http://" + ln.Addr().String() + "/mcp",
+		node:    nodeclient.SocketClient(socket),
+		grants:  map[[sha256.Size]byte]*networkGrant{},
+		byTask:  map[a2a.TaskID]*networkGrant{},
+		sent:    map[a2a.TaskID]*sentTasks{},
+		tickets: map[[sha256.Size]byte]networkTicket{},
 	}
 	n.node.Timeout = 10 * time.Second
 	srv := &http.Server{Handler: n, ReadHeaderTimeout: 10 * time.Second}
@@ -272,6 +289,10 @@ func serveTaskNetwork(ctx context.Context, socket, agentSocket string, discover 
 // ServeHTTP admits a request only with the bearer of a task that has not
 // ended; only a turn that runs can call a tool.
 func (n *taskNetwork) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == networkTicketPath {
+		n.redeem(w, r)
+		return
+	}
 	bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || bearer == "" || r.URL.Path != "/mcp" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -304,7 +325,7 @@ func (n *taskNetwork) grant(ctx context.Context, agent caller.AgentName, task a2
 	if err != nil {
 		return nil, nil, err
 	}
-	access = &networkAccess{URL: n.url, Token: g.bearer}
+	access = &networkAccess{URL: n.url, Token: g.bearer, ticket: func() (string, error) { return n.ticket(g) }}
 	if ttl <= 0 {
 		return access, func() {}, errors.New("no running time left")
 	}
@@ -378,6 +399,7 @@ func (n *taskNetwork) forget(task a2a.TaskID) {
 	delete(n.byTask, task)
 	if g != nil {
 		delete(n.grants, sha256.Sum256([]byte(g.bearer)))
+		n.dropTickets(g)
 	}
 	n.mu.Unlock()
 	if g != nil {
@@ -396,10 +418,11 @@ func (n *taskNetwork) open(token string, agent caller.AgentName, sent *sentTasks
 		panic(err)
 	}
 	end := g.begin(context.Background(), token, expires)
-	return &networkAccess{URL: n.url, Token: g.bearer}, func() {
+	return &networkAccess{URL: n.url, Token: g.bearer, ticket: func() (string, error) { return n.ticket(g) }}, func() {
 		end()
 		n.mu.Lock()
 		delete(n.grants, sha256.Sum256([]byte(g.bearer)))
+		n.dropTickets(g)
 		n.mu.Unlock()
 		g.close()
 	}
@@ -618,3 +641,71 @@ func (b *bodyThen) Close() error {
 
 // wait waits for the tool calls being served to return.
 func (n *taskNetwork) wait() { n.calls.Wait() }
+
+// networkTicketPath is where the network bridge redeems its ticket, beside
+// the MCP endpoint.
+const networkTicketPath = "/ticket"
+
+// ticketURL is the ticket endpoint of the network whose MCP endpoint is
+// mcpURL.
+func ticketURL(mcpURL string) string {
+	return strings.TrimSuffix(mcpURL, "/mcp") + networkTicketPath
+}
+
+// ticket mints a one-time ticket for g's bearer, which only the first
+// redeem within networkTicketTTL gets, while g is open.
+func (n *taskNetwork) ticket(g *networkGrant) (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	t := hex.EncodeToString(b)
+	now := time.Now()
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.tickets == nil {
+		n.tickets = map[[sha256.Size]byte]networkTicket{}
+	}
+	for k, v := range n.tickets {
+		if !now.Before(v.expires) {
+			delete(n.tickets, k)
+		}
+	}
+	n.tickets[sha256.Sum256([]byte(t))] = networkTicket{grant: g, expires: now.Add(networkTicketTTL)}
+	return t, nil
+}
+
+// dropTickets forgets g's tickets. n.mu is held.
+func (n *taskNetwork) dropTickets(g *networkGrant) {
+	for k, v := range n.tickets {
+		if v.grant == g {
+			delete(n.tickets, k)
+		}
+	}
+}
+
+// redeem answers a ticket (POST, form field ticket) with its grant's bearer,
+// once: the ticket is spent whatever the answer.
+func (n *taskNetwork) redeem(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
+	t := r.PostFormValue("ticket")
+	key := sha256.Sum256([]byte(t))
+	n.mu.Lock()
+	v, ok := n.tickets[key]
+	delete(n.tickets, key)
+	if ok && n.grants[sha256.Sum256([]byte(v.grant.bearer))] != v.grant {
+		ok = false
+	}
+	n.mu.Unlock()
+	if t == "" || !ok || !time.Now().Before(v.expires) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(w, v.grant.bearer)
+}
