@@ -20,17 +20,18 @@ import (
 // the network's agents on stdio (RunNetworkBridge).
 const networkBridgeCommand = "network-bridge"
 
-// RunNetworkBridge is `agentiscaled network-bridge -url URL -ticket TICKET`:
-// it serves one hosted run the network's other agents as an MCP server on
-// stdio, for a runtime that starts MCP servers from a configuration file the
-// agent itself can read (agy). The file holds only a one-time ticket, which
-// the bridge exchanges at the node for the run's bearer as soon as the
-// runtime starts it; the bearer stays in the bridge's memory. A ticket read
-// later, or by anyone else, is spent.
+// RunNetworkBridge is `agentiscaled network-bridge -url URL -ticket-file
+// FILE`: it serves one hosted run the network's other agents as an MCP
+// server on stdio, for a runtime that starts MCP servers from a
+// configuration file the agent itself can read (agy). The bridge reads a
+// one-time ticket from FILE, which is not in any process list, removes the
+// file and exchanges the ticket at the node for the run's bearer, which
+// stays in the bridge's memory. Whoever redeems a ticket first spends it,
+// and the node revokes one still unspent when the turn ends.
 func RunNetworkBridge(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
 	fs := flag.NewFlagSet(networkBridgeCommand, flag.ContinueOnError)
 	endpoint := fs.String("url", "", "the run's network MCP endpoint on this node")
-	ticket := fs.String("ticket", "", "the run's one-time ticket")
+	ticketFile := fs.String("ticket-file", "", "the file that holds the run's one-time ticket, removed once read")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -40,13 +41,22 @@ func RunNetworkBridge(ctx context.Context, args []string, stdin io.Reader, stdou
 	if err := loopbackEndpoint(*endpoint); err != nil {
 		return err
 	}
-	if *ticket == "" {
-		return errors.New("-ticket is required")
+	if *ticketFile == "" {
+		return errors.New("-ticket-file is required")
+	}
+	b, err := os.ReadFile(*ticketFile)
+	if err != nil {
+		return fmt.Errorf("read the ticket: %w", err)
+	}
+	os.Remove(*ticketFile)
+	ticket := strings.TrimSpace(string(b))
+	if ticket == "" {
+		return errors.New("the ticket file is empty")
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	client := &http.Client{Timeout: 10 * time.Second}
-	bearer, err := redeemTicket(ctx, client, ticketURL(*endpoint), *ticket)
+	client := &http.Client{Timeout: 10 * time.Second, Transport: loopbackTransport(), CheckRedirect: noRedirect}
+	bearer, err := redeemTicket(ctx, client, ticketURL(*endpoint), ticket)
 	if err != nil {
 		return err
 	}
@@ -97,7 +107,7 @@ func redeemTicket(ctx context.Context, client *http.Client, endpoint, ticket str
 // network server at endpoint, reached with bearer, under the same name and
 // instructions, until the client closes.
 func bridgeNetwork(ctx context.Context, client mcp.Transport, endpoint, bearer string) error {
-	httpClient := &http.Client{Transport: bearerTransport{bearer: bearer, next: http.DefaultTransport}}
+	httpClient := &http.Client{Transport: bearerTransport{bearer: bearer, next: loopbackTransport()}, CheckRedirect: noRedirect}
 	node, err := mcp.NewClient(&mcp.Implementation{Name: "agentiscaled-network-bridge", Version: "0.1.0"}, nil).
 		Connect(ctx, &mcp.StreamableClientTransport{Endpoint: endpoint, HTTPClient: httpClient}, nil)
 	if err != nil {
@@ -143,6 +153,17 @@ func (t bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r = r.Clone(r.Context())
 	r.Header.Set("Authorization", "Bearer "+t.bearer)
 	return t.next.RoundTrip(r)
+}
+
+// noRedirect keeps the ticket and the bearer to the endpoint the bridge
+// was given: it follows no redirect.
+func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+// loopbackTransport reaches the node directly, never through a proxy.
+func loopbackTransport() http.RoundTripper {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = nil
+	return t
 }
 
 type nopWriteCloser struct{ io.Writer }

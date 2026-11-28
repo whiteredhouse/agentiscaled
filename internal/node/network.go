@@ -45,8 +45,8 @@ type networkAccess struct {
 	// ticket, when set, mints a one-time ticket that the network bridge
 	// (agentiscaled network-bridge) exchanges for Token, for a runtime that
 	// can start an MCP server but has no place to keep a credential that
-	// the agent cannot read (agy).
-	ticket func() (string, error)
+	// the agent cannot read (agy). revoke drops it if it is not spent yet.
+	ticket func() (ticket string, revoke func(), err error)
 }
 
 // networkTicketTTL bounds how long a ticket waits for the bridge.
@@ -325,7 +325,7 @@ func (n *taskNetwork) grant(ctx context.Context, agent caller.AgentName, task a2
 	if err != nil {
 		return nil, nil, err
 	}
-	access = &networkAccess{URL: n.url, Token: g.bearer, ticket: func() (string, error) { return n.ticket(g) }}
+	access = &networkAccess{URL: n.url, Token: g.bearer, ticket: func() (string, func(), error) { return n.ticket(g) }}
 	if ttl <= 0 {
 		return access, func() {}, errors.New("no running time left")
 	}
@@ -418,7 +418,7 @@ func (n *taskNetwork) open(token string, agent caller.AgentName, sent *sentTasks
 		panic(err)
 	}
 	end := g.begin(context.Background(), token, expires)
-	return &networkAccess{URL: n.url, Token: g.bearer, ticket: func() (string, error) { return n.ticket(g) }}, func() {
+	return &networkAccess{URL: n.url, Token: g.bearer, ticket: func() (string, func(), error) { return n.ticket(g) }}, func() {
 		end()
 		n.mu.Lock()
 		delete(n.grants, sha256.Sum256([]byte(g.bearer)))
@@ -653,11 +653,11 @@ func ticketURL(mcpURL string) string {
 }
 
 // ticket mints a one-time ticket for g's bearer, which only the first
-// redeem within networkTicketTTL gets, while g is open.
-func (n *taskNetwork) ticket(g *networkGrant) (string, error) {
+// redeem within networkTicketTTL gets, while g is open and until revoke.
+func (n *taskNetwork) ticket(g *networkGrant) (ticket string, revoke func(), err error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	t := hex.EncodeToString(b)
 	now := time.Now()
@@ -671,8 +671,13 @@ func (n *taskNetwork) ticket(g *networkGrant) (string, error) {
 			delete(n.tickets, k)
 		}
 	}
-	n.tickets[sha256.Sum256([]byte(t))] = networkTicket{grant: g, expires: now.Add(networkTicketTTL)}
-	return t, nil
+	key := sha256.Sum256([]byte(t))
+	n.tickets[key] = networkTicket{grant: g, expires: now.Add(networkTicketTTL)}
+	return t, func() {
+		n.mu.Lock()
+		delete(n.tickets, key)
+		n.mu.Unlock()
+	}, nil
 }
 
 // dropTickets forgets g's tickets. n.mu is held.
@@ -691,6 +696,8 @@ func (n *taskNetwork) redeem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// A client that stalls in the body does not hold the handler.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(5 * time.Second))
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
 	t := r.PostFormValue("ticket")
 	key := sha256.Sum256([]byte(t))

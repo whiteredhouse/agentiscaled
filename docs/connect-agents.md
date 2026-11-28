@@ -636,12 +636,17 @@ get, and its tools approved, for Codex. agy takes an MCP server for one run only
 from a folder it works in, which the agent can read, and the commands it runs get its
 environment, so neither can hold the bearer: the node gives the run a folder of its
 own, outside the agent's directory (`--add-dir`), whose `.agents/mcp_config.json`
-starts `agentiscaled network-bridge` with a one-time ticket. The bridge spends the
-ticket at the node for the bearer as soon as agy starts it, keeps the bearer in
-memory and serves the same tools on stdio; a ticket read later is spent. The run's
-`--settings` allow those tools (`mcp(agentiscale-network/*)`). They also carry the
-`permissions` block of your agy settings, so that the run keeps your own rules
-even where a run's settings replace that block, and a run does not start while that file is not valid JSON. No run asks before it uses them: the
+starts `agentiscaled network-bridge`, beside a file with a one-time ticket in it.
+As soon as agy starts the bridge, it reads and removes that file and spends the
+ticket at the node for the bearer, which it keeps in memory, and serves the same
+tools on stdio. A ticket works once, and the node revokes it when the turn ends if
+it is still unspent. The run's `--settings` allow those tools
+(`mcp(agentiscale-network/<tool>)`). They also carry the `permissions` block of
+your agy settings, so that the run keeps your own rules even where a run's
+settings replace that block, and a run does not start while that file is not valid
+JSON. Nor does it start while the agent's directory (`.agents/mcp_config.json`)
+or your own agy MCP configuration (`~/.gemini/config/mcp_config.json`) has a
+server named `agentiscale-network`, which agy could start in the network's place. No run asks before it uses them: the
 turn's token is what bounds them. It has `list_agents`, `get_agent_card`, `send_task`, `get_task` and
 `cancel_task`. Every call goes to the node with the token, and the node checks it
 (signature, expiry, revocation, the A2A-only rule) and sends it on in place of its

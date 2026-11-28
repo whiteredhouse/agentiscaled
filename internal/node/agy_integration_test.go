@@ -46,7 +46,7 @@ func TestAgyCallsTheNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer g.begin(ctx, "turn-token", time.Now().Add(5*time.Minute))()
-		access := &networkAccess{URL: network.url, Token: g.bearer, ticket: func() (string, error) { return network.ticket(g) }}
+		access := &networkAccess{URL: network.url, Token: g.bearer, ticket: func() (string, func(), error) { return network.ticket(g) }}
 		var steps []string
 		out, err := agy.Run(ctx, t.TempDir(), taskRequest{Sender: testSender, Network: access,
 			Text:     "Call the list_agents tool of the agentiscale-network MCP server and answer with the names of the agents it lists, and nothing else.",

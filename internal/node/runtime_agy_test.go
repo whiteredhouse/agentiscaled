@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -32,7 +33,7 @@ pwd > ` + record + `.pwd
 cat > ` + record + `.stdin
 prev=
 for a in "$@"; do
-  if [ "$prev" = --add-dir ]; then cat "$a/.agents/mcp_config.json" > ` + record + `.mcp; fi
+  if [ "$prev" = --add-dir ]; then cat "$a/.agents/mcp_config.json" > ` + record + `.mcp; cat "$a/ticket" > ` + record + `.ticket; fi
   prev=$a
 done
 echo '{"event":"init","conversation_id":"6f0b3a52-41a7-4c63-9a0e-3c1f5d2b7e11"}'
@@ -41,6 +42,7 @@ echo '{"event":"step_update","step_update":{"step_index":2,"state":"DONE","step_
 cat <<'EOF'
 ` + result + `
 EOF
+exit ${FAKE_AGY_EXIT:-0}
 `
 	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -124,10 +126,15 @@ func TestAgyRuntimeFailures(t *testing.T) {
 		"timeout": {`{"event":"result","result":{"status":"ERROR","response":"","error":"print timeout after 1s with the turn still in progress","finished_reason":"print_timeout"}}`, "agy ended with ERROR (print_timeout): print timeout after 1s"},
 		"oddname": {`{"event":"result","result":{"status":"bad status!","response":""}}`, "agy ended with an error"},
 		"none":    {`{"event":"step_update"}`, "agy: no result"},
+		"exit 1":  {`{"event":"step_update"} exit1`, "agy: exit status 1"},
+		"exit 3":  {`{"event":"result","result":{"status":"ERROR","error":"print timeout","finished_reason":"print_timeout"}} exit3`, "agy ended with ERROR (print_timeout): print timeout"},
+		"late":    {`{"event":"result","result":{"status":"SUCCESS","structured_output":{"status":"done","text":"ok"}}} exit3`, "agy exited with exit status 3 after its result"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			command, _ := fakeAgy(t, dir, tc.result)
+			result, code, _ := strings.Cut(tc.result, " exit")
+			t.Setenv("FAKE_AGY_EXIT", code)
+			command, _ := fakeAgy(t, dir, result)
 			_, err := (&agyRuntime{command: command}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x"})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error %v, want %q", err, tc.want)
@@ -227,7 +234,7 @@ func TestAgyRuntimeNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer g.begin(context.Background(), "turn-token", time.Now().Add(time.Minute))()
-	access := &networkAccess{URL: network.url, Token: g.bearer, ticket: func() (string, error) { return network.ticket(g) }}
+	access := &networkAccess{URL: network.url, Token: g.bearer, ticket: func() (string, func(), error) { return network.ticket(g) }}
 	t.Setenv(networkTokenEnv, "leaked")
 	if _, err := (&agyRuntime{command: command, bridge: "/opt/agentiscaled"}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x", Network: access}); err != nil {
 		t.Fatal(err)
@@ -242,8 +249,13 @@ func TestAgyRuntimeNetwork(t *testing.T) {
 	}
 	// The run's settings take the place of the owner's permissions, so
 	// they carry those as well as the network's rule.
-	if s, _ := argAfter(args, "--settings"); s != `{"permissions":{"allow":["command(go test)","mcp(agentiscale-network/*)"],"deny":["mcp(other/*)"]}}` {
-		t.Errorf("--settings %s", s)
+	want := `{"permissions":{"allow":["command(go test)"`
+	for _, tool := range agyNetworkTools {
+		want += `,"mcp(agentiscale-network/` + tool + `)"`
+	}
+	want += `],"deny":["mcp(other/*)"]}}`
+	if s, _ := argAfter(args, "--settings"); s != want {
+		t.Errorf("--settings %s, want %s", s, want)
 	}
 	mcpConfig := readRecord(t, record+".mcp")
 	var config struct {
@@ -256,8 +268,13 @@ func TestAgyRuntimeNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := config.Servers[networkServerName]
-	if server.Command != "/opt/agentiscaled" || len(server.Args) != 5 || server.Args[0] != networkBridgeCommand || server.Args[2] != access.URL {
+	if server.Command != "/opt/agentiscaled" || len(server.Args) != 5 || server.Args[0] != networkBridgeCommand || server.Args[2] != access.URL ||
+		server.Args[3] != "-ticket-file" || filepath.Dir(server.Args[4]) != added {
 		t.Fatalf("bridge %+v", server)
+	}
+	ticket := readRecord(t, record+".ticket")
+	if len(ticket) != 64 || strings.Contains(mcpConfig, ticket) || slices.ContainsFunc(args, func(a string) bool { return strings.Contains(a, ticket) }) {
+		t.Errorf("ticket %q: in a file of its own, not in the configuration or any argument", ticket)
 	}
 	if strings.Contains(mcpConfig, access.Token) {
 		t.Error("the run's bearer was written to the network folder")
@@ -265,10 +282,25 @@ func TestAgyRuntimeNetwork(t *testing.T) {
 	if env := readRecord(t, record+".env"); strings.Contains(env, "leaked") || strings.Contains(env, access.Token) {
 		t.Error("a network credential reached agy's environment")
 	}
-	// The fake agy never redeemed it, and the ticket still works once.
-	if _, err := redeemTicket(context.Background(), http.DefaultClient, ticketURL(access.URL), server.Args[4]); err != nil {
-		t.Errorf("redeem the ticket: %v", err)
+	// The fake agy never started the bridge: the turn's end revoked the
+	// ticket.
+	if _, err := redeemTicket(context.Background(), http.DefaultClient, ticketURL(access.URL), ticket); err == nil {
+		t.Error("an unspent ticket outlived its turn")
 	}
+
+	// A server of the network's name in the directory's or the owner's agy
+	// configuration would stand in for it: the turn does not run.
+	shadow := `{"mcpServers":{"agentiscale-network":{"command":"evil"}}}`
+	write(t, filepath.Join(dir, ".agents", "mcp_config.json"), shadow)
+	if _, err := (&agyRuntime{command: command, bridge: "/opt/agentiscaled"}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x", Network: access}); err == nil || !strings.Contains(err.Error(), "would take the place of the network's") {
+		t.Errorf("shadowed network: %v", err)
+	}
+	os.Remove(filepath.Join(dir, ".agents", "mcp_config.json"))
+	write(t, filepath.Join(home, ".gemini", "config", "mcp_config.json"), shadow)
+	if _, err := (&agyRuntime{command: command, bridge: "/opt/agentiscaled"}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x", Network: access}); err == nil || !strings.Contains(err.Error(), "would take the place of the network's") {
+		t.Errorf("shadowed network in the owner's configuration: %v", err)
+	}
+	write(t, filepath.Join(home, ".gemini", "config", "mcp_config.json"), "")
 
 	// Settings it cannot read would drop the owner's permissions: the turn
 	// does not run.
@@ -293,15 +325,17 @@ func TestNetworkBridge(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer g.begin(ctx, "turn-token", time.Now().Add(time.Minute))()
-	ticket, err := network.ticket(g)
+	ticket, _, err := network.ticket(g)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ticketFile := filepath.Join(t.TempDir(), "ticket")
+	write(t, ticketFile, ticket)
 	toBridge, bridgeIn := io.Pipe()
 	bridgeOut, fromBridge := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
-		done <- RunNetworkBridge(ctx, []string{"-url", network.url, "-ticket", ticket}, toBridge, fromBridge)
+		done <- RunNetworkBridge(ctx, []string{"-url", network.url, "-ticket-file", ticketFile}, toBridge, fromBridge)
 		fromBridge.Close()
 	}()
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "agy", Version: "1"}, nil).
@@ -321,8 +355,14 @@ func TestNetworkBridge(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	slices.Sort(names)
-	if want := []string{"cancel_task", "get_agent_card", "get_task", "list_agents", "send_task"}; !slices.Equal(names, want) {
-		t.Errorf("bridge tools %q, want %q", names, want)
+	if _, err := os.Stat(ticketFile); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the bridge left its ticket file: %v", err)
+	}
+	// agy may call each of the network's tools without asking.
+	want := slices.Clone(agyNetworkTools)
+	slices.Sort(want)
+	if !slices.Equal(names, want) {
+		t.Errorf("bridge tools %q, want %q (agyNetworkTools)", names, want)
 	}
 	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "list_agents"})
 	if err != nil || res.IsError {
@@ -339,7 +379,7 @@ func TestNetworkBridge(t *testing.T) {
 		t.Errorf("bridge: %v", err)
 	}
 
-	late, err := network.ticket(g)
+	late, _, err := network.ticket(g)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,6 +400,72 @@ func TestNetworkBridgeTakesOnlyALoopbackEndpoint(t *testing.T) {
 	}
 	if err := RunNetworkBridge(context.Background(), []string{"-url", "http://127.0.0.1:1/mcp"}, strings.NewReader(""), io.Discard); err == nil {
 		t.Error("the bridge ran without a ticket")
+	}
+}
+
+// The bridge follows no redirect, which would carry its ticket elsewhere.
+func TestNetworkBridgeFollowsNoRedirect(t *testing.T) {
+	elsewhere := make(chan string, 1)
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		elsewhere <- r.Form.Get("ticket")
+	}))
+	defer other.Close()
+	node := httptest.NewServer(http.RedirectHandler(other.URL+"/ticket", http.StatusTemporaryRedirect))
+	defer node.Close()
+	ticketFile := filepath.Join(t.TempDir(), "ticket")
+	write(t, ticketFile, "secret-ticket")
+	if err := RunNetworkBridge(context.Background(), []string{"-url", node.URL + "/mcp", "-ticket-file", ticketFile}, strings.NewReader(""), io.Discard); err == nil {
+		t.Error("the bridge took a redirect as the bearer")
+	}
+	select {
+	case got := <-elsewhere:
+		t.Errorf("the ticket %q followed the redirect", got)
+	default:
+	}
+}
+
+// A ticket is gone once revoked or expired, or once the network of a
+// one-turn grant (open) is released.
+func TestNetworkTicketLifetime(t *testing.T) {
+	network, _ := fakeNodeNetworkServer(t)
+	g, err := network.grantFor("caller", "t-life")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.begin(context.Background(), "turn-token", time.Now().Add(time.Minute))()
+	redeem := func(ticket string) error {
+		_, err := redeemTicket(context.Background(), http.DefaultClient, ticketURL(network.url), ticket)
+		return err
+	}
+
+	revoked, revoke, _ := network.ticket(g)
+	revoke()
+	if redeem(revoked) == nil {
+		t.Error("a revoked ticket was redeemed")
+	}
+
+	expired, _, _ := network.ticket(g)
+	network.mu.Lock()
+	for k, v := range network.tickets {
+		v.expires = time.Now().Add(-time.Second)
+		network.tickets[k] = v
+	}
+	network.mu.Unlock()
+	if redeem(expired) == nil {
+		t.Error("an expired ticket was redeemed")
+	}
+
+	live, _, _ := network.ticket(g)
+	if redeem(live) != nil {
+		t.Error("a live ticket was refused")
+	}
+
+	access, release := network.open("one-turn-token", "caller", network.sentBy("t-open"), time.Now().Add(time.Minute))
+	ticket, _, _ := access.ticket()
+	release()
+	if redeem(ticket) == nil {
+		t.Error("a ticket was redeemed after its network was released")
 	}
 }
 

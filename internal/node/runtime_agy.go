@@ -44,9 +44,9 @@ func agyOwnerConfigDir() (string, error) {
 	return filepath.Join(home, ".gemini", "antigravity-cli"), nil
 }
 
-// agyNetworkRule is the permission rule that lets a run call the network
-// server's tools (newGrant) without asking: the token is what bounds them.
-var agyNetworkRule = "mcp(" + networkServerName + "/*)"
+// agyNetworkTools are the tools of the network server (newGrant) that a run
+// may call without asking: the token is what bounds them.
+var agyNetworkTools = []string{"list_agents", "get_agent_card", "send_task", "get_task", "cancel_task"}
 
 func newAgyRuntime(command, _ string, policy agentPolicy) (runtime, error) {
 	if command == "" {
@@ -108,7 +108,12 @@ func (r *agyRuntime) Describe(card *a2a.AgentCard) {
 //     works in, which the agent can read, and the commands it runs get its
 //     environment. So the server is the network bridge, started from a
 //     folder of the node's outside the agent's directory (--add-dir), and
-//     the folder holds only a one-time ticket, spent once agy starts it.
+//     the folder holds only a one-time ticket, which the bridge removes
+//     and spends once agy starts it, and which is revoked when the turn
+//     ends if it is still unspent. A server of that name in the directory's
+//     or the owner's own agy MCP configuration would stand in for the
+//     network's and get its approval, so the run does not start then
+//     (agyNetworkShadowed).
 //     The run's settings (--settings) allow its tools. A later --settings
 //     replaces an earlier one, so they carry the owner's own permissions
 //     too (agyPermissions), in case they replace the settings file's.
@@ -126,6 +131,9 @@ func (r *agyRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 		args = append(args, "--conversation", session)
 	}
 	if req.Network != nil {
+		if err := agyNetworkShadowed(dir); err != nil {
+			return turnResult{}, err
+		}
 		network, cleanup, err := r.networkDir(req.Network)
 		if err != nil {
 			return turnResult{}, err
@@ -136,7 +144,10 @@ func (r *agyRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 			return turnResult{}, err
 		}
 		allow, _ := permissions["allow"].([]any)
-		permissions["allow"] = append(allow, agyNetworkRule)
+		for _, tool := range agyNetworkTools {
+			allow = append(allow, "mcp("+networkServerName+"/"+tool+")")
+		}
+		permissions["allow"] = allow
 		settings, err := json.Marshal(map[string]any{"permissions": permissions})
 		if err != nil {
 			return turnResult{}, err
@@ -183,6 +194,11 @@ func (r *agyRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 	cmd.WaitDelay = 5 * time.Second
 	runErr := cmd.Run()
 	stdout.Close()
+	// A process the agent left running holds agy's output open past
+	// WaitDelay; the result agy gave before it exited still stands.
+	if errors.Is(runErr, exec.ErrWaitDelay) && result != nil {
+		runErr = nil
+	}
 	if ctx.Err() != nil {
 		return turnResult{}, ctx.Err()
 	}
@@ -214,7 +230,10 @@ func agyResult(event []byte, session string, runErr error, stderr string) (turnR
 	if session == "" {
 		session = res.ConversationID
 	}
-	if res.Status != "SUCCESS" || runErr != nil {
+	if res.Status == "SUCCESS" && runErr != nil {
+		return turnResult{}, fmt.Errorf("agy exited with %v after its result: %s", runErr, failureLines(stderr, 3))
+	}
+	if res.Status != "SUCCESS" {
 		status := res.Status
 		if !plainName.MatchString(status) {
 			status = "an error"
@@ -256,26 +275,35 @@ func (r *agyRuntime) prompt(req taskRequest) string {
 	return p
 }
 
-// networkDir makes the folder from which a run starts the network bridge:
-// .agents/mcp_config.json naming the bridge with a fresh one-time ticket,
-// readable only by the owner. cleanup removes it.
+// networkDir makes the folder from which a run starts the network bridge,
+// readable only by the owner: .agents/mcp_config.json naming the bridge,
+// and the file it reads a fresh one-time ticket from. cleanup revokes the
+// ticket and removes the folder.
 func (r *agyRuntime) networkDir(n *networkAccess) (dir string, cleanup func(), err error) {
 	if n.ticket == nil {
 		return "", nil, errors.New("the network gives agy no ticket")
 	}
-	ticket, err := n.ticket()
+	ticket, revoke, err := n.ticket()
 	if err != nil {
 		return "", nil, fmt.Errorf("mint the network bridge's ticket: %w", err)
 	}
 	dir, err = os.MkdirTemp("", "agentiscale-agy-")
 	if err != nil {
+		revoke()
 		return "", nil, err
 	}
-	cleanup = func() { os.RemoveAll(dir) }
+	cleanup = func() {
+		revoke()
+		os.RemoveAll(dir)
+	}
+	ticketFile := filepath.Join(dir, "ticket")
 	config, err := json.Marshal(map[string]any{"mcpServers": map[string]any{networkServerName: map[string]any{
 		"command": r.bridge,
-		"args":    []string{networkBridgeCommand, "-url", n.URL, "-ticket", ticket},
+		"args":    []string{networkBridgeCommand, "-url", n.URL, "-ticket-file", ticketFile},
 	}}})
+	if err == nil {
+		err = os.WriteFile(ticketFile, []byte(ticket), 0o600)
+	}
 	if err == nil {
 		err = os.Mkdir(filepath.Join(dir, ".agents"), 0o700)
 	}
@@ -382,4 +410,30 @@ func agyPermissions() (map[string]any, error) {
 		settings.Permissions = map[string]any{}
 	}
 	return settings.Permissions, nil
+}
+
+// agyNetworkShadowed fails when the agent's directory or the owner's agy
+// configuration has an MCP server of the network server's name, which agy
+// could start in the place of the network's, with its tools allowed.
+func agyNetworkShadowed(dir string) error {
+	files := []string{filepath.Join(dir, ".agents", "mcp_config.json")}
+	if home, err := os.UserHomeDir(); err == nil {
+		files = append(files, filepath.Join(home, ".gemini", "config", "mcp_config.json"))
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil || len(bytes.TrimSpace(b)) == 0 {
+			continue
+		}
+		var config struct {
+			Servers map[string]json.RawMessage `json:"mcpServers"`
+		}
+		if json.Unmarshal(b, &config) != nil {
+			continue
+		}
+		if _, ok := config.Servers[networkServerName]; ok {
+			return fmt.Errorf("%s has an MCP server named %s, which would take the place of the network's: rename it", f, networkServerName)
+		}
+	}
+	return nil
 }
