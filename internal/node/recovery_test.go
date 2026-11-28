@@ -47,6 +47,15 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
+	// agy starts the network bridge from the test binary
+	// (TestAgyCallsTheNetwork).
+	if os.Getenv("AGENTISCALED_TEST_BRIDGE") == "1" && len(os.Args) > 1 && os.Args[1] == networkBridgeCommand {
+		if err := RunNetworkBridge(context.Background(), os.Args[2:], os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if os.Getenv("AGENTISCALED_TEST_MAIN") == "1" {
 		watchPoll, watchCheckAfter, watchCheckEvery = 50*time.Millisecond, 300*time.Millisecond, 500*time.Millisecond
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
