@@ -137,6 +137,34 @@ func TestSingleNodeTasksSurviveRestartAndReset(t *testing.T) {
 		if want := []string{"call_remote_tool", "cancel_task", "describe_remote_tool", "discover_remote_services", "find_remote_tools", "get_agent_card", "get_mesh_info", "get_task", "list_local_services", "send_task"}; !slices.Equal(names, want) {
 			t.Fatalf("tools: %v, want %v", names, want)
 		}
+		// The bridge serves its own, shorter descriptions of these tools
+		// (caller.nodeToolDescriptions). When agentmesh changes one, this
+		// fails: check that the bridge's still says what the tool does,
+		// then take agentmesh's new text here.
+		direct, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, &mcp.StreamableClientTransport{Endpoint: "http://agentiscaled/mcp", HTTPClient: client}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodeTools, err := direct.ListTools(ctx, nil)
+		direct.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		upstream := map[string]string{
+			"discover_remote_services": "Discover remote services in the mesh. Provide only `type` to browse every reachable service of that type (returns name + description for each); add `name` to target a specific service. For `type: inference`, each result's `local_proxy_url` is called directly over HTTP (NOT via call_remote_tool) — the response includes a usage hint with the exact headers required. For `type: a2a`, `local_proxy_url` is the agent's base URL for any stock A2A client.",
+			"find_remote_tools":        "Discover MCP tools available on hosted services across the mesh. Returns name + description per tool, plus the provider's declared labels (e.g. region) when known. Optionally narrow by peer_id, service_name, or tool_name (exact tool name; fastest — served from mesh announcements when available). intent is reserved for future ranking and is accepted-but-ignored.",
+			"describe_remote_tool":     "Return the description, input schema, and output schema for a specific aggregated tool on a specific peer. peer_id and tool_name are both required; tool_name must be a namespaced 'scheme://service/tool' name as returned by find_remote_tools.",
+			"call_remote_tool":         "Call an MCP tool on a remote agent",
+		}
+		for _, tool := range nodeTools.Tools {
+			if want, ok := upstream[tool.Name]; ok && tool.Description != want {
+				t.Errorf("agentmesh changed the description of %s, which the MCP bridge replaces: check the bridge's, then update this test.\ngot:  %q\nwant: %q", tool.Name, tool.Description, want)
+			}
+			delete(upstream, tool.Name)
+		}
+		for name := range upstream {
+			t.Errorf("the node no longer serves %s, whose description the MCP bridge replaces", name)
+		}
 		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "discover_remote_services", Arguments: map[string]any{"type": "a2a", "name": "helper"}})
 		if err != nil || result.IsError {
 			t.Fatalf("discovery: %+v, %v", result, err)
