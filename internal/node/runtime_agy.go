@@ -422,22 +422,31 @@ func agyPermissions() (map[string]any, error) {
 
 // agyNetworkShadowed fails when the agent's directory or the owner's agy
 // configuration has an MCP server of the network server's name, which agy
-// could start in the place of the network's, with its tools allowed.
+// could start in the place of the network's, with its tools allowed. A file
+// it cannot read or parse fails too: agy may read what this check cannot.
 func agyNetworkShadowed(dir string) error {
 	files := []string{filepath.Join(dir, ".agents", "mcp_config.json")}
-	if home, err := os.UserHomeDir(); err == nil {
-		files = append(files, filepath.Join(home, ".gemini", "config", "mcp_config.json"))
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("find agy's MCP configuration to check for a server named %s: %w", networkServerName, err)
 	}
+	files = append(files, filepath.Join(home, ".gemini", "config", "mcp_config.json"))
 	for _, f := range files {
 		b, err := os.ReadFile(f)
-		if err != nil || len(bytes.TrimSpace(b)) == 0 {
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read %s to check for a server named %s: %w", f, networkServerName, err)
+		}
+		if len(bytes.TrimSpace(b)) == 0 {
 			continue
 		}
 		var config struct {
 			Servers map[string]json.RawMessage `json:"mcpServers"`
 		}
-		if json.Unmarshal(b, &config) != nil {
-			continue
+		if err := json.Unmarshal(b, &config); err != nil {
+			return fmt.Errorf("%s is not valid JSON, so the run cannot check it for a server named %s: %v", f, networkServerName, err)
 		}
 		if _, ok := config.Servers[networkServerName]; ok {
 			return fmt.Errorf("%s has an MCP server named %s, which would take the place of the network's: rename it", f, networkServerName)

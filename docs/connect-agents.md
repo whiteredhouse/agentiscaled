@@ -647,7 +647,8 @@ your agy settings, so that the run keeps your own rules even where a run's
 settings replace that block, and a run does not start while that file is not valid
 JSON. Nor does it start while the agent's directory (`.agents/mcp_config.json`)
 or your own agy MCP configuration (`~/.gemini/config/mcp_config.json`) has a
-server named `agentiscale-network`, which agy could start in the network's place. No run asks before it uses them: the
+server named `agentiscale-network`, which agy could start in the network's place,
+or is a file the node cannot read as JSON. No run asks before it uses them: the
 turn's token is what bounds them. It has `list_agents`, `get_agent_card`, `send_task`, `get_task` and
 `cancel_task`. Every call goes to the node with the token, and the node checks it
 (signature, expiry, revocation, the A2A-only rule) and sends it on in place of its

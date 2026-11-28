@@ -749,6 +749,17 @@ func TestACPRuntimeFixedTurnReasons(t *testing.T) {
 	}
 }
 
+// A turn that ends with only whitespace and no status has no answer.
+func TestACPRuntimeBlankAnswer(t *testing.T) {
+	t.Parallel()
+	for _, flags := range [][]string{nil, {"-status"}} {
+		r := newFakeACP(t, ownerPolicy, flags...)
+		if _, err := r.Run(context.Background(), t.TempDir(), taskRequest{Text: "BLANK"}); !errors.Is(err, errNoAnswer) {
+			t.Errorf("%v: %v, want %v", flags, err, errNoAnswer)
+		}
+	}
+}
+
 func TestACPRuntimeRelativeCommand(t *testing.T) {
 	script, flags, _ := splitACPCommand(fakeACPCommand(t, "-status"))
 	t.Chdir(filepath.Dir(script))

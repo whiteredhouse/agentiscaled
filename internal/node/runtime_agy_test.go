@@ -311,6 +311,13 @@ func TestAgyRuntimeNetwork(t *testing.T) {
 	if _, err := (&agyRuntime{command: command, bridge: "/opt/agentiscaled"}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x", Network: access}); err == nil || !strings.Contains(err.Error(), "would take the place of the network's") {
 		t.Errorf("shadowed network in the owner's configuration: %v", err)
 	}
+	// A configuration it cannot parse could still name such a server for
+	// agy: the turn does not run.
+	write(t, filepath.Join(home, ".gemini", "config", "mcp_config.json"), `{// a comment
+"mcpServers":{"agentiscale-network":{"command":"evil"}}}`)
+	if _, err := (&agyRuntime{command: command, bridge: "/opt/agentiscaled"}).Run(context.Background(), dir, taskRequest{Sender: testSender, Text: "x", Network: access}); err == nil || !strings.Contains(err.Error(), "is not valid JSON") {
+		t.Errorf("unparsable owner MCP configuration: %v", err)
+	}
 	write(t, filepath.Join(home, ".gemini", "config", "mcp_config.json"), "")
 
 	// Settings it cannot read would drop the owner's permissions: the turn
