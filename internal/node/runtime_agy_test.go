@@ -502,6 +502,99 @@ func TestNetworkTicketLifetime(t *testing.T) {
 	}
 }
 
+// A tool call that a turn's bearer sent runs nothing once that bearer is
+// revoked, even when its request was let in before and its body comes only
+// once a later turn holds the grant; the task's own bearer works on.
+func TestNetworkTicketBearerCallEndsWithItsTurn(t *testing.T) {
+	network, calls := fakeNodeNetworkServer(t)
+	g, err := network.grantFor("caller", "t-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endFirst := g.begin(context.Background(), "turn-1-token", time.Now().Add(time.Minute))
+	ticket, revoke, _ := network.ticket(g)
+	alias, err := redeemTicket(context.Background(), http.DefaultClient, ticketURL(network.url), ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(bearer, session string, body io.Reader) (*http.Response, error) {
+		req, _ := http.NewRequest(http.MethodPost, network.url, body)
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		if session != "" {
+			req.Header.Set("Mcp-Session-Id", session)
+			req.Header.Set("Mcp-Protocol-Version", "2025-06-18")
+		}
+		return http.DefaultClient.Do(req)
+	}
+	open := func(bearer string) string {
+		resp, err := post(bearer, "", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		session := resp.Header.Get("Mcp-Session-Id")
+		if resp, err = post(bearer, session, strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)); err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return session
+	}
+	const listAgents = `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_agents","arguments":{}}}`
+	in := make(chan struct{}, 16)
+	network.admitted = func() {
+		select {
+		case in <- struct{}{}:
+		default:
+		}
+	}
+	session := open(alias)
+	for len(in) > 0 {
+		<-in
+	}
+
+	// The call is let in during the first turn and stalls in its body.
+	body, write := io.Pipe()
+	answer := make(chan string, 1)
+	go func() {
+		resp, err := post(alias, session, body)
+		if err != nil {
+			answer <- err.Error()
+			return
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		answer <- string(b)
+	}()
+	<-in
+	// Its turn ends, the bearer with it, and the next turn begins.
+	revoke()
+	endFirst()
+	defer g.begin(context.Background(), "turn-2-token", time.Now().Add(time.Minute))()
+	write.Write([]byte(listAgents))
+	write.Close()
+	if got := <-answer; !strings.Contains(got, "no network access now") {
+		t.Errorf("the stalled call answered %q", got)
+	}
+	if strings.Contains(calls(), "turn-2-token") {
+		t.Errorf("the stalled call ran with the next turn's token: %q", calls())
+	}
+
+	// The task's own bearer keeps its session over the turns.
+	own := open(g.bearer)
+	resp, err := post(g.bearer, own, strings.NewReader(listAgents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if strings.Contains(string(b), "no network access now") || !strings.Contains(calls(), "turn-2-token") {
+		t.Errorf("the task's bearer in its next turn: %s (node got %q)", b, calls())
+	}
+}
+
 func TestTicketRedeemNeedsPost(t *testing.T) {
 	network, _ := fakeNodeNetworkServer(t)
 	resp, err := http.Get(ticketURL(network.url) + "?" + url.Values{"ticket": {"x"}}.Encode())

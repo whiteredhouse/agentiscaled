@@ -84,6 +84,9 @@ type taskNetwork struct {
 
 	// calls are the tool calls being served, of every grant.
 	calls sync.WaitGroup
+	// admitted, if set, learns of each request ServeHTTP lets through to
+	// a grant; tests use it.
+	admitted func()
 
 	mu sync.Mutex
 	// grants are the tasks' grants by the hash of their bearers, and
@@ -312,6 +315,9 @@ func (n *taskNetwork) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if n.admitted != nil {
+		n.admitted()
+	}
 	g.serveHTTP(w, r)
 }
 
@@ -463,6 +469,13 @@ func (n *taskNetwork) newGrant(agent caller.AgentName, sent *sentTasks) (*networ
 			n.calls.Add(1)
 			defer n.calls.Done()
 			t := g.current()
+			// A request may take its time between its admission and
+			// here: a tool call runs only while the bearer that sent it
+			// still reaches g, so that one revoked with its turn
+			// (networkAccess.ticket) runs nothing in a later turn.
+			if method == "tools/call" && !n.reaches(req, g) {
+				t = nil
+			}
 			if t == nil {
 				// The session's own methods still work, so that it
 				// lasts into the task's next turn.
@@ -641,6 +654,21 @@ func (b *bodyThen) Close() error {
 	err := b.ReadCloser.Close()
 	b.then()
 	return err
+}
+
+// reaches says whether the bearer that sent req still reaches g.
+func (n *taskNetwork) reaches(req mcp.Request, g *networkGrant) bool {
+	extra := req.GetExtra()
+	if extra == nil || extra.Header == nil {
+		return false
+	}
+	bearer, ok := strings.CutPrefix(extra.Header.Get("Authorization"), "Bearer ")
+	if !ok || bearer == "" {
+		return false
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.grants[sha256.Sum256([]byte(bearer))] == g
 }
 
 // wait waits for the tool calls being served to return.
