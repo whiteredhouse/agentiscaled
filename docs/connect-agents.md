@@ -638,10 +638,11 @@ environment, so neither can hold the bearer: the node gives the run a folder of 
 own, outside the agent's directory (`--add-dir`), whose `.agents/mcp_config.json`
 starts `agentiscaled network-bridge`, beside a file with a one-time ticket in it.
 As soon as agy starts the bridge, it reads and removes that file and spends the
-ticket at the node for the bearer, which it keeps in memory, and serves the same
-tools on stdio. A ticket works once, and the node revokes it when the turn ends if
-it is still unspent. The run's `--settings` allow those tools
-(`mcp(agentiscale-network/<tool>)`). They also carry the `permissions` block of
+ticket at the node for a bearer of the turn's own, which it keeps in memory, and
+serves the same tools on stdio. A ticket works once, and when the turn ends the node
+revokes it if it is still unspent, and the bearer it got. The run's `--settings`, a
+file only you can read outside that folder, so that they are in no process list,
+allow those tools (`mcp(agentiscale-network/<tool>)`). They also carry the `permissions` block of
 your agy settings, so that the run keeps your own rules even where a run's
 settings replace that block, and a run does not start while that file is not valid
 JSON. Nor does it start while the agent's directory (`.agents/mcp_config.json`)

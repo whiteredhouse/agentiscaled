@@ -1407,7 +1407,9 @@ func (r *acpRuntime) networkServer(n *networkAccess, info acpAgent) (any, error)
 		return nil, nil
 	}
 	// The agent may start the server lazily, in a later turn of a kept
-	// process: the ticket waits for it until it expires or the task ends.
+	// process, and keeps it over the task's turns: the ticket waits for it
+	// until it expires or the task ends, and the bearer it redeems lasts
+	// as long as the task's own.
 	ticket, _, err := n.ticket()
 	if err != nil {
 		return nil, fmt.Errorf("mint the network bridge's ticket: %w", err)

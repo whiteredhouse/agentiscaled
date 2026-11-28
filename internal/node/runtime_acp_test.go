@@ -209,8 +209,9 @@ func TestACPRuntimeNetworkThroughTheBridge(t *testing.T) {
 	if strings.Contains(res.Text, access.Token) {
 		t.Error("the agent got the run's bearer")
 	}
+	// It redeems a bearer of its own for the task's grant.
 	bearer, err := redeemTicket(context.Background(), http.DefaultClient, ticketURL(network.url), ticket)
-	if err != nil || bearer != access.Token {
+	if err != nil || bearer == "" || bearer == access.Token {
 		t.Errorf("the ticket %q redeems %q, %v", ticket, bearer, err)
 	}
 }

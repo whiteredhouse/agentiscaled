@@ -47,17 +47,21 @@ type networkAccess struct {
 	URL   string
 	Token string
 	// ticket, when set, mints a one-time ticket that the network bridge
-	// (agentiscaled network-bridge) exchanges for Token, for a runtime that
-	// can start an MCP server but has no place to keep a credential that
-	// the agent cannot read (agy). revoke drops it if it is not spent yet.
+	// (agentiscaled network-bridge) exchanges for a bearer of its own that
+	// reaches the same grant as Token, for a runtime that can start an MCP
+	// server but has no place to keep a credential that the agent cannot
+	// read (agy). revoke drops the ticket and that bearer; until then the
+	// bearer lasts as long as the grant.
 	ticket func() (ticket string, revoke func(), err error)
 }
 
 // networkTicketTTL bounds how long a ticket waits for the bridge.
 const networkTicketTTL = 2 * time.Minute
 
-// networkTicket is a one-time secret for a grant's bearer.
+// networkTicket is a one-time secret for a bearer of its own (alias) that
+// reaches grant.
 type networkTicket struct {
+	alias   string
 	grant   *networkGrant
 	expires time.Time
 }
@@ -656,14 +660,16 @@ func ticketURL(mcpURL string) string {
 	return strings.TrimSuffix(mcpURL, "/mcp") + networkTicketPath
 }
 
-// ticket mints a one-time ticket for g's bearer, which only the first
-// redeem within networkTicketTTL gets, while g is open and until revoke.
+// ticket mints a one-time ticket for a bearer of its own that reaches g,
+// which only the first redeem within networkTicketTTL gets, while g is
+// open. revoke drops the ticket and that bearer, so that a bridge that
+// outlives its turn cannot reach g again.
 func (n *taskNetwork) ticket(g *networkGrant) (ticket string, revoke func(), err error) {
-	b := make([]byte, 32)
+	b := make([]byte, 64)
 	if _, err := rand.Read(b); err != nil {
 		return "", nil, err
 	}
-	t := hex.EncodeToString(b)
+	t, alias := hex.EncodeToString(b[:32]), hex.EncodeToString(b[32:])
 	now := time.Now()
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -676,25 +682,34 @@ func (n *taskNetwork) ticket(g *networkGrant) (ticket string, revoke func(), err
 		}
 	}
 	key := sha256.Sum256([]byte(t))
-	n.tickets[key] = networkTicket{grant: g, expires: now.Add(networkTicketTTL)}
+	n.tickets[key] = networkTicket{alias: alias, grant: g, expires: now.Add(networkTicketTTL)}
 	return t, func() {
 		n.mu.Lock()
 		delete(n.tickets, key)
+		if aliasKey := sha256.Sum256([]byte(alias)); n.grants[aliasKey] == g {
+			delete(n.grants, aliasKey)
+		}
 		n.mu.Unlock()
 	}, nil
 }
 
-// dropTickets forgets g's tickets. n.mu is held.
+// dropTickets forgets g's tickets and the bearers they redeemed. n.mu is
+// held.
 func (n *taskNetwork) dropTickets(g *networkGrant) {
 	for k, v := range n.tickets {
 		if v.grant == g {
 			delete(n.tickets, k)
 		}
 	}
+	for k, v := range n.grants {
+		if v == g {
+			delete(n.grants, k)
+		}
+	}
 }
 
-// redeem answers a ticket (POST, form field ticket) with its grant's bearer,
-// once: the ticket is spent whatever the answer.
+// redeem answers a ticket (POST, form field ticket) with its own bearer for
+// its grant, once: the ticket is spent whatever the answer.
 func (n *taskNetwork) redeem(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -708,15 +723,18 @@ func (n *taskNetwork) redeem(w http.ResponseWriter, r *http.Request) {
 	n.mu.Lock()
 	v, ok := n.tickets[key]
 	delete(n.tickets, key)
-	if ok && n.grants[sha256.Sum256([]byte(v.grant.bearer))] != v.grant {
+	if ok && (n.grants[sha256.Sum256([]byte(v.grant.bearer))] != v.grant || !time.Now().Before(v.expires)) {
 		ok = false
 	}
+	if ok {
+		n.grants[sha256.Sum256([]byte(v.alias))] = v.grant
+	}
 	n.mu.Unlock()
-	if t == "" || !ok || !time.Now().Before(v.expires) {
+	if t == "" || !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = io.WriteString(w, v.grant.bearer)
+	_, _ = io.WriteString(w, v.alias)
 }

@@ -34,6 +34,7 @@ cat > ` + record + `.stdin
 prev=
 for a in "$@"; do
   if [ "$prev" = --add-dir ]; then cat "$a/.agents/mcp_config.json" > ` + record + `.mcp; cat "$a/ticket" > ` + record + `.ticket; fi
+  if [ "$prev" = --settings ]; then cat "$a" > ` + record + `.settings; fi
   prev=$a
 done
 echo '{"event":"init","conversation_id":"6f0b3a52-41a7-4c63-9a0e-3c1f5d2b7e11"}'
@@ -254,8 +255,18 @@ func TestAgyRuntimeNetwork(t *testing.T) {
 		want += `,"mcp(agentiscale-network/` + tool + `)"`
 	}
 	want += `],"deny":["mcp(other/*)"]}}`
-	if s, _ := argAfter(args, "--settings"); s != want {
-		t.Errorf("--settings %s, want %s", s, want)
+	settingsFile, _ := argAfter(args, "--settings")
+	if !filepath.IsAbs(settingsFile) || strings.HasPrefix(settingsFile, added) || strings.HasPrefix(settingsFile, dir) {
+		t.Errorf("--settings %q, want a file outside the run's workspace", settingsFile)
+	}
+	if s := readRecord(t, record+".settings"); s != want {
+		t.Errorf("settings %s, want %s", s, want)
+	}
+	if slices.ContainsFunc(args, func(a string) bool { return strings.Contains(a, "command(go test)") }) {
+		t.Error("the owner's permissions are in agy's arguments")
+	}
+	if _, err := os.Stat(settingsFile); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the run's settings outlived the turn: %v", err)
 	}
 	mcpConfig := readRecord(t, record+".mcp")
 	var config struct {
@@ -456,9 +467,31 @@ func TestNetworkTicketLifetime(t *testing.T) {
 		t.Error("an expired ticket was redeemed")
 	}
 
-	live, _, _ := network.ticket(g)
-	if redeem(live) != nil {
-		t.Error("a live ticket was refused")
+	// A redeemed ticket's bearer reaches the grant until revoke, which ends
+	// the turn: a bridge that outlives it is refused.
+	live, revokeLive, _ := network.ticket(g)
+	bearer, err := redeemTicket(context.Background(), http.DefaultClient, ticketURL(network.url), live)
+	if err != nil || bearer == "" || bearer == g.bearer {
+		t.Fatalf("redeemed %q, %v; want a bearer of its own", bearer, err)
+	}
+	reach := func() int {
+		req, _ := http.NewRequest(http.MethodPost, network.url, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`))
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := reach(); code != http.StatusOK {
+		t.Errorf("the redeemed bearer got %d", code)
+	}
+	revokeLive()
+	if code := reach(); code != http.StatusUnauthorized {
+		t.Errorf("the redeemed bearer got %d after its turn", code)
 	}
 
 	access, release := network.open("one-turn-token", "caller", network.sentBy("t-open"), time.Now().Add(time.Minute))
