@@ -28,6 +28,10 @@ type AgentRow struct {
 	// Runtime is what runs the agent (codex, claude, acp), as its node
 	// says; empty when the node does not say (one older than it).
 	Runtime string `json:"runtime,omitempty"`
+	// Model is the model the agent asks its runtime for, as its node says:
+	// "" when it runs its runtime's default. Nil when the node does not say
+	// (one older than it).
+	Model *string `json:"model,omitempty"`
 }
 
 type AgentList struct {
@@ -49,6 +53,9 @@ func ListedAgents(info LocalInfo, self AgentName, providers []*api.DiscoveredPro
 	for _, name := range info.Services {
 		if name != self {
 			row := AgentRow{Service: name, Runtime: info.Runtimes[name]}
+			if m, ok := info.Models[name]; ok {
+				row.Model = &m
+			}
 			if d, ok := info.Draining[name]; ok {
 				row.Draining = &d
 			}
@@ -70,8 +77,12 @@ func ListedAgents(info LocalInfo, self AgentName, providers []*api.DiscoveredPro
 			continue
 		}
 		md := p.GetSrvMetadata()
-		add(AgentRow{Service: name, PeerID: id, Description: p.GetSrvDescription(), Draining: DrainFromMetadata(md),
-			Runtime: RuntimeFromMetadata(md)})
+		row := AgentRow{Service: name, PeerID: id, Description: p.GetSrvDescription(), Draining: DrainFromMetadata(md),
+			Runtime: RuntimeFromMetadata(md)}
+		if m, ok := ModelFromMetadata(md); ok {
+			row.Model = &m
+		}
+		add(row)
 	}
 	slices.SortFunc(out.Agents, func(a, b AgentRow) int {
 		return cmp.Or(cmp.Compare(a.Service, b.Service), cmp.Compare(a.PeerID, b.PeerID))

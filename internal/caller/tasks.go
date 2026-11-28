@@ -86,6 +86,10 @@ type LocalInfo struct {
 	Draining map[AgentName]Drain `json:"draining,omitempty"`
 	// Runtimes names what runs each agent (codex, claude, acp).
 	Runtimes map[AgentName]string `json:"runtimes,omitempty"`
+	// Models names the model each agent asks its runtime for, "" for the
+	// runtime's default; an agent it leaves out is on a node too old to
+	// say.
+	Models map[AgentName]string `json:"models,omitempty"`
 }
 
 func (t *Client) TaskClient(ctx context.Context, target Target) (*a2aclient.Client, error) {
@@ -167,13 +171,15 @@ func (t *Client) LocalInfo(ctx context.Context) (LocalInfo, error) {
 	}
 	// The names are parsed one by one: a name outside the rule (from a
 	// node older than it) is left out on its own, so that the node's other
-	// agents stay reachable. Runtimes only inform display, so they are read
-	// apart: a malformed one is left out and never fails the catalog.
+	// agents stay reachable. Runtimes and models only inform display, so
+	// they are read apart: a malformed one is left out and never fails the
+	// catalog.
 	var raw struct {
 		PeerID   string           `json:"peer_id"`
 		Services []string         `json:"services"`
 		Draining map[string]Drain `json:"draining"`
 		Runtimes json.RawMessage  `json:"runtimes"`
+		Models   json.RawMessage  `json:"models"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return LocalInfo{}, fmt.Errorf("invalid local agent catalog: %w", err)
@@ -187,12 +193,20 @@ func (t *Client) LocalInfo(ctx context.Context) (LocalInfo, error) {
 			info.Draining[n] = d
 		}
 	}
-	for name, rt := range localRuntimes(raw.Runtimes) {
+	for name, rt := range localStrings(raw.Runtimes) {
 		if n, err := ParseAgentName(name); err == nil && ValidRuntime(rt) {
 			if info.Runtimes == nil {
 				info.Runtimes = map[AgentName]string{}
 			}
 			info.Runtimes[n] = rt
+		}
+	}
+	for name, m := range localStrings(raw.Models) {
+		if n, err := ParseAgentName(name); err == nil && ValidModel(m) {
+			if info.Models == nil {
+				info.Models = map[AgentName]string{}
+			}
+			info.Models[n] = m
 		}
 	}
 	if _, err := peer.Decode(info.PeerID); err != nil {
@@ -201,22 +215,24 @@ func (t *Client) LocalInfo(ctx context.Context) (LocalInfo, error) {
 	return info, nil
 }
 
-// localRuntimes reads the local catalog's runtimes entry by entry, leaving
-// out any that is not a string, and all of them when they are not an
-// object.
-func localRuntimes(data json.RawMessage) map[string]string {
+// localStrings reads one of the local catalog's maps of agent facts, such
+// as its runtimes, entry by entry, leaving out any that is not a string
+// (null too), and all of them when they are not an object.
+func localStrings(data json.RawMessage) map[string]string {
 	var entries map[string]json.RawMessage
 	if json.Unmarshal(data, &entries) != nil {
 		return nil
 	}
-	runtimes := make(map[string]string, len(entries))
+	values := make(map[string]string, len(entries))
 	for name, value := range entries {
-		var rt string
-		if json.Unmarshal(value, &rt) == nil {
-			runtimes[name] = rt
+		// Go reads null into a string as "", which for a model would say
+		// the runtime's default; a null says nothing, so it is left out.
+		var v *string
+		if json.Unmarshal(value, &v) == nil && v != nil {
+			values[name] = *v
 		}
 	}
-	return runtimes
+	return values
 }
 
 func (t *Client) Card(ctx context.Context, target Target) ([]byte, error) {

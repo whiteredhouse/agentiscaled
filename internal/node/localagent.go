@@ -77,19 +77,23 @@ func serveLocalAgent(ctx context.Context, node *meshnode.AgentMeshNode, cfg *mes
 		if r.Method == http.MethodGet && r.URL.Path == "/info" {
 			if activity != nil {
 				for _, a := range activity() {
+					name, err := caller.ParseAgentName(a.Name)
+					if err != nil {
+						continue
+					}
 					if caller.ValidRuntime(a.Runtime) {
-						if name, err := caller.ParseAgentName(a.Name); err == nil {
-							if info.Runtimes == nil {
-								info.Runtimes = map[caller.AgentName]string{}
-							}
-							info.Runtimes[name] = a.Runtime
+						if info.Runtimes == nil {
+							info.Runtimes = map[caller.AgentName]string{}
 						}
+						info.Runtimes[name] = a.Runtime
+					}
+					if caller.ValidModel(a.Model) {
+						if info.Models == nil {
+							info.Models = map[caller.AgentName]string{}
+						}
+						info.Models[name] = a.Model
 					}
 					if a.Drain != nil {
-						name, err := caller.ParseAgentName(a.Name)
-						if err != nil {
-							continue
-						}
 						if info.Draining == nil {
 							info.Draining = map[caller.AgentName]drainMark{}
 						}

@@ -326,9 +326,9 @@ func runAgentList(args []string, out io.Writer) error {
 	defined := slices.ContainsFunc(s.Agents, func(a agentConfig) bool { return a.Definition != "" })
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	if defined {
-		fmt.Fprintln(tw, "NAME\tSTATE\tRUNTIME\tDIRECTORY\tDEFINITION")
+		fmt.Fprintln(tw, "NAME\tSTATE\tRUNTIME\tMODEL\tDIRECTORY\tDEFINITION")
 	} else {
-		fmt.Fprintln(tw, "NAME\tSTATE\tRUNTIME\tDIRECTORY")
+		fmt.Fprintln(tw, "NAME\tSTATE\tRUNTIME\tMODEL\tDIRECTORY")
 	}
 	now := time.Now()
 	for _, a := range s.Agents {
@@ -340,17 +340,38 @@ func runAgentList(args []string, out io.Writer) error {
 			name = caller.ShownAgentName(name)
 			state = invalidNameState(*dataDir)
 		}
+		model := savedAgentModel(*dataDir, a)
 		if !defined {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", name, state, a.Runtime, homeRelative(a.Dir))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", name, state, a.Runtime, model, homeRelative(a.Dir))
 			continue
 		}
 		def := "-"
 		if a.Definition != "" {
 			def = homeRelative(definitionCopy(*dataDir, a.effectiveName(), a.Definition))
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", name, state, a.Runtime, homeRelative(a.Dir), def)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", name, state, a.Runtime, model, homeRelative(a.Dir), def)
 	}
 	return tw.Flush()
+}
+
+// savedAgentModel is the model a saved agent asks its runtime for, as agent
+// list shows it: the one its definition's copy sets (agentDefinition.modelOn),
+// "default" when it sets none, and "-" when the copy cannot be read or its
+// model is not one callers would see.
+func savedAgentModel(dataDir string, a agentConfig) string {
+	var def *agentDefinition
+	if a.Definition != "" {
+		d, err := loadDefinition(definitionCopy(dataDir, a.effectiveName(), a.Definition))
+		if err != nil {
+			return "-"
+		}
+		def = d
+	}
+	model := def.modelOn(a.Runtime)
+	if !caller.ValidModel(model) {
+		return "-"
+	}
+	return caller.ShownModel(&model)
 }
 
 // invalidNameState is what agent list and status say of a saved agent whose

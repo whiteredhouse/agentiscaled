@@ -145,13 +145,13 @@ func TestNetworkAgentListShowsDrains(t *testing.T) {
 	// left, which a node too old to say always is, then drained.
 	ago := `\(\d+h\d+m\)`
 	for _, line := range []string{
-		`(?m)^AGENT +PEER +STATE +RUNTIME +DESCRIPTION$`,
-		`(?m)^helper +local +drained ` + ago + `: re-login +- *$`,
-		`(?m)^open +local +available +- *$`,
-		`(?m)^reviewer +\S+ +draining ` + ago + `: reboot +- +reviews$`,
-		`(?m)^idle +\S+ +drained ` + ago + ` +- *$`,
-		`(?m)^broken +\S+ +draining +- *$`,
-		`(?m)^other +\S+ +available +- *$`,
+		`(?m)^AGENT +PEER +STATE +RUNTIME +MODEL +DESCRIPTION$`,
+		`(?m)^helper +local +drained ` + ago + `: re-login +- +- *$`,
+		`(?m)^open +local +available +- +- *$`,
+		`(?m)^reviewer +\S+ +draining ` + ago + `: reboot +- +- +reviews$`,
+		`(?m)^idle +\S+ +drained ` + ago + ` +- +- *$`,
+		`(?m)^broken +\S+ +draining +- +- *$`,
+		`(?m)^other +\S+ +available +- +- *$`,
 	} {
 		if !regexp.MustCompile(line).MatchString(out.String()) {
 			t.Errorf("table lacks %s:\n%s", line, out.String())
@@ -207,6 +207,70 @@ func TestNetworkAgentListShowsRuntime(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("no row %s with runtime %s:\n%s", name, runtime, out.String())
+		}
+	}
+}
+
+// Each agent shows the model it asks for: the one its definition sets,
+// "default" when it runs its runtime's, and "-" when its node does not say
+// or says something that is not a model.
+func TestNetworkAgentListShowsModel(t *testing.T) {
+	t.Parallel()
+	dir := shortTempDir(t)
+	local, remote := randomPeer(t), randomPeer(t)
+	serveDiscoveryFixture(t, dir, localAgentSocketName, func(w http.ResponseWriter, r *http.Request) {
+		// A raw document, as a node of any version could send it.
+		fmt.Fprintf(w, `{"peer_id":%q,"services":["helper","plain","old-local","null-local"],"models":{"helper":"sonnet","plain":"","old-local":7,"null-local":null,"Bad/Name":"opus"}}`, local)
+	})
+	serveDiscoveryFixture(t, dir, meshnode.DefaultSocketName, func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]*api.DiscoveredProvider{
+			{SrvName: "reviewer", PeerId: remote, SrvMetadata: map[string]string{caller.ModelMetadataKey: "gpt-5.1-codex"}},
+			{SrvName: "bedrock", PeerId: remote, SrvMetadata: map[string]string{caller.ModelMetadataKey: "us.anthropic.claude-opus-4-1-20250805-v1:0"}},
+			{SrvName: "default", PeerId: remote, SrvMetadata: map[string]string{caller.ModelMetadataKey: ""}},
+			{SrvName: "odd", PeerId: remote, SrvMetadata: map[string]string{caller.ModelMetadataKey: "opus\x1b[2J"}},
+			{SrvName: "old", PeerId: remote},
+		})
+	})
+	var out bytes.Buffer
+	if err := caller.RunNetwork(context.Background(), []string{"agent", "list", "-data-dir", dir, "-json"}, nil, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	var result caller.AgentList
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, row := range result.Agents {
+		got[row.Service.String()] = caller.ShownModel(row.Model)
+	}
+	want := map[string]string{"helper": "sonnet", "plain": "default", "old-local": "-", "null-local": "-", "reviewer": "gpt-5.1-codex",
+		"bedrock": "us.anthropic.claude-opus-4-1-20250805-v1:0", "default": "default", "odd": "-", "old": "-"}
+	if !maps.Equal(got, want) {
+		t.Fatalf("models = %v, want %v", got, want)
+	}
+	// The JSON tells the runtime's default ("") from a node that does not
+	// say (no key).
+	if !strings.Contains(out.String(), `{"service":"plain","model":""}`) || !strings.Contains(out.String(), `{"service":"old-local"}`) ||
+		!strings.Contains(out.String(), `{"service":"null-local"}`) {
+		t.Fatalf("json: %s", out.String())
+	}
+	out.Reset()
+	if err := caller.RunNetwork(context.Background(), []string{"agent", "list", "-data-dir", dir}, nil, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(out.String(), "\n")
+	if f := strings.Fields(lines[0]); len(f) < 5 || f[4] != "MODEL" {
+		t.Fatalf("header: %q", lines[0])
+	}
+	for name, model := range want {
+		found := false
+		for _, line := range lines {
+			if f := strings.Fields(line); len(f) >= 5 && f[0] == name && f[4] == model {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no row %s with model %s:\n%s", name, model, out.String())
 		}
 	}
 }

@@ -81,6 +81,9 @@ func localAgentsFixture(t *testing.T, role *api.PolicyRole, expiry time.Time, cf
 		if agent.runtimeName == "" {
 			agent.runtimeName = "codex"
 		}
+		// The writer's definition sets its model; the others run the
+		// runtime's default.
+		agent.model = map[string]string{"writer": "sonnet"}[name]
 		target, _, err := serveAgent(ctx, agent, name)
 		if err != nil {
 			t.Fatal(err)
@@ -155,6 +158,9 @@ func TestLocalTasksReachEachAgent(t *testing.T) {
 	}
 	if want := map[caller.AgentName]string{"helper": "codex", "writer": "claude"}; !maps.Equal(info.Runtimes, want) {
 		t.Fatalf("local info runtimes %v, want %v", info.Runtimes, want)
+	}
+	if want := map[caller.AgentName]string{"helper": "", "writer": "sonnet"}; !maps.Equal(info.Models, want) {
+		t.Fatalf("local info models %v, want %v", info.Models, want)
 	}
 	for _, name := range []string{"writer", "helper"} {
 		fixes[name].release <- "answer from " + name

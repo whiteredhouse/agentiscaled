@@ -26,6 +26,47 @@ func RuntimeFromMetadata(md map[string]string) string {
 	return ""
 }
 
+// ModelMetadataKey is the service metadata key under which a node says
+// which model one of its agents asks its runtime for: the model its
+// definition sets, or "" when the agent sets none and the runtime picks
+// its own default (from the owner's settings, say). A node too old to say
+// leaves the key out. Like the runtime, the node writes it for itself, so
+// it informs display only.
+const ModelMetadataKey = "agentiscale.model"
+
+// modelWord is the form of a model as callers see it: what Claude Code and
+// Codex take as a model's name or alias, including provider IDs such as
+// us.anthropic.claude-…-v1:0 or a [1m] suffix.
+var modelWord = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,127}$`)
+
+// ValidModel reports whether model can be an agent's model as callers see
+// it: up to 128 letters, digits and ._:/@[]- starting with a letter or
+// digit. "" is valid too: the runtime's default.
+func ValidModel(model string) bool { return model == "" || modelWord.MatchString(model) }
+
+// ModelFromMetadata is the model in an agent's service metadata. ok is false
+// when the node does not say (one older than it) or what it says is not a
+// valid model; model is "" when the agent runs its runtime's default.
+func ModelFromMetadata(md map[string]string) (model string, ok bool) {
+	m, ok := md[ModelMetadataKey]
+	if !ok || !ValidModel(m) {
+		return "", false
+	}
+	return m, true
+}
+
+// ShownModel is a model as tables show it: the model, "default" for the
+// runtime's own, and "-" when the node does not say.
+func ShownModel(model *string) string {
+	switch {
+	case model == nil:
+		return "-"
+	case *model == "":
+		return "default"
+	}
+	return *model
+}
+
 // SkillsMetadataKey is the service metadata key under which a node lists
 // the skills one of its agents loads, by name, for the owner's console and
 // discovery. Its value is a Skills in JSON. Like the runtime, the node
