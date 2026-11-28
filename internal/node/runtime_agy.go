@@ -340,6 +340,11 @@ func agyProgress(event []byte) (step int, line string) {
 	case strings.Contains(name, "search") || strings.Contains(name, "grep") || strings.Contains(name, "find") || strings.HasPrefix(name, "list"):
 		line = "Searching"
 	case strings.HasPrefix(name, "read") || strings.HasPrefix(name, "view"):
+		// agy reads an MCP tool's schema from its own cache before it
+		// calls it; the call is the step.
+		if strings.Contains(filepath.ToSlash(path), "/.gemini/antigravity-cli/mcp/") {
+			return 0, ""
+		}
 		line = "Reading " + fileName(path)
 	case strings.HasPrefix(name, "write") || strings.HasPrefix(name, "edit") || strings.Contains(name, "replace") || strings.HasPrefix(name, "sed"):
 		line = "Editing " + fileName(path)
