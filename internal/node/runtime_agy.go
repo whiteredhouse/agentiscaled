@@ -109,12 +109,13 @@ func (r *agyRuntime) Describe(card *a2a.AgentCard) {
 //     environment. So the server is the network bridge, started from a
 //     folder of the node's outside the agent's directory (--add-dir), and
 //     the folder holds only a one-time ticket, which the bridge removes
-//     and spends once agy starts it, and which is revoked when the turn
-//     ends if it is still unspent. A server of that name in the directory's
+//     and spends once agy starts it for a bearer of the turn's own: both
+//     are revoked when the turn ends. A server of that name in the directory's
 //     or the owner's own agy MCP configuration would stand in for the
 //     network's and get its approval, so the run does not start then
 //     (agyNetworkShadowed).
-//     The run's settings (--settings) allow its tools. A later --settings
+//     The run's settings (--settings, a file outside that folder, so that
+//     they are in no process list) allow its tools. A later --settings
 //     replaces an earlier one, so they carry the owner's own permissions
 //     too (agyPermissions), in case they replace the settings file's.
 func (r *agyRuntime) Run(ctx context.Context, dir string, req taskRequest) (turnResult, error) {
@@ -134,11 +135,6 @@ func (r *agyRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 		if err := agyNetworkShadowed(dir); err != nil {
 			return turnResult{}, err
 		}
-		network, cleanup, err := r.networkDir(req.Network)
-		if err != nil {
-			return turnResult{}, err
-		}
-		defer cleanup()
 		permissions, err := agyPermissions()
 		if err != nil {
 			return turnResult{}, err
@@ -152,7 +148,12 @@ func (r *agyRuntime) Run(ctx context.Context, dir string, req taskRequest) (turn
 		if err != nil {
 			return turnResult{}, err
 		}
-		args = append(args, "--add-dir", network, "--settings", string(settings))
+		network, settingsFile, cleanup, err := r.networkDir(req.Network, settings)
+		if err != nil {
+			return turnResult{}, err
+		}
+		defer cleanup()
+		args = append(args, "--add-dir", network, "--settings", settingsFile)
 	}
 	cmd := exec.CommandContext(ctx, r.command, args...)
 	cmd.Dir = dir
@@ -275,46 +276,53 @@ func (r *agyRuntime) prompt(req taskRequest) string {
 	return p
 }
 
-// networkDir makes the folder from which a run starts the network bridge,
-// readable only by the owner: .agents/mcp_config.json naming the bridge,
-// and the file it reads a fresh one-time ticket from. cleanup revokes the
-// ticket and removes the folder.
-func (r *agyRuntime) networkDir(n *networkAccess) (dir string, cleanup func(), err error) {
+// networkDir makes, in a folder readable only by the owner, the folder from
+// which a run starts the network bridge (dir): .agents/mcp_config.json
+// naming the bridge, and the file it reads a fresh one-time ticket from;
+// and beside dir, out of the run's workspace, the run's settings, which
+// are kept out of the process list. cleanup revokes the ticket and the
+// bearer it redeemed, and removes both.
+func (r *agyRuntime) networkDir(n *networkAccess, settings []byte) (dir, settingsFile string, cleanup func(), err error) {
 	if n.ticket == nil {
-		return "", nil, errors.New("the network gives agy no ticket")
+		return "", "", nil, errors.New("the network gives agy no ticket")
 	}
 	ticket, revoke, err := n.ticket()
 	if err != nil {
-		return "", nil, fmt.Errorf("mint the network bridge's ticket: %w", err)
+		return "", "", nil, fmt.Errorf("mint the network bridge's ticket: %w", err)
 	}
-	dir, err = os.MkdirTemp("", "agentiscale-agy-")
+	root, err := os.MkdirTemp("", "agentiscale-agy-")
 	if err != nil {
 		revoke()
-		return "", nil, err
+		return "", "", nil, err
 	}
 	cleanup = func() {
 		revoke()
-		os.RemoveAll(dir)
+		os.RemoveAll(root)
 	}
+	dir = filepath.Join(root, "network")
+	settingsFile = filepath.Join(root, "settings.json")
 	ticketFile := filepath.Join(dir, "ticket")
 	config, err := json.Marshal(map[string]any{"mcpServers": map[string]any{networkServerName: map[string]any{
 		"command": r.bridge,
 		"args":    []string{networkBridgeCommand, "-url", n.URL, "-ticket-file", ticketFile},
 	}}})
 	if err == nil {
-		err = os.WriteFile(ticketFile, []byte(ticket), 0o600)
+		err = os.WriteFile(settingsFile, settings, 0o600)
 	}
 	if err == nil {
-		err = os.Mkdir(filepath.Join(dir, ".agents"), 0o700)
+		err = os.MkdirAll(filepath.Join(dir, ".agents"), 0o700)
+	}
+	if err == nil {
+		err = os.WriteFile(ticketFile, []byte(ticket), 0o600)
 	}
 	if err == nil {
 		err = os.WriteFile(filepath.Join(dir, ".agents", "mcp_config.json"), config, 0o600)
 	}
 	if err != nil {
 		cleanup()
-		return "", nil, err
+		return "", "", nil, err
 	}
-	return dir, cleanup, nil
+	return dir, settingsFile, cleanup, nil
 }
 
 // agyProgress is the step an event of `agy --output-format stream-json`

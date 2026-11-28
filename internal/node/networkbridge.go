@@ -25,9 +25,10 @@ const networkBridgeCommand = "network-bridge"
 // server on stdio, for a runtime that starts MCP servers from a
 // configuration file the agent itself can read (agy). The bridge reads a
 // one-time ticket from FILE, which is not in any process list, removes the
-// file and exchanges the ticket at the node for the run's bearer, which
-// stays in the bridge's memory. Whoever redeems a ticket first spends it,
-// and the node revokes one still unspent when the turn ends.
+// file and exchanges the ticket at the node for a bearer of its own for the
+// run's grant, which stays in the bridge's memory. Whoever redeems a
+// ticket first spends it, and when the turn ends the node revokes the
+// ticket if it is still unspent, and the bearer it redeemed.
 func RunNetworkBridge(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
 	fs := flag.NewFlagSet(networkBridgeCommand, flag.ContinueOnError)
 	endpoint := fs.String("url", "", "the run's network MCP endpoint on this node")
